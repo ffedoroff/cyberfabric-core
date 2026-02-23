@@ -187,9 +187,9 @@ The system MUST persist all user and assistant messages. Conversation history ac
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-fr-streaming-cancellation`
 
-The system MUST detect client disconnection during a streaming response and cancel the in-flight LLM request. Cancellation MUST propagate through the entire request chain to terminate the external API call.
+The system MUST detect client disconnection during a streaming response and cancel the in-flight LLM request. Cancellation MUST propagate through the entire request chain to terminate the external API call. The server MUST NOT emit an SSE `event: error` for a client disconnect — the SSE stream is already broken. The turn transitions to `cancelled` internally, and the Turn Status API is the authoritative source of final state after disconnect.
 
-When a stream is cancelled or disconnects before a terminal completion, the system MUST apply a bounded best-effort debit for quota enforcement so cancellation cannot be used to evade usage limits.
+When a stream is cancelled or disconnects before a terminal completion, the system MUST apply a bounded best-effort debit for quota enforcement so cancellation cannot be used to evade usage limits. If the provider already emitted a terminal `done` or `error` before the disconnect, that terminal outcome stands and the disconnect does not alter the billing state.
 
 **Rationale**: Prevents wasted compute and cost when the user navigates away or closes the browser.
 **Actors**: `cpt-cf-mini-chat-actor-chat-user`
@@ -742,7 +742,7 @@ Support and UX recovery flows MUST be able to query authoritative turn state bac
 **Protocol/Format**: Server-Sent Events (SSE) over HTTP
 **Compatibility**: Event types (`delta`, `tool`, `citations`, `done`, `error`, `ping`) and their payload schemas are stable within a major API version.
 
-**Ordering**: `ping* (delta|tool|citations)* (done|error)`.
+**Ordering (P1)**: `ping* delta* tool* citations? (done | error)`. Zero or more `ping` events may appear at any point. `delta` and `tool` events may interleave in any order. At most one `citations` event, emitted after all `delta` events and before the terminal event. Exactly one terminal event (`done` or `error`) ends the stream. Broader interleaving (multiple `citations` events interleaved with content) is forward-compatible for P2+.
 
 **Error model (Option A)**: If the request fails validation, authorization, or quota preflight before streaming begins, the server MUST return a normal JSON error response with the appropriate HTTP status and MUST NOT open an SSE stream. If the stream has started, the server MUST report failure via a terminal `event: error`.
 

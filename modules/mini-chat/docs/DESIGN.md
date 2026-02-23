@@ -621,14 +621,18 @@ data: {}
 
 A well-formed stream follows this ordering:
 
+**P1 normative ordering**:
+
 ```text
-ping*  (delta | tool | citations)*  (done | error)
+ping*  delta*  tool*  citations?  (done | error)
 ```
 
-- Zero or more `ping` events may appear at any point.
+- Zero or more `ping` events may appear at any point before terminal.
 - `delta` and `tool` events may interleave in any order.
-- **P1 invariant**: `citations` is emitted at most once, near stream completion, before the terminal event. P2+ may allow multiple `citations` events interleaved with `delta`/`tool` events (forward-compatible).
+- At most one `citations` event, emitted after all `delta` events and before the terminal event.
 - Exactly one terminal event (`done` or `error`) ends the stream.
+
+P2+ forward-compatible: broader interleaving (multiple `citations` events interleaved with `delta`/`tool`) may be supported in future versions. P1 clients MUST NOT depend on this.
 
 <a id="provider-event-translation"></a>
 #### Provider Event Translation
@@ -2539,6 +2543,12 @@ Every turn MUST eventually settle into exactly one persisted finalization outcom
 | `cancelled` | `cancelled` | _(none; stream already disconnected)_ | Server-side cancellation triggered by client disconnect or internal abort. |
 
 Note: "disconnected" is not a separate internal state. Client disconnects are detected by the server and processed as cancellations (the domain service triggers the `CancellationToken` and the turn transitions to `cancelled`). The orphan turn watchdog handles the case where the cancellation signal is lost due to pod crash, finalizing the turn as `failed` with `error_code = 'orphan_timeout'`.
+
+**P1 client disconnect rules**:
+
+1. **Disconnect before terminal provider event**: the server does NOT emit an SSE `event: error` (the stream is already broken). The turn transitions to `cancelled` internally via the CAS finalizer. Billing settlement follows ABORTED rules. The Turn Status API (`GET /turns/{request_id}`) is the authoritative source of final state.
+2. **Disconnect after provider terminal `done` or `error`**: the terminal outcome from the provider stands. The disconnect does not alter the billing state or produce a second terminal event.
+3. **SSE does not guarantee delivery of the terminal event to the client**. The terminal state is authoritative in the database, not in the SSE stream. After any disconnect, clients MUST use the Turn Status API to resolve uncertainty about the turn outcome.
 
 #### Settlement transaction invariant
 
