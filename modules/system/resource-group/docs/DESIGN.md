@@ -44,7 +44,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-enforce-forest-hierarchy` | Domain invariants + cycle checks before writes. |
 | `cpt-cf-resource-group-fr-validate-parent-type` | Entity create/move validates parent-child compatibility against runtime type parent rules. |
 | `cpt-cf-resource-group-fr-delete-entity-no-active-references` | Delete orchestration applies reference-policy checks before entity removal and closure mutation. |
-| `cpt-cf-resource-group-fr-tenant-scope-ownership-graph` | Ownership-graph profile enforces same-tenant parent-child and membership writes, with tenant-scoped AuthZ query path. |
+| `cpt-cf-resource-group-fr-tenant-scope-ownership-graph` | Ownership-graph profile enforces tenant-hierarchy-compatible parent-child and membership writes, with tenant-scoped AuthZ query path. |
 | `cpt-cf-resource-group-fr-manage-membership` | Membership service provides deterministic add/remove lifecycle operations. |
 | `cpt-cf-resource-group-fr-query-membership-relations` | Membership read API supports indexed lookups by group and by resource. |
 | `cpt-cf-resource-group-fr-closure-table` | Hierarchy service backed by `resource_group_closure`. |
@@ -71,7 +71,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | Document | Constraint |
 |----------|------------|
 | `docs/arch/authorization/DESIGN.md` | AuthZ plugin can consume RG data as PIP input; PEP compiles constraints to SQL. |
-| `docs/arch/authorization/RESOURCE_GROUP_MODEL.md` | AuthZ usage expects tenant-scoped groups and no cross-tenant graph/membership links. |
+| `docs/arch/authorization/RESOURCE_GROUP_MODEL.md` | AuthZ usage expects tenant-scoped groups with tenant-hierarchy-aware validation for graph/membership links. |
 | `modules/system/authz-resolver/docs/PRD.md` | AuthZ resolver contract unchanged; extension through plugin behavior only. |
 | `modules/system/authn-resolver/docs/PRD.md` | no AuthN/AuthZ responsibility mixing. |
 
@@ -117,7 +117,7 @@ Type rules are runtime-configurable through API/seed data with deterministic val
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
-In ownership-graph usage, groups are tenant-scoped and cross-tenant edges are invalid.
+In ownership-graph usage, groups are tenant-scoped and links must be tenant-hierarchy-compatible (same-tenant or allowed related-tenant link per tenant hierarchy rules).
 
 ### 2.2 Constraints
 
@@ -336,24 +336,24 @@ rg.remove_membership(
 
 Membership write semantics for AuthZ-facing profile:
 
-- in `ownership-graph` mode, add/remove validates tenant scope via caller `SecurityContext` and target group tenant
+- in `ownership-graph` mode, add/remove validates tenant scope via caller `SecurityContext` effective scope and target group tenant
 - membership row stores explicit `tenant_id` and must match target group tenant
-- cross-tenant membership writes fail deterministically (`Validation`/`Conflict` mapping)
+- tenant-incompatible membership writes fail deterministically (`Validation`/`Conflict` mapping)
 - no policy decision fields are produced by Resource Group for these operations
 
 Platform-admin provisioning exception:
 
 - privileged platform-admin calls that create/manage tenant hierarchies through `ResourceGroupClient` may run without caller tenant scoping
 - this exception applies to provisioning/management operations only, not AuthZ query path
-- data invariants remain strict: parent-child and membership links cannot cross tenant boundaries
+- data invariants remain strict: parent-child and membership links must satisfy tenant hierarchy compatibility rules
 
 **Integration read API** (`ResourceGroupReadClient`, stable):
 
 | Method | Description |
 |--------|-------------|
-| `resolve_descendants(ctx, root_id)` | tenant-scoped descendant rows with `group_id`, `tenant_id`, and depth metadata |
-| `resolve_ancestors(ctx, node_id)` | tenant-scoped ancestor rows with `group_id`, `tenant_id`, and depth metadata |
-| `resolve_memberships(ctx, group_ids)` | tenant-scoped membership rows with `group_id`, `resource_id`, and `tenant_id` for each row |
+| `resolve_descendants(ctx, root_id)` | tenant-scoped descendant rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope |
+| `resolve_ancestors(ctx, node_id)` | tenant-scoped ancestor rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope |
+| `resolve_memberships(ctx, group_ids)` | tenant-scoped membership rows with `group_id`, `resource_id`, and `tenant_id` for each row; rows may include multiple tenant scopes within effective tenant hierarchy scope |
 
 Target Rust trait signature (SDK contract, tenant-resolver style pass-through):
 
@@ -442,6 +442,7 @@ Tenant projection rule for integration reads:
 
 - in `ownership-graph` profile, `tenant_id` is required in every returned row from `ResourceGroupReadClient`
 - for membership reads, `tenant_id` is read from `resource_group_membership.tenant_id` (must match `resource_group_entity.tenant_id`)
+- rows can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
 - this keeps Resource Group policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
 
 Caller identity propagation rule (aligned with Tenant Resolver pattern):
@@ -450,7 +451,7 @@ Caller identity propagation rule (aligned with Tenant Resolver pattern):
 - Resource Group gateway preserves `ctx` across provider routing (for plugin path, `ctx` is passed through to selected plugin unchanged) without converting it into policy decisions
 - plugin implementations decide how/if `ctx` affects read access semantics (for example tenant-scoped visibility or auditing)
 - this keeps RG data-only while preserving caller identity required by AuthZ plugin/PDP flows
-- for AuthZ query path, reads are tenant-scoped by caller `SecurityContext.subject_tenant_id`; non-tenant-scoped provisioning exception does not apply
+- for AuthZ query path, reads are tenant-scoped by effective scope derived from caller `SecurityContext.subject_tenant_id`; non-tenant-scoped provisioning exception does not apply
 
 #### Integration Read Schemas (AuthZ-facing)
 
@@ -461,7 +462,7 @@ The integration read contract returns **data rows only** (no policy/decision fie
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `group_id` | UUID | Yes | Group identifier for the returned row (descendant or ancestor) |
-| `tenant_id` | UUID | Yes (`ownership-graph`) | Tenant scope of `group_id` |
+| `tenant_id` | UUID | Yes (`ownership-graph`) | Tenant scope of `group_id` (can differ per row under tenant hierarchy scope) |
 | `depth` | INT | Yes | Distance from input node (`0` for self row) |
 
 `resolve_memberships(ctx, group_ids)` returns membership rows:
@@ -469,16 +470,21 @@ The integration read contract returns **data rows only** (no policy/decision fie
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `group_id` | UUID | Yes | Group identifier from request set |
-| `tenant_id` | UUID | Yes (`ownership-graph`) | Membership tenant scope (stored in membership row; must match group tenant) |
+| `tenant_id` | UUID | Yes (`ownership-graph`) | Membership tenant scope (stored in membership row; must match group tenant; can differ per row under tenant hierarchy scope) |
 | `resource_id` | UUID | Yes | Resource identifier |
 
 Tenant consistency behavior for integration reads:
 
 - in `ownership-graph` profile, rows with missing tenant scope are invalid and must fail with deterministic error mapping
-- callers can use returned `tenant_id` to validate caller `subject_tenant_id` before generating AuthZ group constraints
-- in AuthZ query path, mixed-tenant `group_ids` are rejected or filtered by tenant-scoped read rules from `ctx`
+- callers can use returned `tenant_id` to validate row scope against caller effective tenant scope before generating AuthZ group constraints
+- in AuthZ query path, mixed-tenant rows are valid when each row tenant is inside effective tenant scope resolved from `ctx`
 
 #### Integration Read Examples
+
+Examples below assume caller effective tenant scope includes:
+
+- `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa` (subject tenant)
+- `dddddddd-dddd-dddd-dddd-dddddddddddd` (related tenant in hierarchy scope)
 
 Client initialization + caller context:
 
@@ -515,7 +521,7 @@ let rows = rg_read
   },
   {
     "group_id": "22222222-2222-2222-2222-222222222222",
-    "tenant_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "tenant_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
     "depth": 1
   }
 ]
@@ -536,7 +542,7 @@ let rows = rg_read
 [
   {
     "group_id": "22222222-2222-2222-2222-222222222222",
-    "tenant_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "tenant_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
     "depth": 0
   },
   {
@@ -566,12 +572,12 @@ let rows = rg_read
   {
     "group_id": "11111111-1111-1111-1111-111111111111",
     "tenant_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-    "resource_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    "resource_id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
   },
   {
     "group_id": "22222222-2222-2222-2222-222222222222",
-    "tenant_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-    "resource_id": "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    "tenant_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "resource_id": "ffffffff-ffff-ffff-ffff-ffffffffffff"
   }
 ]
 ```
@@ -768,9 +774,9 @@ Profile reduction for enabled limits requires external operator migration to res
 
 Ownership-graph tenant enforcement:
 
-- parent-child edges must keep same `tenant_id`
-- membership row `tenant_id` must match target group tenant; tenant-scoped callers must match caller `subject_tenant_id`
-- platform-admin provisioning calls may bypass caller-tenant scope checks, but cannot create cross-tenant links
+- parent-child edges must be tenant-hierarchy-compatible (same-tenant or allowed related-tenant link)
+- membership row `tenant_id` must match target group tenant; tenant-scoped callers must stay within effective tenant scope from `subject_tenant_id`
+- platform-admin provisioning calls may bypass caller-tenant scope checks, but cannot create tenant-incompatible links
 - violations return deterministic conflict/validation errors
 
 ### 3.9 Error Mapping

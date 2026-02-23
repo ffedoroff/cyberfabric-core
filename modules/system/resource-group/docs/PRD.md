@@ -119,14 +119,14 @@ This preserves approved AuthN/AuthZ architecture and keeps Resource Group AuthZ-
 When used in `ownership-graph` profile for AuthZ flows, groups are tenant-scoped:
 
 - each group belongs to one tenant scope
-- cross-tenant parent-child links are rejected
-- cross-tenant membership links are rejected
-- AuthZ integration reads and downstream SQL compilation must be tenant-scoped by caller `SecurityContext.subject_tenant_id`
+- parent-child and membership links must satisfy tenant compatibility rules
+- same-tenant links are always valid; cross-tenant links are valid only when tenants are related in configured tenant hierarchy scope
+- AuthZ integration reads and downstream SQL compilation must be tenant-scoped by caller effective tenant scope (derived from `SecurityContext.subject_tenant_id` and tenant hierarchy visibility rules)
 
 Operational exception for platform provisioning:
 
 - privileged platform admin calls through `ResourceGroupClient` may run without caller tenant scoping when creating/managing tenant hierarchies across tenants
-- this exception does not relax data invariants: every parent-child edge and membership link must still remain same-tenant at data level
+- this exception does not relax data invariants: every parent-child edge and membership link must still pass tenant hierarchy compatibility checks
 
 This aligns Resource Group behavior with `docs/arch/authorization/RESOURCE_GROUP_MODEL.md`.
 
@@ -216,7 +216,7 @@ Entity fields:
 - `parent_id` (optional)
 - timestamps
 
-In `ownership-graph` profile, entity also carries tenant scope metadata for cross-tenant validation.
+In `ownership-graph` profile, entity also carries tenant scope metadata for tenant compatibility validation.
 
 #### Enforce Forest Invariants
 
@@ -247,7 +247,7 @@ Entity deletion **MUST** be rejected if active references/memberships prevent sa
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`
 
-In `ownership-graph` profile, create/move/membership operations **MUST** reject cross-tenant links.
+In `ownership-graph` profile, create/move/membership operations **MUST** reject tenant-incompatible links (including cross-tenant links outside configured tenant hierarchy scope).
 
 ### 5.3 Membership Management
 
@@ -354,7 +354,8 @@ In `ownership-graph` profile, integration read responses **MUST** include `tenan
 - hierarchy reads (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) return group row + tenant scope
 - membership reads (`resolve_memberships(ctx, ..)`) return membership row + tenant scope
 - integration read methods accept caller `SecurityContext`; Resource Group passes it through to selected provider path (for plugin path, pass-through is unchanged)
-- in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory for tenant-scoped reads and compiled SQL predicates
+- in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory and used to resolve effective tenant scope for tenant-scoped reads and compiled SQL predicates
+- when effective tenant scope contains multiple related tenants, read responses may contain rows with different `tenant_id` values
 
 The read contract **MUST NOT** contain AuthZ decision semantics.
 
@@ -571,16 +572,16 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **WHEN** caller attempts move
 - **THEN** `CycleDetected`
 
-### Scenario: Add Membership (Same Tenant)
+### Scenario: Add Membership (Tenant-Compatible)
 
-- **GIVEN** group `G1` and resource `R1` belong to the same tenant scope
+- **GIVEN** group `G1` and resource `R1` tenant scopes are compatible under configured tenant hierarchy rules
 - **WHEN** caller invokes `add_membership` with caller `SecurityContext`
 - **THEN** membership link `(G1, R1)` is created
 - **AND** operation remains policy-agnostic (no AuthZ decision payload)
 
-### Scenario: Reject Cross-Tenant Membership Add
+### Scenario: Reject Tenant-Incompatible Membership Add
 
-- **GIVEN** group `G1` tenant scope differs from caller `subject_tenant_id`
+- **GIVEN** group `G1` tenant scope is outside caller effective tenant scope (resolved from `subject_tenant_id`)
 - **WHEN** tenant-scoped caller invokes `add_membership`
 - **THEN** operation is rejected with deterministic validation/conflict category
 
@@ -589,7 +590,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **GIVEN** membership link `(G1, R1)` exists
 - **WHEN** caller invokes `remove_membership` with caller `SecurityContext`
 - **THEN** the link is removed
-- **AND** cross-tenant attempts are rejected under ownership-graph tenant rules
+- **AND** tenant-incompatible attempts are rejected under ownership-graph tenant rules
 
 ### Scenario: Platform Admin Provisions Hierarchy Without Caller Tenant Scope
 
@@ -597,7 +598,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **AND** caller request is not tenant-scoped by `subject_tenant_id`
 - **WHEN** caller creates or moves tenant hierarchy nodes via `ResourceGroupClient`
 - **THEN** operation is allowed for the explicit target tenant scope
-- **AND** cross-tenant parent-child and membership links are still rejected by data invariants
+- **AND** parent-child and membership links must still satisfy tenant hierarchy compatibility invariants
 
 ### Scenario: Reduced Query Profile Without Migration
 
@@ -620,7 +621,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 - **GIVEN** plugin calls `resolve_descendants` and `resolve_memberships` for candidate groups
 - **WHEN** Resource Group returns rows with `tenant_id` for each entry
-- **THEN** plugin validates caller `subject_tenant_id` against row tenant scope
+- **THEN** plugin validates each row `tenant_id` against caller effective tenant scope
 - **AND** plugin excludes/rejects out-of-tenant groups before generating AuthZ constraints
 - **AND** Resource Group still returns no policy decision fields
 
@@ -633,10 +634,10 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - [ ] Query profile (`max_depth`, `max_width`) behavior matches specified reduced-constraint rules, including disabled-limit (unlimited) mode.
 - [ ] Resource Group remains AuthZ-agnostic while exposing integration read contracts.
 - [ ] No changes are required in existing AuthN/AuthZ resolver contracts.
-- [ ] Tenant-scoped constraints for AuthZ usage are enforced and cross-tenant links are rejected.
+- [ ] Tenant-scoped constraints for AuthZ usage are enforced and tenant-incompatible links are rejected.
 - [ ] Integration read rows include `tenant_id` in `ownership-graph` profile for deterministic caller-side tenant validation in AuthZ flows.
-- [ ] `resource_group_membership` stores `tenant_id`, and AuthZ query path always uses tenant-scoped reads/SQL predicates.
-- [ ] Platform-admin provisioning via Resource Group API may run without caller tenant scoping, while same-tenant link invariants remain enforced.
+- [ ] `resource_group_membership` stores `tenant_id`, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
+- [ ] Platform-admin provisioning via Resource Group API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
 
 ## 10. Dependencies
 
