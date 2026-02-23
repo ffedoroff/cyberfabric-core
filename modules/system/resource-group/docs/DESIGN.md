@@ -605,13 +605,18 @@ sequenceDiagram
     participant DB as Persistence
 
     CL->>ES: create_entity(type, parent)
-    ES->>ES: validate type + parent type compatibility
-    ES->>HS: validate cycle/depth/width constraints
-    ES->>DB: begin tx
+    ES->>DB: begin tx (SERIALIZABLE)
+    ES->>HS: load current hierarchy snapshot in tx
+    ES->>ES: validate type + parent compatibility in tx
+    ES->>HS: validate cycle/depth/width in tx
     ES->>DB: insert entity row
     HS->>DB: insert closure self row
     HS->>DB: insert ancestor-descendant rows
     DB-->>ES: commit
+    alt serialization conflict
+        ES->>DB: rollback
+        ES->>ES: retry create_entity (bounded retry policy)
+    end
     ES-->>CL: entity created
 ```
 
@@ -627,14 +632,25 @@ sequenceDiagram
     participant DB as Persistence
 
     CL->>ES: move_entity(node, new_parent)
-    ES->>HS: validate not-in-subtree (cycle check)
-    ES->>HS: validate type/depth/width
-    ES->>DB: begin tx
+    ES->>DB: begin tx (SERIALIZABLE)
+    ES->>HS: load current hierarchy snapshot in tx
+    ES->>HS: validate not-in-subtree (cycle check) in tx
+    ES->>HS: validate type/depth/width in tx
     HS->>DB: delete affected closure paths
     HS->>DB: insert rebuilt closure paths
     DB-->>ES: commit
+    alt serialization conflict
+        ES->>DB: rollback
+        ES->>ES: retry move_entity (bounded retry policy)
+    end
     ES-->>CL: success
 ```
+
+Write-concurrency rule for hierarchy mutations (`create/move/delete`):
+
+- authoritative invariant checks MUST run inside the same write transaction that applies closure/entity mutations
+- write transactions SHOULD use `SERIALIZABLE` isolation for deterministic safety under concurrent moves/creates
+- serialization conflicts are handled by bounded retry with deterministic error mapping when retries are exhausted
 
 #### AuthZ + RG + SQL Responsibility Split
 
@@ -672,7 +688,6 @@ This is the fixed boundary:
 | `code_ci` | TEXT | normalized lowercase code (unique) |
 | `parents` | JSON/TEXT[] | allowed parent type codes |
 | `owner_id` | UUID | owner identifier |
-| `owner_type` | TEXT | owner kind |
 | `created_at` | TIMESTAMP | creation time |
 | `updated_at` | TIMESTAMP | update time |
 
