@@ -20,9 +20,8 @@ Deployments can either:
 Source-of-truth can be deployment-specific:
 
 - `managed` mode: Resource Group stores canonical type/entity/membership state.
-- `projection` mode: canonical state can stay external (vendor service), while Resource Group serves synchronized graph/membership projections.
 
-For AuthZ-facing deployments, `ownership-graph` is the required profile. Provider/source-of-truth strategy remains deployment-specific (built-in managed/projection or vendor-specific provider).
+For AuthZ-facing deployments, `ownership-graph` is the required profile. Provider strategy remains deployment-specific (built-in managed provider or vendor-specific provider).
 
 Resource Group is data infrastructure only. It does not evaluate authorization policies and does not build SQL filters.
 
@@ -163,7 +162,6 @@ A type includes:
 - `code` (unique, case-insensitive)
 - `parents` (allowed parent type codes)
 - `owner_id`
-- `owner_type`
 
 #### Validate Type Code Format
 
@@ -354,7 +352,7 @@ The same public read contract must remain stable across provider strategies:
 In `ownership-graph` profile, integration read responses **MUST** include `tenant_id` for each returned row:
 
 - hierarchy reads (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) return group row + tenant scope
-- membership reads (`resolve_memberships(ctx, ..)`) return membership row + tenant scope from persisted membership projection
+- membership reads (`resolve_memberships(ctx, ..)`) return membership row + tenant scope
 - integration read methods accept caller `SecurityContext`; Resource Group passes it through to selected provider path (for plugin path, pass-through is unchanged)
 - in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory for tenant-scoped reads and compiled SQL predicates
 
