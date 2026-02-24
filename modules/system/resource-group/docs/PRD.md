@@ -274,12 +274,12 @@ The system **MUST** provide efficient hierarchy queries using closure table.
 
 Closure table **MUST** keep:
 
-- `ancestor_id` (parent on path)
-- `descendant_id` (child on path)
+- `ancestor_id` (any ancestor on the path to `descendant_id`, at arbitrary depth)
+- `descendant_id` (any descendant on the path from `ancestor_id`, at arbitrary depth)
 - `depth` (0 for self)
 
-Note: `ancestor_id/descendant_id` correspond to `parent_id/child_id` semantics in requirements.
-For authz-compatibility projections, `ancestor_id/descendant_id` are exported directly; `depth` is available as additional metadata.
+Note: `parent_id/child_id` correspond specifically to the `depth == 1` case.
+For authz-compatibility projections, `ancestor_id/descendant_id` are exported directly and `depth` is included as metadata so consumers can derive direct parent/child relationships (`depth == 1`) when needed.
 
 #### Ancestor and Descendant Queries
 
