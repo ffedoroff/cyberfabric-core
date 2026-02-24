@@ -709,6 +709,9 @@ Constraints:
 | `created_at` | TIMESTAMP | creation time |
 | `updated_at` | TIMESTAMP | update time |
 
+Note:
+- In `resource_group_entity`, API field `type_code` is accepted in any case and normalized before persistence; the system stores this normalized value in `type_code_ci` for case-insensitive lookups and uniqueness checks.
+
 Indexes:
 
 - `(parent_id)`
