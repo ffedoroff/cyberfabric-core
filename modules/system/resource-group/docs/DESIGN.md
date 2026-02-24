@@ -20,14 +20,9 @@ Resource Group is intentionally policy-agnostic:
 - no decision semantics
 - no SQL filter generation
 
-Deployment role is configurable:
-
-- `managed` role: Resource Group is canonical store.
-- `projection` role: Resource Group serves synchronized projections from external canonical source.
-
 Cyber Fabric ships this module as the built-in Resource Group provider. Deployments may also use a vendor-specific provider through the same read contracts (resolver/plugin path), similar to Tenant Resolver extensibility.
 
-For AuthZ-facing deployments aligned with current platform architecture, `ownership-graph` is the required profile; provider/source-of-truth selection (built-in managed/projection or vendor-specific backend) is deployment-specific.
+For AuthZ-facing deployments aligned with current platform architecture, `ownership-graph` is the required profile; provider selection (built-in provider or vendor-specific backend) is deployment-specific.
 
 ### 1.2 Architecture Drivers
 
@@ -252,7 +247,7 @@ Responsibilities:
 - transactional persistence
 - index-aware query execution
 - consistent canonical + closure updates
-- support managed/projection role persistence strategy
+- support canonical persistence strategy
 
 Boundaries:
 
@@ -355,7 +350,7 @@ Platform-admin provisioning exception:
 | `resolve_ancestors(ctx, node_id)` | tenant-scoped ancestor rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope |
 | `resolve_memberships(ctx, group_ids)` | tenant-scoped membership rows with `group_id`, `resource_id`, and `tenant_id` for each row; rows may include multiple tenant scopes within effective tenant hierarchy scope |
 
-Target Rust trait signature (SDK contract, tenant-resolver style pass-through):
+Target Rust trait signature (SDK contract, tenant-resolver-style pass-through):
 
 ```rust
 use async_trait::async_trait;

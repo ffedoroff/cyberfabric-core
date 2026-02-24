@@ -17,11 +17,7 @@ Deployments can either:
 - use this built-in provider directly, or
 - use a vendor-specific Resource Group provider behind the same read contracts (resolver/plugin pattern), analogous to Tenant Resolver extensibility.
 
-Source-of-truth can be deployment-specific:
-
-- `managed` mode: Resource Group stores canonical type/entity/membership state.
-
-For AuthZ-facing deployments, `ownership-graph` is the required profile. Provider strategy remains deployment-specific (built-in managed provider or vendor-specific provider).
+For AuthZ-facing deployments, `ownership-graph` is the required profile. Provider strategy remains deployment-specific (built-in provider or vendor-specific provider).
 
 Resource Group is data infrastructure only. It does not evaluate authorization policies and does not build SQL filters.
 
