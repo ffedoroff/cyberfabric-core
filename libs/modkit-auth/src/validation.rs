@@ -1,4 +1,5 @@
 use crate::claims_error::ClaimsError;
+use crate::standard_claims::StandardClaim;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -39,7 +40,13 @@ pub fn validate_claims(
     raw: &serde_json::Value,
     config: &ValidationConfig,
 ) -> Result<(), ClaimsError> {
-    use crate::standard_claims::StandardClaim;
+    // 0. Reject non-object payloads early
+    if !raw.is_object() {
+        return Err(ClaimsError::InvalidClaimFormat {
+            field: "claims".to_owned(),
+            reason: "must be a JSON object".to_owned(),
+        });
+    }
 
     // 1. Validate issuer
     if !config.allowed_issuers.is_empty() {
@@ -204,7 +211,7 @@ pub fn extract_audiences(value: &serde_json::Value) -> Result<Vec<String>, Claim
             let mut out = Vec::with_capacity(arr.len());
             for v in arr {
                 let s = v.as_str().ok_or_else(|| ClaimsError::InvalidClaimFormat {
-                    field: "aud".to_owned(),
+                    field: StandardClaim::AUD.to_owned(),
                     reason: "must be a string or array of strings".to_owned(),
                 })?;
                 out.push(s.to_owned());
@@ -212,7 +219,7 @@ pub fn extract_audiences(value: &serde_json::Value) -> Result<Vec<String>, Claim
             Ok(out)
         }
         _ => Err(ClaimsError::InvalidClaimFormat {
-            field: "aud".to_owned(),
+            field: StandardClaim::AUD.to_owned(),
             reason: "must be a string or array of strings".to_owned(),
         }),
     }
@@ -223,6 +230,11 @@ pub fn extract_audiences(value: &serde_json::Value) -> Result<Vec<String>, Claim
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Unix timestamp for 9999-12-31T23:59:59Z — max representable date in `time` crate default range.
+    const MAX_UNIX_TIMESTAMP: i64 = 253_402_300_799;
+    /// Unix timestamp for -9999-01-01T00:00:00Z — min representable date in `time` crate default range.
+    const MIN_UNIX_TIMESTAMP: i64 = -377_705_116_800;
 
     #[test]
     fn test_valid_claims_pass() {
@@ -266,7 +278,7 @@ mod tests {
         };
         let err = validate_claims(&claims, &config).unwrap_err();
         match err {
-            ClaimsError::MissingClaim(claim) => assert_eq!(claim, "iss"),
+            ClaimsError::MissingClaim(claim) => assert_eq!(claim, StandardClaim::ISS),
             other => panic!("expected MissingClaim(iss), got {other:?}"),
         }
     }
@@ -297,7 +309,7 @@ mod tests {
         };
         let err = validate_claims(&claims, &config).unwrap_err();
         match err {
-            ClaimsError::MissingClaim(claim) => assert_eq!(claim, "aud"),
+            ClaimsError::MissingClaim(claim) => assert_eq!(claim, StandardClaim::AUD),
             other => panic!("expected MissingClaim(aud), got {other:?}"),
         }
     }
@@ -390,7 +402,7 @@ mod tests {
         let err = validate_claims(&claims, &config).unwrap_err();
         match err {
             ClaimsError::InvalidClaimFormat { field, reason } => {
-                assert_eq!(field, "aud");
+                assert_eq!(field, StandardClaim::AUD);
                 assert_eq!(reason, "must be a string or array of strings");
             }
             other => panic!("expected InvalidClaimFormat for aud, got {other:?}"),
@@ -407,7 +419,7 @@ mod tests {
         let err = validate_claims(&claims, &config).unwrap_err();
         match err {
             ClaimsError::InvalidClaimFormat { field, reason } => {
-                assert_eq!(field, "aud");
+                assert_eq!(field, StandardClaim::AUD);
                 assert_eq!(reason, "must be a string or array of strings");
             }
             other => panic!("expected InvalidClaimFormat for aud, got {other:?}"),
@@ -430,16 +442,16 @@ mod tests {
 
     #[test]
     fn test_exp_overflow_returns_error() {
-        // i64::MAX is a valid unix timestamp parse but adding leeway overflows
-        let claims = json!({ "exp": i64::MAX });
+        let claims = json!({ "exp": MAX_UNIX_TIMESTAMP });
         let config = ValidationConfig {
             leeway_seconds: 60,
             ..Default::default()
         };
         let err = validate_claims(&claims, &config).unwrap_err();
         match err {
-            ClaimsError::InvalidClaimFormat { field, .. } => {
-                assert_eq!(field, "exp");
+            ClaimsError::InvalidClaimFormat { field, reason } => {
+                assert_eq!(field, StandardClaim::EXP);
+                assert_eq!(reason, "timestamp with leeway is out of range");
             }
             other => panic!("expected InvalidClaimFormat for exp overflow, got {other:?}"),
         }
@@ -447,18 +459,39 @@ mod tests {
 
     #[test]
     fn test_nbf_overflow_returns_error() {
-        // i64::MIN is a valid unix timestamp parse but subtracting leeway overflows
-        let claims = json!({ "nbf": i64::MIN });
+        let claims = json!({ "nbf": MIN_UNIX_TIMESTAMP });
         let config = ValidationConfig {
             leeway_seconds: 60,
             ..Default::default()
         };
         let err = validate_claims(&claims, &config).unwrap_err();
         match err {
-            ClaimsError::InvalidClaimFormat { field, .. } => {
-                assert_eq!(field, "nbf");
+            ClaimsError::InvalidClaimFormat { field, reason } => {
+                assert_eq!(field, StandardClaim::NBF);
+                assert_eq!(reason, "timestamp with leeway is out of range");
             }
             other => panic!("expected InvalidClaimFormat for nbf overflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_non_object_payload_rejected() {
+        let config = ValidationConfig::default();
+        for value in [
+            json!("string"),
+            json!(42),
+            json!(true),
+            json!(null),
+            json!([1, 2, 3]),
+        ] {
+            let err = validate_claims(&value, &config).unwrap_err();
+            match err {
+                ClaimsError::InvalidClaimFormat { field, reason } => {
+                    assert_eq!(field, "claims");
+                    assert_eq!(reason, "must be a JSON object");
+                }
+                other => panic!("expected InvalidClaimFormat for non-object, got {other:?}"),
+            }
         }
     }
 

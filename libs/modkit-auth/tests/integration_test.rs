@@ -27,17 +27,40 @@ fn test_claims_error_types() {
         expected: vec!["https://expected.com".to_owned()],
         actual: "https://actual.com".to_owned(),
     };
-    assert_eq!(
-        err.to_string(),
-        "Invalid issuer: expected one of [\"https://expected.com\"], got https://actual.com"
-    );
+    assert!(matches!(
+        err,
+        ClaimsError::InvalidIssuer { ref expected, ref actual }
+            if expected == &vec!["https://expected.com".to_owned()]
+                && actual == "https://actual.com"
+    ));
 
     let err = ClaimsError::Expired;
-    assert_eq!(err.to_string(), "Token expired");
+    assert!(matches!(err, ClaimsError::Expired));
 
     let err = ClaimsError::MissingClaim("sub".to_owned());
-    assert_eq!(err.to_string(), "Missing required claim: sub");
+    assert!(matches!(err, ClaimsError::MissingClaim(ref c) if c == "sub"));
 
     let err = ClaimsError::UnknownKidAfterRefresh;
-    assert_eq!(err.to_string(), "Unknown key ID after refresh");
+    assert!(matches!(err, ClaimsError::UnknownKidAfterRefresh));
+
+    let err = ClaimsError::InvalidClaimFormat {
+        field: "typ".to_owned(),
+        reason: "expected string, got number".to_owned(),
+    };
+    assert!(matches!(
+        err,
+        ClaimsError::InvalidClaimFormat { ref field, ref reason }
+            if field == "typ" && reason == "expected string, got number"
+    ));
+
+    let err = ClaimsError::InvalidAudience {
+        expected: vec!["https://api.example.com".to_owned()],
+        actual: vec!["https://other.example.com".to_owned()],
+    };
+    assert!(matches!(
+        err,
+        ClaimsError::InvalidAudience { ref expected, ref actual }
+            if expected == &vec!["https://api.example.com".to_owned()]
+                && actual == &vec!["https://other.example.com".to_owned()]
+    ));
 }

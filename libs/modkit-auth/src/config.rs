@@ -1,3 +1,4 @@
+use crate::validation::ValidationConfig;
 use serde::{Deserialize, Serialize};
 
 /// Main authentication configuration
@@ -31,6 +32,16 @@ impl Default for AuthConfig {
             issuers: Vec::new(),
             audiences: Vec::new(),
             jwks: None,
+        }
+    }
+}
+
+impl From<&AuthConfig> for ValidationConfig {
+    fn from(config: &AuthConfig) -> Self {
+        Self {
+            allowed_issuers: config.issuers.clone(),
+            allowed_audiences: config.audiences.clone(),
+            leeway_seconds: config.leeway_seconds,
         }
     }
 }
@@ -112,6 +123,20 @@ mod tests {
             config.refresh_interval_seconds
         );
         assert_eq!(deserialized.max_backoff_seconds, config.max_backoff_seconds);
+    }
+
+    #[test]
+    fn test_auth_config_to_validation_config() {
+        let auth_config = AuthConfig {
+            leeway_seconds: 30,
+            issuers: vec!["https://auth.example.com".to_owned()],
+            audiences: vec!["api".to_owned()],
+            jwks: None,
+        };
+        let validation_config = ValidationConfig::from(&auth_config);
+        assert_eq!(validation_config.allowed_issuers, auth_config.issuers);
+        assert_eq!(validation_config.allowed_audiences, auth_config.audiences);
+        assert_eq!(validation_config.leeway_seconds, auth_config.leeway_seconds);
     }
 
     #[test]
