@@ -455,6 +455,8 @@ def cmd_e2e(args):
         env["E2E_DOCKER_MODE"] = "1"
 
     pytest_cmd = [PYTHON, "-m", "pytest", "testing/e2e", "-vv"]
+    if args.smoke:
+        pytest_cmd.extend(["-m", "smoke"])
     if args.pytest_args:
         # argparse.REMAINDER includes the '--' separator if used
         # We need to strip it so pytest doesn't treat following flags as files
@@ -817,6 +819,11 @@ def build_parser():
         "--features",
         default="users-info-example",
         help="Cargo features to enable for Docker build (default: users-info-example)",
+    )
+    p_e2e.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run only tests marked with @pytest.mark.smoke",
     )
     p_e2e.add_argument(
         "pytest_args",
