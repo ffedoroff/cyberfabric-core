@@ -235,13 +235,13 @@ paths:
                     tenant_id: 11111111-1111-1111-1111-111111111111
                     resources:
                       - created: today
-                        resource_id: 123
+                        resource_id: 11002222-2222-2222-2222-222222222222
                         resource_tenant_id: 11111111-1111-1111-1111-111111111111
                         resource_type: user
                       - created: tomorrow
-                        resource_id: 123
+                        resource_id: 678
                         resource_tenant_id: 11111111-1111-1111-1111-111111111111
-                        resource_type: user
+                        resource_type: car
                 page_info:
                   limit: 50
                   next_cursor: null
@@ -609,15 +609,6 @@ components:
             type: string
           example: [tenant]
 
-    UpdateTypeRequest:
-      type: object
-      properties:
-        ancestors:
-          type: array
-          items:
-            type: string
-          example: [tenant]
-
     Group:
       type: object
       required: [id, group_type, name, tenant_id]
@@ -696,66 +687,6 @@ components:
         external_id:
           type: [string, 'null']
           example: D2
-
-    UpdateGroupRequest:
-      type: object
-      properties:
-        name:
-          type: string
-          example: D2
-        parent_id:
-          type: [string, 'null']
-          format: uuid
-          example: 11111111-1111-1111-1111-111111111111
-        external_id:
-          type: [string, 'null']
-          example: D2
-
-    HierarchyItem:
-      type: object
-      required: [group, depth]
-      properties:
-        group:
-          $ref: '#/components/schemas/Group'
-        depth:
-          type: integer
-          example: 1
-
-    HierarchyPage:
-      type: object
-      required: [items, page_info]
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/HierarchyItem'
-        page_info:
-          $ref: '#/components/schemas/PageInfo'
-
-    BatchHierarchyItem:
-      type: object
-      required: [source_group_id, group, depth]
-      properties:
-        source_group_id:
-          type: string
-          format: uuid
-          example: 11111111-1111-1111-1111-111111111111
-        group:
-          $ref: '#/components/schemas/Group'
-        depth:
-          type: integer
-          example: 1
-
-    BatchHierarchyPage:
-      type: object
-      required: [items, page_info]
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/BatchHierarchyItem'
-        page_info:
-          $ref: '#/components/schemas/PageInfo'
 
     Membership:
       type: object
