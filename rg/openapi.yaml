@@ -44,8 +44,8 @@ tags:
     description: Resource groups
   - name: hierarchy
     description: Ancestors and descendants queries
-  - name: references
-    description: Resource references bound to groups
+  - name: memberships
+    description: Resource memberships bound to groups
 
 paths:
   /api/resource-group/v1/types:
@@ -184,6 +184,9 @@ paths:
           - `name` (eq, ne, in, contains, startswith, endswith)
           - `parent_id` (eq, ne, in)
           - `tenant_id` (eq, ne, in)
+          - `resource_id` (eq, ne, in, contains, startswith, endswith)
+          - `resource_type` (eq, ne, in)
+          - `resource_tenant_id` (eq, ne, in)
         - `$select`:
           - `created`
           - `external_id`
@@ -465,43 +468,45 @@ paths:
                   next_cursor: null
                   prev_cursor: null
 
-  /api/resource-group/v1/groups/{id}/references:
-    parameters:
-      - $ref: '#/components/parameters/GroupId'
+  /api/resource-group/v1/resources:
     get:
-      operationId: listGroupReferences
-      tags: [references]
-      summary: List references bound to a group
+      operationId: listGroupMemberships
+      tags: [memberships]
+      summary: List memberships bound to groups
       description: |
-        Returns paginated references bound to a group using cursor-based pagination with OData query support. Use `$orderby`, `$filter`, and `$select` for advanced queries.
+        Returns paginated memberships bound to groups using cursor-based pagination with OData query support. Use `$orderby`, `$filter`, and `$select` for advanced queries.
 
         OData support:
         - `$orderby`:
+          - `created` (asc, desc)
           - `group_id` (asc, desc)
           - `resource_id` (asc, desc)
           - `resource_type` (asc, desc)
           - `tenant_id` (asc, desc)
         - `$filter`:
+          - `created` (eq, ne, gt, ge, lt, le)
           - `group_id` (eq, ne, in)
           - `resource_id` (eq, ne, in, contains, startswith, endswith)
           - `resource_type` (eq, ne, in)
           - `tenant_id` (eq, ne, in)
         - `$select`:
+          - `created`
           - `group_id`
           - `resource_id`
           - `resource_type`
           - `tenant_id`
       x-odata-orderby:
-        supported_fields: [group_id, resource_type, resource_id, tenant_id]
+        supported_fields: [created, group_id, resource_id, resource_type, tenant_id]
         supported_directions: [asc, desc]
       x-odata-filter:
         supported_fields:
+          created: [eq, ne, gt, ge, lt, le]
           group_id: [eq, ne, in]
-          resource_type: [eq, ne, in]
           resource_id: [eq, ne, in, contains, startswith, endswith]
+          resource_type: [eq, ne, in]
           tenant_id: [eq, ne, in]
       x-odata-select:
-        supported_fields: [group_id, resource_type, resource_id, tenant_id]
+        supported_fields: [created, group_id, resource_id, resource_type, tenant_id]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataOrderBy'
@@ -510,14 +515,15 @@ paths:
         - $ref: '#/components/parameters/PaginationLimit'
       responses:
         '200':
-          description: Paginated references
+          description: Paginated memberships
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ReferencePage'
+                $ref: '#/components/schemas/MembershipPage'
               example:
                 items:
-                  - group_id: 33333333-3333-3333-3333-333333333333
+                  - created: '2026-02-25T12:00:00.000Z'
+                    group_id: 33333333-3333-3333-3333-333333333333
                     resource_id: R4
                     resource_type: resource
                     tenant_id: 11111111-1111-1111-1111-111111111111
@@ -525,49 +531,54 @@ paths:
                   limit: 50
                   next_cursor: null
                   prev_cursor: null
+
+  /api/resource-group/v1/groups/{id}/resources:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
     post:
-      operationId: addGroupReference
-      tags: [references]
-      summary: Attach reference to a group
+      operationId: addGroupMembership
+      tags: [memberships]
+      summary: Attach membership to a group
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateReferenceRequest'
+              $ref: '#/components/schemas/CreateMembershipRequest'
             example:
               resource_id: R4
               resource_type: resource
               tenant_id: 11111111-1111-1111-1111-111111111111
       responses:
         '201':
-          description: Reference attached
+          description: Membership attached
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Reference'
+                $ref: '#/components/schemas/Membership'
               example:
+                created: '2026-02-25T12:00:00.000Z'
                 group_id: 33333333-3333-3333-3333-333333333333
                 resource_id: R4
                 resource_type: resource
                 tenant_id: 11111111-1111-1111-1111-111111111111
     delete:
-      operationId: deleteGroupReference
-      tags: [references]
-      summary: Detach reference from a group
+      operationId: deleteGroupMembership
+      tags: [memberships]
+      summary: Detach membership from a group
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DeleteReferenceRequest'
+              $ref: '#/components/schemas/DeleteMembershipRequest'
             example:
               resource_id: R4
               resource_type: resource
               tenant_id: 11111111-1111-1111-1111-111111111111
       responses:
         '204':
-          description: Reference detached
+          description: Membership detached
 
 components:
   securitySchemes:
@@ -898,38 +909,43 @@ components:
         page_info:
           $ref: '#/components/schemas/PageInfo'
 
-    Reference:
+    Membership:
       type: object
-      required: [group_id, resource_type, resource_id, tenant_id]
+      required: [created, group_id, resource_id, resource_type, tenant_id]
       properties:
+        created:
+          type: string
+          format: date-time
+          example: '2026-02-25T12:00:00.000Z'
         group_id:
           type: string
           format: uuid
           example: 33333333-3333-3333-3333-333333333333
-        resource_type:
-          type: string
-          example: resource
         resource_id:
           type: string
           example: R4
+        resource_type:
+          type: string
+          example: resource
         tenant_id:
           type: string
           format: uuid
           example: 11111111-1111-1111-1111-111111111111
 
-    ReferencePage:
+    MembershipPage:
       type: object
       required: [items, page_info]
       properties:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/Reference'
+            $ref: '#/components/schemas/Membership'
         page_info:
           $ref: '#/components/schemas/PageInfo'
       example:
         items:
-          - group_id: 33333333-3333-3333-3333-333333333333
+          - created: '2026-02-25T12:00:00.000Z'
+            group_id: 33333333-3333-3333-3333-333333333333
             resource_id: R4
             resource_type: resource
             tenant_id: 11111111-1111-1111-1111-111111111111
@@ -938,7 +954,7 @@ components:
           next_cursor: null
           prev_cursor: null
 
-    CreateReferenceRequest:
+    CreateMembershipRequest:
       type: object
       required: [resource_id, resource_type, tenant_id]
       properties:
@@ -953,7 +969,7 @@ components:
           format: uuid
           example: 11111111-1111-1111-1111-111111111111
 
-    DeleteReferenceRequest:
+    DeleteMembershipRequest:
       type: object
       required: [resource_id, resource_type, tenant_id]
       properties:
