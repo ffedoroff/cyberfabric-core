@@ -5,8 +5,20 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import URLError, HTTPError
+
+# Add scripts/ to sys.path so lib.platform is importable
+sys.path.insert(0, os.path.dirname(__file__))
+
+from lib.platform import (
+    find_binary,
+    kill_port_holder,
+    popen_new_group,
+    read_e2e_features,
+    stop_process_tree,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = sys.executable or "python"
@@ -295,23 +307,8 @@ def check_pytest():
 
 
 def kill_existing_server(port):
-    """Kill any existing server process on the specified port"""
-    try:
-        # Find process using the port
-        if sys.platform == "darwin":  # macOS
-            result = run_cmd_allow_fail(["lsof", "-ti", f":{port}"])
-        else:  # Linux and others
-            result = run_cmd_allow_fail(["fuser", "-k", f"{port}/tcp"])
-
-        if result.returncode == 0 and result.stdout:
-            pids = result.stdout.strip().split()
-            for pid in pids:
-                print(f"Killing existing server process {pid} on port {port}")
-                run_cmd_allow_fail(["kill", "-9", pid])
-                time.sleep(1)  # Give it time to die
-    except Exception:
-        # If we can't find or kill the process, continue anyway
-        pass
+    """Kill any existing server process on the specified port."""
+    kill_port_holder(int(port))
 
 
 def cmd_e2e(args):
@@ -398,7 +395,9 @@ def cmd_e2e(args):
         run_cmd(["make", "build"])
 
         # Use the release binary produced by build
-        release_bin = os.path.join(PROJECT_ROOT, "target", "release", "hyperspot-server")
+        release_bin = str(find_binary(
+            Path(PROJECT_ROOT) / "target", "release", "hyperspot-server"
+        ))
 
         if not os.path.isfile(release_bin):
             print(f"\nERROR: Release binary not found at: {release_bin}")
@@ -427,7 +426,7 @@ def cmd_e2e(args):
             server_env = os.environ.copy()
             server_env["RUST_LOG"] = "types_registry=debug,info"
             try:
-                server_process = subprocess.Popen(
+                server_process = popen_new_group(
                     server_cmd,
                     stdout=out_file,
                     stderr=err_file,
@@ -499,12 +498,7 @@ def cmd_e2e(args):
     # Stop server if we started it
     if server_process is not None:
         step("Stopping hyperspot-server")
-        server_process.terminate()
-        try:
-            server_process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            server_process.kill()
-            server_process.wait()
+        stop_process_tree(server_process, timeout=10)
 
     print("")
     if exit_code == 0:
@@ -856,10 +850,10 @@ def build_parser():
     p_e2e_docker = subparsers.add_parser("e2e-docker", help="Run end-to-end tests in Docker mode")
     p_e2e_docker.add_argument(
         "--features",
-        default="users-info-example,static-tenants,static-authz",
+        default=read_e2e_features(Path(PROJECT_ROOT)),
         help=(
             "Cargo features to enable for Docker build "
-            "(default: users-info-example,static-tenants,static-authz)"
+            "(default: from config/e2e-features.txt)"
         ),
     )
     p_e2e_docker.add_argument(

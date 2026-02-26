@@ -513,10 +513,14 @@ CORE_PREREQS = [
     PrereqCargoLlvmCov,
 ]
 
-# E2E testing prerequisites
+# E2E local testing prerequisites (no Docker required)
 E2E_LOCAL_PREREQS = [
-    PrereqDocker,
     PrereqHSSrvMock,
+] + CORE_PREREQS
+
+# E2E docker testing prerequisites
+E2E_DOCKER_PREREQS = [
+    PrereqDocker,
 ] + CORE_PREREQS
 
 # Full testing prerequisites
@@ -592,7 +596,8 @@ def check_environment_ready(env_type="full"):
     prerequisites for the given command.
 
     Args:
-        env_type: Type of environment to check ('core', 'e2e', 'full')
+        env_type: Type of environment to check
+            ('core', 'e2e-local', 'e2e-docker', 'full')
 
     Returns:
         bool: True if environment is ready, False otherwise
@@ -601,6 +606,8 @@ def check_environment_ready(env_type="full"):
         prereq_list = CORE_PREREQS
     elif env_type == "e2e-local":
         prereq_list = E2E_LOCAL_PREREQS
+    elif env_type == "e2e-docker":
+        prereq_list = E2E_DOCKER_PREREQS
     else:
         prereq_list = ALL_PREREQS
 

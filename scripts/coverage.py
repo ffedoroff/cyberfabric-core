@@ -6,11 +6,11 @@ Supports unit tests, e2e tests, and combined coverage.
 import argparse
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
 import time
+import shlex
 from pathlib import Path
 from typing import Optional
 from urllib.request import urlopen
@@ -20,11 +20,26 @@ import yaml
 
 # Import prereq module for environment validation
 from lib.prereq import check_environment_ready
+from lib.platform import (
+    find_binary,
+    popen_new_group,
+    read_e2e_features,
+    stop_process_tree,
+)
 
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 COVERAGE_DIR = PROJECT_ROOT / "coverage"
 PYTHON = sys.executable or "python3"
 COVERAGE_THRESHOLD = 70
+
+E2E_SERVER_FEATURES = read_e2e_features(PROJECT_ROOT)
+
+# Local coverage should not require Docker-backed DB containers.
+# These tests are covered in dedicated DB/integration pipelines.
+LOCAL_COVERAGE_SKIPPED_TESTS = [
+    "generic_postgres",
+    "generic_mysql",
+]
 
 FILE_PATH_COL_WIDTH = 70
 COVERAGE_CELL_COL_WIDTH = 18
@@ -521,11 +536,11 @@ def collect_unit_coverage(
         skip_build: If True, skip clean and test execution
 
     Returns:
-        bool: True if tests failed, False otherwise
+        int: process exit code from the test run (0 means success)
     """
     if skip_build:
         print("Skipping test execution, using existing coverage data")
-        return False
+        return 0
 
     step("Collecting unit test coverage")
 
@@ -555,17 +570,19 @@ def collect_unit_coverage(
     # provides good coverage metrics for Rust code
     cmd.extend(["--all-features", "--no-report"])
 
+    # Keep local coverage independent from Docker-backed integration tests.
+    cmd.append("--")
+    for test_name in LOCAL_COVERAGE_SKIPPED_TESTS:
+        cmd.extend(["--skip", test_name])
+
     result = run_cmd_allow_fail(cmd, env=env, cwd=PROJECT_ROOT)
 
     if result.returncode != 0:
-        print(
-            "WARNING: Some unit tests failed, "
-            "but coverage was still collected"
-        )
-        return True
-    else:
-        print("OK. Unit test coverage collected")
-        return False
+        print("ERROR: Unit tests failed; aborting coverage")
+        return result.returncode
+
+    print("OK. Unit test coverage collected")
+    return 0
 
 
 def parse_bind_addr_port(config_file):
@@ -615,6 +632,53 @@ def check_port_available(port):
         sys.exit(1)
 
 
+def get_llvm_cov_env():
+    result = run_cmd_capture(
+        ["cargo", "llvm-cov", "show-env", "--sh"],
+        cwd=PROJECT_ROOT,
+    )
+    env = os.environ.copy()
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("export "):
+            continue
+        try:
+            parts = shlex.split(line, posix=True)
+        except ValueError:
+            continue
+        if len(parts) < 2 or parts[0] != "export":
+            continue
+        try:
+            k, v = parts[1].split("=", 1)
+        except ValueError:
+            continue
+        if "\n" in v or "\r" in v:
+            raise ValueError(
+                f"Unexpected newline in cargo llvm-cov env var {k}"
+            )
+        env[k] = v
+    return env
+
+
+def build_instrumented_server(env, target_dir: Path):
+    step(
+        "Building hyperspot-server with coverage instrumentation "
+        f"(features: {E2E_SERVER_FEATURES})"
+    )
+    run_cmd(
+        [
+            "cargo",
+            "build",
+            "--bin",
+            "hyperspot-server",
+            "--features",
+            E2E_SERVER_FEATURES,
+        ],
+        env=env,
+        cwd=PROJECT_ROOT,
+    )
+
+
 def start_instrumented_server(config_file, output_dir, port=None):
     """Start the hyperspot-server with coverage instrumentation.
 
@@ -642,21 +706,27 @@ def start_instrumented_server(config_file, output_dir, port=None):
     )
     print(f"Server logs will be written to: {log_file}")
 
-    # Set up environment for coverage
-    env2 = os.environ.copy()
-    env2["LLVM_PROFILE_FILE"] = (
-        "target/llvm-cov-target/hyperspot-%p-%m.profraw"
-    )
+    env2 = get_llvm_cov_env()
 
-    # Build server command
+    # `cargo llvm-cov report` scans <target>/llvm-cov-target/ for *.profraw.
+    # We must build the server there AND write profiles there so report finds them.
+    target_dir = PROJECT_ROOT / "target" / "llvm-cov-target"
+    env2["CARGO_TARGET_DIR"] = str(target_dir)
+    env2["LLVM_PROFILE_FILE"] = str(target_dir / "hyperspot-%p-%m.profraw")
+
+    build_instrumented_server(env2, target_dir)
+
+    server_bin = find_binary(target_dir, "debug", "hyperspot-server")
+    if not server_bin.exists():
+        print(f"ERROR: Instrumented server binary not found at: {server_bin}")
+        sys.exit(1)
+
+    # Run instrumented binary directly (avoid wrapping it in `cargo llvm-cov run`).
     cmd = [
-        "cargo", "llvm-cov", "run",
-        "--bin", "hyperspot-server",
-        "--features", "users-info-example",
-        "--no-report",
-        "--",
-        "--config", str(PROJECT_ROOT / config_file),
-        "run"
+        str(server_bin),
+        "--config",
+        str(PROJECT_ROOT / config_file),
+        "run",
     ]
 
     # Log the exact command for debugging
@@ -666,13 +736,12 @@ def start_instrumented_server(config_file, output_dir, port=None):
     )
 
     # Start server
-    server_process = subprocess.Popen(
+    server_process = popen_new_group(
         cmd,
         env=env2,
         cwd=PROJECT_ROOT,
         stdout=open(log_file, "w"),
         stderr=subprocess.STDOUT,
-        start_new_session=True  # Create new process group for cleanup
     )
 
     return server_process, log_file, port
@@ -723,24 +792,7 @@ def stop_server(server_process, port, log_file):
         log_file: Path to server log file
     """
     step("Stopping server")
-    try:
-        # Try graceful shutdown first (SIGINT to process group)
-        os.killpg(os.getpgid(server_process.pid), signal.SIGINT)
-    except Exception:
-        try:
-            server_process.terminate()
-        except Exception:
-            pass
-
-    try:
-        server_process.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        # Force kill entire process group
-        try:
-            os.killpg(os.getpgid(server_process.pid), signal.SIGKILL)
-        except Exception:
-            server_process.kill()
-        server_process.wait()
+    stop_process_tree(server_process, timeout=15)
 
     # Verify port is freed
     time.sleep(1)
@@ -771,10 +823,13 @@ def collect_e2e_local_coverage(
         config_file: Config file for server
         test_filter: Optional test path filter (e.g., 'modules/api_gateway')
         skip_build: If True, skip clean and test execution
+
+    Returns:
+        int: process exit code from the pytest run (0 means success)
     """
     if skip_build:
         print("Skipping test execution, using existing coverage data")
-        return
+        return 0
 
     step("Collecting local E2E test coverage")
 
@@ -787,6 +842,8 @@ def collect_e2e_local_coverage(
     )
     base_url = f"http://127.0.0.1:{desired_port}"
 
+    pytest_rc = 0
+
     try:
         # Wait for server to be ready (TCP first, then HTTP health)
         wait_for_tcp("127.0.0.1", desired_port, timeout_secs=30, log_path=log_file)
@@ -794,13 +851,10 @@ def collect_e2e_local_coverage(
 
         # Run e2e tests
         pytest_result = run_e2e_tests(base_url, test_filter)
+        pytest_rc = pytest_result.returncode
 
-        if pytest_result.returncode != 0:
-            print(
-                "WARNING: Some E2E tests failed, "
-                "but coverage was still collected. "
-                "Please check the test output for details."
-            )
+        if pytest_rc != 0:
+            print("ERROR: E2E tests failed; aborting coverage")
         else:
             print("[OK] E2E tests passed")
 
@@ -818,6 +872,8 @@ def collect_e2e_local_coverage(
         )
         # Give filesystem a moment to flush profile data on some platforms
         time.sleep(0.5)
+
+    return pytest_rc
 
 
 def generate_reports(output_dir, mode, threshold=COVERAGE_THRESHOLD, use_color=False):
@@ -945,24 +1001,25 @@ def run_coverage_workflow(mode, output_dir, config_file, test_filter, skip_build
         threshold: Coverage threshold percentage
     """
     use_color = supports_color()  # Auto-detect color support
-    tests_failed = False
 
     if mode == "unit":
-        tests_failed = collect_unit_coverage(output_dir, config_file, test_filter, skip_build)
+        tests_rc = collect_unit_coverage(
+            output_dir, config_file, test_filter, skip_build
+        )
         report_mode = "unit tests"
     elif mode == "e2e-local":
-        collect_e2e_local_coverage(output_dir, config_file, test_filter, skip_build)
+        tests_rc = collect_e2e_local_coverage(
+            output_dir, config_file, test_filter, skip_build
+        )
         report_mode = "e2e-local tests"
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
-    generate_reports(output_dir, report_mode, threshold, use_color)
+    if tests_rc != 0:
+        sys.exit(tests_rc)
 
-    # Display appropriate message based on test results
-    if mode == "unit" and tests_failed:
-        print(f"\nERROR: unit test failed, coverage reports generated in: {output_dir}")
-    else:
-        print(f"\n[OK] {report_mode.capitalize()} coverage reports generated in: {output_dir}")
+    generate_reports(output_dir, report_mode, threshold, use_color)
+    print(f"\n[OK] {report_mode.capitalize()} coverage reports generated in: {output_dir}")
 
 
 def cmd_coverage_unit(args):
@@ -981,7 +1038,7 @@ def cmd_coverage_e2e(args):
     output_dir = COVERAGE_DIR / "e2e-local"
     config_file = args.config if args.config else "config/e2e-local.yaml"
     test_filter = args.filter if hasattr(args, 'filter') else None
-    skip_build = args.no_build if hasattr(args, 'no_build') else False
+    skip_build = args.skip_build if hasattr(args, 'skip_build') else False
     threshold = args.threshold if hasattr(args, 'threshold') else COVERAGE_THRESHOLD
 
     run_coverage_workflow("e2e-local", output_dir, config_file, test_filter, skip_build, threshold)
@@ -1006,20 +1063,23 @@ def cmd_coverage_combined(args):
     env["HYPERSPOT_CONFIG"] = config_file
     print(f"Using config: {config_file}")
 
-    result = run_cmd_allow_fail([
+    unit_cmd = [
         "cargo", "llvm-cov",
         "--workspace",
         "--all-features",
-        "--no-report"
-    ], env=env, cwd=PROJECT_ROOT)
+        "--no-report",
+        "--",
+    ]
+    for test_name in LOCAL_COVERAGE_SKIPPED_TESTS:
+        unit_cmd.extend(["--skip", test_name])
+
+    result = run_cmd_allow_fail(unit_cmd, env=env, cwd=PROJECT_ROOT)
 
     if result.returncode != 0:
-        print(
-            "WARNING: Some unit tests failed, "
-            "but coverage was still collected"
-        )
-    else:
-        print("[OK] Unit test coverage collected")
+        print("ERROR: Unit tests failed; aborting combined coverage")
+        sys.exit(result.returncode)
+
+    print("OK. Unit test coverage collected")
 
     # Collect e2e coverage (without cleaning)
     step("Collecting E2E test coverage for combined mode")
@@ -1028,6 +1088,8 @@ def cmd_coverage_combined(args):
     )
     base_url = f"http://127.0.0.1:{port}"
 
+    pytest_rc = 0
+
     try:
         # Wait for server to be ready
         wait_for_tcp("127.0.0.1", port, timeout_secs=30, log_path=log_file)
@@ -1035,24 +1097,22 @@ def cmd_coverage_combined(args):
 
         # Run E2E tests
         pytest_result = run_e2e_tests(base_url)
+        pytest_rc = pytest_result.returncode
 
-        if pytest_result.returncode != 0:
-            print(
-                "WARNING: Some E2E tests failed, "
-                "but coverage was still collected"
-            )
+        if pytest_rc != 0:
+            print("ERROR: E2E tests failed; aborting combined coverage")
         else:
             print("[OK] E2E tests passed")
 
     finally:
         stop_server(server_process, port, log_file)
 
+    if pytest_rc != 0:
+        sys.exit(pytest_rc)
+
     # Generate combined reports
     generate_reports(output_dir, "combined (unit + e2e)", threshold, use_color)
-
-    print(
-        f"\n[OK] Combined coverage reports generated in: {output_dir}"
-    )
+    print(f"\n[OK] Combined coverage reports generated in: {output_dir}")
 
 
 def validate_environment(command):
@@ -1072,7 +1132,7 @@ def validate_environment(command):
     if command == "unit":
         env_type = "core"
     elif command in ["e2e-local", "combined"]:
-        env_type = "e2e"
+        env_type = "e2e-local"
     else:
         env_type = "core"
 
