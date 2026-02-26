@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS resource_group_membership (
     resource_type TEXT NOT NULL,
     resource_id TEXT NOT NULL,
     tenant_id UUID NOT NULL,
+    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_resource_group_membership_group_id
         FOREIGN KEY (group_id)
         REFERENCES resource_group(id)
