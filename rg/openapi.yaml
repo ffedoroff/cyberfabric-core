@@ -42,8 +42,6 @@ tags:
     description: Resource group types
   - name: groups
     description: Resource groups
-  - name: hierarchy
-    description: Ancestors and descendants queries
   - name: memberships
     description: Resource memberships bound to groups
 
@@ -76,7 +74,6 @@ paths:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataOrderBy'
         - $ref: '#/components/parameters/ODataSelect'
-        - $ref: '#/components/parameters/PaginationCursor'
         - $ref: '#/components/parameters/PaginationLimit'
       responses:
         '200':
@@ -178,18 +175,19 @@ paths:
           - `parent_id` (asc, desc)
           - `tenant_id` (asc, desc)
         - `$filter`:
+          - `depth` (eq, ne, gt, ge, lt, le)
           - `external_id` (eq, ne, in, contains, startswith, endswith)
           - `group_type` (eq, ne, in)
           - `id` (eq, ne, in)
           - `name` (eq, ne, in, contains, startswith, endswith)
           - `parent_id` (eq, ne, in)
           - `tenant_id` (eq, ne, in)
-          - `depth` (eq, ne, gt, ge, lt, le)
-          - `resources/resource_id`  (eq, ne, in, contains, startswith, endswith)
-          - `resources/resource_type` (eq, ne, in)
+          - `resources/resource_id` (eq, ne, in, contains, startswith, endswith) Real OData: `any(r: r/resource_id eq '123')`
           - `resources/resource_tenant_id` (eq, ne, in)
+          - `resources/resource_type` (eq, ne, in)
         - `$select`:
           - `created`
+          - `depth`
           - `external_id`
           - `group_type`
           - `id`
@@ -197,10 +195,10 @@ paths:
           - `name`
           - `parent_id`
           - `tenant_id`
-          - `depth`
+          - `resources/created`
           - `resources/resource_id`
-          - `resources/resource_type`
           - `resources/resource_tenant_id`
+          - `resources/resource_type`
       x-odata-orderby:
         supported_fields: [id, parent_id, group_type, name, tenant_id, external_id, created, modified]
         supported_directions: [asc, desc]
@@ -218,7 +216,6 @@ paths:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataOrderBy'
         - $ref: '#/components/parameters/ODataSelect'
-        - $ref: '#/components/parameters/PaginationCursor'
         - $ref: '#/components/parameters/PaginationLimit'
         - $ref: '#/components/parameters/TenantId'
       responses:
@@ -236,6 +233,15 @@ paths:
                     name: D2
                     parent_id: 11111111-1111-1111-1111-111111111111
                     tenant_id: 11111111-1111-1111-1111-111111111111
+                    resources:
+                      - created: today
+                        resource_id: 123
+                        resource_tenant_id: 11111111-1111-1111-1111-111111111111
+                        resource_type: user
+                      - created: tomorrow
+                        resource_id: 123
+                        resource_tenant_id: 11111111-1111-1111-1111-111111111111
+                        resource_type: user
                 page_info:
                   limit: 50
                   next_cursor: null
@@ -322,221 +328,6 @@ paths:
       responses:
         '204':
           description: Group deleted
-
-  /api/resource-group/v1/groups/ancestors:
-    get:
-      operationId: listAncestorsBatch
-      tags: [hierarchy]
-      summary: Batch read ancestors via filters
-      description: |
-        Returns paginated batch ancestors using cursor-based pagination with OData query support. Use `$filter` with `source_group_id in (...)` for batch read and `$orderby`, `$filter`, `$select` for advanced queries.
-
-        OData support:
-        - `$orderby`:
-          - `depth` (asc, desc)
-          - `group.external_id` (asc, desc)
-          - `group.group_type` (asc, desc)
-          - `group.id` (asc, desc)
-          - `group.name` (asc, desc)
-          - `group.parent_id` (asc, desc)
-          - `group.tenant_id` (asc, desc)
-          - `source_group_id` (asc, desc)
-        - `$filter`:
-          - `ancestor/depth` (eq, ne, gt, ge, lt, le)
-          - `ancestor/group_id` (eq, ne, in)
-        - `$select`:
-          - `depth`
-          - `group.external_id`
-          - `group.group_type`
-          - `group.id`
-          - `group.name`
-          - `group.parent_id`
-          - `group.tenant_id`
-          - `source_group_id`
-      x-odata-orderby:
-        supported_fields: [source_group_id, depth, group.id, group.parent_id, group.group_type, group.name, group.tenant_id, group.external_id]
-        supported_directions: [asc, desc]
-      x-odata-filter:
-        supported_fields:
-          source_group_id: [eq, ne, in]
-      x-odata-select:
-        supported_fields: [source_group_id, group.id, group.parent_id, group.group_type, group.name, group.tenant_id, group.external_id, depth]
-      parameters:
-        - $ref: '#/components/parameters/ODataFilter'
-        - $ref: '#/components/parameters/ODataOrderBy'
-        - $ref: '#/components/parameters/ODataSelect'
-        - $ref: '#/components/parameters/PaginationCursor'
-        - $ref: '#/components/parameters/PaginationLimit'
-      responses:
-        '200':
-          description: Paginated batch ancestors
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BatchHierarchyPage'
-              example:
-                items:
-                  - depth: 1
-                    group:
-                      external_id: D2
-                      group_type: department
-                      id: 22222222-2222-2222-2222-222222222222
-                      name: D2
-                      parent_id: 11111111-1111-1111-1111-111111111111
-                      tenant_id: 11111111-1111-1111-1111-111111111111
-                    source_group_id: 33333333-3333-3333-3333-333333333333
-                  - depth: 2
-                    group:
-                      external_id: T1
-                      group_type: tenant
-                      id: 11111111-1111-1111-1111-111111111111
-                      name: T1
-                      parent_id: null
-                      tenant_id: 11111111-1111-1111-1111-111111111111
-                    source_group_id: 33333333-3333-3333-3333-333333333333
-                page_info:
-                  limit: 50
-                  next_cursor: null
-                  prev_cursor: null
-
-  /api/resource-group/v1/groups/descendants:
-    get:
-      operationId: listDescendantsBatch
-      tags: [hierarchy]
-      summary: Batch read descendants via filters
-      description: |
-        Returns paginated batch descendants using cursor-based pagination with OData query support. Use `$filter` with `source_group_id in (...)` for batch read and `$orderby`, `$filter`, `$select` for advanced queries.
-
-        OData support:
-        - `$orderby`:
-          - `depth` (asc, desc)
-          - `group.external_id` (asc, desc)
-          - `group.group_type` (asc, desc)
-          - `group.id` (asc, desc)
-          - `group.name` (asc, desc)
-          - `group.parent_id` (asc, desc)
-          - `group.tenant_id` (asc, desc)
-          - `source_group_id` (asc, desc)
-        - `$filter`:
-          - `source_group_id` (eq, ne, in)
-        - `$select`:
-          - `depth`
-          - `group.external_id`
-          - `group.group_type`
-          - `group.id`
-          - `group.name`
-          - `group.parent_id`
-          - `group.tenant_id`
-          - `source_group_id`
-      x-odata-orderby:
-        supported_fields: [source_group_id, depth, group.id, group.parent_id, group.group_type, group.name, group.tenant_id, group.external_id]
-        supported_directions: [asc, desc]
-      x-odata-filter:
-        supported_fields:
-          source_group_id: [eq, ne, in]
-      x-odata-select:
-        supported_fields: [source_group_id, group.id, group.parent_id, group.group_type, group.name, group.tenant_id, group.external_id, depth]
-      parameters:
-        - $ref: '#/components/parameters/ODataFilter'
-        - $ref: '#/components/parameters/ODataOrderBy'
-        - $ref: '#/components/parameters/ODataSelect'
-        - $ref: '#/components/parameters/PaginationCursor'
-        - $ref: '#/components/parameters/PaginationLimit'
-      responses:
-        '200':
-          description: Paginated batch descendants
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BatchHierarchyPage'
-              example:
-                items:
-                  - depth: 1
-                    group:
-                      external_id: D2
-                      group_type: department
-                      id: 22222222-2222-2222-2222-222222222222
-                      name: D2
-                      parent_id: 11111111-1111-1111-1111-111111111111
-                      tenant_id: 11111111-1111-1111-1111-111111111111
-                    source_group_id: 11111111-1111-1111-1111-111111111111
-                  - depth: 2
-                    group:
-                      external_id: B3
-                      group_type: branch
-                      id: 33333333-3333-3333-3333-333333333333
-                      name: B3
-                      parent_id: 22222222-2222-2222-2222-222222222222
-                      tenant_id: 11111111-1111-1111-1111-111111111111
-                    source_group_id: 11111111-1111-1111-1111-111111111111
-                page_info:
-                  limit: 50
-                  next_cursor: null
-                  prev_cursor: null
-
-  /api/resource-group/v1/resources:
-    get:
-      operationId: listGroupMemberships
-      tags: [memberships]
-      summary: List memberships bound to groups
-      description: |
-        Returns paginated memberships bound to groups using cursor-based pagination with OData query support. Use `$orderby`, `$filter`, and `$select` for advanced queries.
-
-        OData support:
-        - `$orderby`:
-          - `created` (asc, desc)
-          - `group_id` (asc, desc)
-          - `resource_id` (asc, desc)
-          - `resource_type` (asc, desc)
-          - `tenant_id` (asc, desc)
-        - `$filter`:
-          - `created` (eq, ne, gt, ge, lt, le)
-          - `group_id` (eq, ne, in)
-          - `resource_id` (eq, ne, in, contains, startswith, endswith)
-          - `resource_type` (eq, ne, in)
-          - `tenant_id` (eq, ne, in)
-        - `$select`:
-          - `created`
-          - `group_id`
-          - `resource_id`
-          - `resource_type`
-          - `tenant_id`
-      x-odata-orderby:
-        supported_fields: [created, group_id, resource_id, resource_type, tenant_id]
-        supported_directions: [asc, desc]
-      x-odata-filter:
-        supported_fields:
-          created: [eq, ne, gt, ge, lt, le]
-          group_id: [eq, ne, in]
-          resource_id: [eq, ne, in, contains, startswith, endswith]
-          resource_type: [eq, ne, in]
-          tenant_id: [eq, ne, in]
-      x-odata-select:
-        supported_fields: [created, group_id, resource_id, resource_type, tenant_id]
-      parameters:
-        - $ref: '#/components/parameters/ODataFilter'
-        - $ref: '#/components/parameters/ODataOrderBy'
-        - $ref: '#/components/parameters/ODataSelect'
-        - $ref: '#/components/parameters/PaginationCursor'
-        - $ref: '#/components/parameters/PaginationLimit'
-      responses:
-        '200':
-          description: Paginated memberships
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MembershipPage'
-              example:
-                items:
-                  - created: '2026-02-25T12:00:00.000Z'
-                    group_id: 33333333-3333-3333-3333-333333333333
-                    resource_id: R4
-                    resource_type: resource
-                    tenant_id: 11111111-1111-1111-1111-111111111111
-                page_info:
-                  limit: 50
-                  next_cursor: null
-                  prev_cursor: null
 
   /api/resource-group/v1/groups/{id}/resources:
     parameters:
@@ -639,14 +430,6 @@ components:
         maximum: 300
         default: 50
       example: 50
-
-    PaginationCursor:
-      name: cursor
-      in: query
-      required: false
-      schema:
-        type: string
-      example: eyJvZmZzZXQiOjUwLCJpZCI6IjIyMjIyMjIyLTIyMjItMjIyMi0yMjIyLTIyMjIyMjIyMjIyMiJ9
 
     ODataSelect:
       name: $select
