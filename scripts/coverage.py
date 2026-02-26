@@ -30,7 +30,7 @@ from lib.platform import (
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 COVERAGE_DIR = PROJECT_ROOT / "coverage"
 PYTHON = sys.executable or "python3"
-COVERAGE_THRESHOLD = 70
+COVERAGE_THRESHOLD = 80
 
 E2E_SERVER_FEATURES = read_e2e_features(PROJECT_ROOT)
 
