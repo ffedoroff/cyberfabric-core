@@ -254,7 +254,9 @@ def _print_log_file(path, label):
     print(f"--- end of {label} ---\n")
 
 
-def wait_for_health(base_url, timeout_secs=30, server_process=None, error_log=None):
+def wait_for_health(
+    base_url, timeout_secs=30, server_process=None, error_log=None, output_log=None
+):
     url = f"{base_url.rstrip('/')}/healthz"
     step(f"Waiting for API to be ready at {url}")
     start = time.time()
@@ -265,6 +267,7 @@ def wait_for_health(base_url, timeout_secs=30, server_process=None, error_log=No
             ret = server_process.poll()
             if ret is not None:
                 print(f"\nERROR: Server process exited with code {ret}")
+                _print_log_file(output_log, "server stdout")
                 _print_log_file(error_log, "server stderr")
                 print("Fix the error above, rebuild with:")
                 print("  make build")
@@ -284,6 +287,7 @@ def wait_for_health(base_url, timeout_secs=30, server_process=None, error_log=No
 
         if time.time() - start > timeout_secs:
             print(f"ERROR: The API readiness check timed out after {attempt} attempts")
+            _print_log_file(output_log, "server stdout")
             _print_log_file(error_log, "server stderr")
             sys.exit(1)
         time.sleep(1)
@@ -406,8 +410,14 @@ def cmd_e2e(args):
             sys.exit(1)
 
         # Create logs directory if it doesn't exist
-        logs_dir = os.path.join(PROJECT_ROOT, "logs")
+        if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+            logs_dir = os.path.join(PROJECT_ROOT, "tmp", "e2e-logs")
+        else:
+            logs_dir = os.path.join(PROJECT_ROOT, "logs")
         os.makedirs(logs_dir, exist_ok=True)
+
+        data_dir = os.path.join(PROJECT_ROOT, "data")
+        os.makedirs(data_dir, exist_ok=True)
 
         # Start server in background with logs redirected to files
         server_cmd = [
@@ -455,6 +465,7 @@ def cmd_e2e(args):
             timeout_secs=60,
             server_process=server_process,
             error_log=server_error_file,
+            output_log=server_log_file,
         )
         print("Server started successfully and passed health check")
 

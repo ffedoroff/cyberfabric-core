@@ -64,6 +64,17 @@ jobs:
             make e2e-local            # PR / manual-smoke, TODO: switch to e2e-local-smoke later
           fi
 
+      - name: Upload E2E logs
+        if: failure()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: e2e-logs-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ${{ github.workspace }}/tmp/e2e-logs/**
+            ${{ runner.home }}/.hyperspot/logs/**
+
       - name: Create or update issue on nightly failure
         if: failure() && github.event_name == 'schedule'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
