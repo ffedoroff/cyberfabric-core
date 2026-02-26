@@ -21,35 +21,53 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
 
 ## 1) `/api/resource-group/v1/types`
 
+`GET /api/resource-group/v1/types?limit=50&cursor=<opaque>&$filter=contains(code,'ten')&$orderby=code asc&$select=code,ancestors`
 `POST /api/resource-group/v1/types`
-`GET /api/resource-group/v1/types`
 
 ```jsonc
 {
-  // Request (POST)
+  // Request (GET list)
   "request": {
-    "code": "department",
-    "ancestors": ["tenant"]
+    "limit": 50,
+    "cursor": null,
+    "$filter": "contains(code,'ten')",
+    "$orderby": "code asc",
+    "$select": "code,ancestors"
   },
-  // Response (POST)
+  // Response (GET list)
   "response": {
-    "code": "department",
-    "ancestors": ["tenant"]
+    "items": [
+      {
+        "code": "department",
+        "ancestors": ["tenant"]
+      },
+      {
+        "code": "tenant",
+        "ancestors": []
+      }
+    ],
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
   }
 }
 ```
 
 ## 2) `/api/resource-group/v1/types/{code}`
 
-`GET /api/resource-group/v1/types/department`
+`GET /api/resource-group/v1/types/department?$select=code,ancestors`
 `PUT /api/resource-group/v1/types/department`
 `DELETE /api/resource-group/v1/types/department`
 
 ```jsonc
 {
-  // Request (GET)
-  "request": null,
-  // Response (GET)
+  // Request (GET single)
+  "request": {
+    "$select": "code,ancestors"
+  },
+  // Response (GET single)
   "response": {
     "code": "department",
     "ancestors": ["tenant"]
@@ -63,7 +81,7 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
 
 ```jsonc
 {
-  // Request (POST)
+  // Request (POST create)
   "request": {
     "group_type": "department",
     "name": "D2",
@@ -71,7 +89,7 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
     "tenant_id": "11111111-1111-1111-1111-111111111111",
     "external_id": "D2"
   },
-  // Response (POST)
+  // Response (POST create)
   "response": {
     "id": "22222222-2222-2222-2222-222222222222",
     "parent_id": "11111111-1111-1111-1111-111111111111",
@@ -79,7 +97,7 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
     "name": "D2",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
     "external_id": "D2",
-    "created": "2026-02-25T12:00:00Z",
+    "created": "2026-02-25T12:00:00.000Z",
     "modified": null
   }
 }
@@ -87,15 +105,17 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
 
 ## 4) `/api/resource-group/v1/groups/{id}`
 
-`GET /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222`
+`GET /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222?$select=id,parent_id,group_type,name,tenant_id,external_id`
 `PUT /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222`
 `DELETE /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222?force=true|false`
 
 ```jsonc
 {
-  // Request (GET)
-  "request": null,
-  // Response (GET)
+  // Request (GET single)
+  "request": {
+    "$select": "id,parent_id,group_type,name,tenant_id,external_id"
+  },
+  // Response (GET single)
   "response": {
     "id": "22222222-2222-2222-2222-222222222222",
     "parent_id": "11111111-1111-1111-1111-111111111111",
@@ -107,59 +127,60 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
 }
 ```
 
-## 4.1) `/api/resource-group/v1/groups-filter`
+## 4.1) `/api/resource-group/v1/groups` (pagination + filters)
 
-`POST /api/resource-group/v1/groups-filter`
+`GET /api/resource-group/v1/groups?id.in=22222222-2222-2222-2222-222222222222,22222222-2222-2222-2222-222222222221,22222222-2222-2222-2222-222222222224&tenant_id=11111111-1111-1111-1111-111111111111&limit=50&cursor=<opaque>&$orderby=name asc&$select=id,name,group_type,tenant_id`
 
 ```jsonc
 {
-  // Request (POST): аналог трех вызовов GET /groups/{id} одним запросом
+  // Request (GET list): аналог нескольких GET /groups/{id}
   "request": {
-    "ids": [
+    "id.in": [
       "22222222-2222-2222-2222-222222222222",
       "22222222-2222-2222-2222-222222222221",
       "22222222-2222-2222-2222-222222222224"
     ],
-    "tenant_id": "11111111-1111-1111-1111-111111111111"
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "limit": 50,
+    "cursor": null,
+    "$filter": null,
+    "$orderby": "name asc",
+    "$select": "id,name,group_type,tenant_id"
   },
-  // Response (POST)
+  // Response (GET list)
   "response": {
     "items": [
       {
         "id": "22222222-2222-2222-2222-222222222222",
-        "parent_id": "11111111-1111-1111-1111-111111111111",
-        "group_type": "department",
         "name": "D2",
-        "tenant_id": "11111111-1111-1111-1111-111111111111",
-        "external_id": "D2"
+        "group_type": "department",
+        "tenant_id": "11111111-1111-1111-1111-111111111111"
       }
     ],
-    "not_found_ids": [
-      "22222222-2222-2222-2222-222222222221",
-      "22222222-2222-2222-2222-222222222224"
-    ]
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
   }
 }
 ```
 
 ## 5) `/api/resource-group/v1/groups/{id}/ancestors`
 
-`GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/ancestors`
+`GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/ancestors?limit=50&cursor=<opaque>&$orderby=depth asc&$select=group.id,group.name,group.group_type,depth`
 
 ```jsonc
 {
-  // Request (GET)
-  "request": null,
-  // Response (GET)
+  // Request (GET list)
+  "request": {
+    "limit": 50,
+    "cursor": null,
+    "$orderby": "depth asc",
+    "$select": "group.id,group.name,group.group_type,depth"
+  },
+  // Response (GET list)
   "response": {
-    "group": {
-      "id": "33333333-3333-3333-3333-333333333333",
-      "parent_id": "22222222-2222-2222-2222-222222222222",
-      "group_type": "branch",
-      "name": "B3",
-      "tenant_id": "11111111-1111-1111-1111-111111111111",
-      "external_id": "B3"
-    },
     "items": [
       {
         "group": {
@@ -179,28 +200,31 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
         },
         "depth": 2
       }
-    ]
+    ],
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
   }
 }
 ```
 
 ## 6) `/api/resource-group/v1/groups/{id}/descendants`
 
-`GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/descendants`
+`GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/descendants?limit=50&cursor=<opaque>&$orderby=depth asc&$select=group.id,group.name,group.group_type,depth`
 
 ```jsonc
 {
-  // Request (GET)
-  "request": null,
-  // Response (GET)
+  // Request (GET list)
+  "request": {
+    "limit": 50,
+    "cursor": null,
+    "$orderby": "depth asc",
+    "$select": "group.id,group.name,group.group_type,depth"
+  },
+  // Response (GET list)
   "response": {
-    "group": {
-      "id": "11111111-1111-1111-1111-111111111111",
-      "group_type": "tenant",
-      "name": "T1",
-      "tenant_id": "11111111-1111-1111-1111-111111111111",
-      "external_id": "T1"
-    },
     "items": [
       {
         "group": {
@@ -232,128 +256,140 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
         },
         "depth": 2
       }
-    ]
+    ],
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
   }
 }
 ```
 
 ## 7) `/api/resource-group/v1/groups/{id}/references`
 
+`GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/references?limit=50&cursor=<opaque>&$filter=resource_type eq 'resource'&$orderby=resource_id asc&$select=resource_type,resource_id,tenant_id`
 `POST /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/references`
 `DELETE /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/references`
 
 ```jsonc
 {
-  // Request (POST)
+  // Request (GET list)
   "request": {
-    "resource_type": "resource",
-    "resource_id": "R4",
-    "tenant_id": "11111111-1111-1111-1111-111111111111"
+    "limit": 50,
+    "cursor": null,
+    "$filter": "resource_type eq 'resource'",
+    "$orderby": "resource_id asc",
+    "$select": "resource_type,resource_id,tenant_id"
   },
-  // Response (POST)
+  // Response (GET list)
   "response": {
-    "group_id": "33333333-3333-3333-3333-333333333333",
-    "resource_type": "resource",
-    "resource_id": "R4",
-    "tenant_id": "11111111-1111-1111-1111-111111111111"
+    "items": [
+      {
+        "resource_type": "resource",
+        "resource_id": "R4",
+        "tenant_id": "11111111-1111-1111-1111-111111111111"
+      }
+    ],
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
   }
 }
 ```
 
-## 8) `/api/resource-group/v1/groups-descendants`
+## 8) `/api/resource-group/v1/groups/descendants` (batch read via filters)
 
-`POST /api/resource-group/v1/groups-descendants`
+`GET /api/resource-group/v1/groups/descendants?$filter=source_group_id in (11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222)&limit=50&cursor=<opaque>&$orderby=group.id asc&$select=group.id,group.name,depth`
 
 ```jsonc
 {
-  // Request (POST)
+  // Request (GET list)
   "request": {
-    "ids": [
-      "11111111-1111-1111-1111-111111111111",
-      "22222222-2222-2222-2222-222222222222"
-    ]
+    "$filter": "source_group_id in (11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222)",
+    "limit": 50,
+    "cursor": null,
+    "$orderby": "group.id asc",
+    "$select": "group.id,group.name,depth"
   },
-  // Response (POST)
+  // Response (GET list)
   "response": {
     "items": [
       {
+        "source_group_id": "11111111-1111-1111-1111-111111111111",
         "group": {
-          "id": "11111111-1111-1111-1111-111111111111",
-          "group_type": "tenant",
-          "name": "T1",
+          "id": "22222222-2222-2222-2222-222222222222",
+          "group_type": "department",
+          "name": "D2",
           "tenant_id": "11111111-1111-1111-1111-111111111111"
         },
-        "descendants": [
-          {
-            "group": {
-              "id": "22222222-2222-2222-2222-222222222222",
-              "group_type": "department",
-              "name": "D2",
-              "tenant_id": "11111111-1111-1111-1111-111111111111"
-            },
-            "depth": 1
-          },
-          {
-            "group": {
-              "id": "33333333-3333-3333-3333-333333333333",
-              "group_type": "branch",
-              "name": "B3",
-              "tenant_id": "11111111-1111-1111-1111-111111111111"
-            },
-            "depth": 2
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-## 9) `/api/resource-group/v1/groups-ancestors`
-
-`POST /api/resource-group/v1/groups-ancestors`
-
-```jsonc
-{
-  // Request (POST)
-  "request": {
-    "ids": [
-      "33333333-3333-3333-3333-333333333333",
-      "77777777-7777-7777-7777-777777777777"
-    ]
-  },
-  // Response (POST)
-  "response": {
-    "items": [
+        "depth": 1
+      },
       {
+        "source_group_id": "11111111-1111-1111-1111-111111111111",
         "group": {
           "id": "33333333-3333-3333-3333-333333333333",
           "group_type": "branch",
           "name": "B3",
           "tenant_id": "11111111-1111-1111-1111-111111111111"
         },
-        "ancestors": [
-          {
-            "group": {
-              "id": "22222222-2222-2222-2222-222222222222",
-              "group_type": "department",
-              "name": "D2",
-              "tenant_id": "11111111-1111-1111-1111-111111111111"
-            },
-            "depth": 1
-          },
-          {
-            "group": {
-              "id": "11111111-1111-1111-1111-111111111111",
-              "group_type": "tenant",
-              "name": "T1",
-              "tenant_id": "11111111-1111-1111-1111-111111111111"
-            },
-            "depth": 2
-          }
-        ]
+        "depth": 2
       }
-    ]
+    ],
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
+  }
+}
+```
+
+## 9) `/api/resource-group/v1/groups/ancestors` (batch read via filters)
+
+`GET /api/resource-group/v1/groups/ancestors?$filter=source_group_id in (33333333-3333-3333-3333-333333333333,77777777-7777-7777-7777-777777777777)&limit=50&cursor=<opaque>&$orderby=group.id asc&$select=group.id,group.name,depth`
+
+```jsonc
+{
+  // Request (GET list)
+  "request": {
+    "$filter": "source_group_id in (33333333-3333-3333-3333-333333333333,77777777-7777-7777-7777-777777777777)",
+    "limit": 50,
+    "cursor": null,
+    "$orderby": "group.id asc",
+    "$select": "group.id,group.name,depth"
+  },
+  // Response (GET list)
+  "response": {
+    "items": [
+      {
+        "source_group_id": "33333333-3333-3333-3333-333333333333",
+        "group": {
+          "id": "22222222-2222-2222-2222-222222222222",
+          "group_type": "department",
+          "name": "D2",
+          "tenant_id": "11111111-1111-1111-1111-111111111111"
+        },
+        "depth": 1
+      },
+      {
+        "source_group_id": "33333333-3333-3333-3333-333333333333",
+        "group": {
+          "id": "11111111-1111-1111-1111-111111111111",
+          "group_type": "tenant",
+          "name": "T1",
+          "tenant_id": "11111111-1111-1111-1111-111111111111"
+        },
+        "depth": 2
+      }
+    ],
+    "page_info": {
+      "limit": 50,
+      "next_cursor": null,
+      "prev_cursor": null
+    }
   }
 }
 ```
@@ -366,28 +402,10 @@ tenant T9 (99999999-9999-9999-9999-999999999999)
 - `reference_type/reference_id` -> `resource_type/resource_id`
 - в сущностях добавлен обязательный `tenant_id`
 
+## Pagination and filters
 
-# Pagination and filters
- Где в модулях есть и пагинация, и фильтры вместе (документация/контракт)
-
-  - mini-chat (доки + OpenAPI, кода модуля пока нет):
-      - Контракт GET /v1/chats/{id}/messages с limit/cursor/$select/$orderby/$filter: DESIGN.md:452 (/modules/
-        mini-chat/docs/DESIGN.md:452)
-      - OpenAPI параметры limit/cursor/$select/$orderby/$filter: openapi.json:1003 (/modules/mini-chat/docs/
-        openapi.json:1003)
-      - PageInfo/MessagesPage: openapi.json:1608 (/modules/mini-chat/docs/openapi.json:1608)
-
-  Общая документация по пагинации в проекте
-
-  - Базовый общий стандарт курсорной пагинации + OData фильтры/сортировка: guidelines/DNA/REST/QUERYING.md:1 (/
-    guidelines/DNA/REST/QUERYING.md:1)
-  - REST guideline с отсылкой на querying: guidelines/DNA/REST/API.md:95 (/guidelines/DNA/REST/API.md:95)
-  - ModKit-гайд по OData/$select/пагинации: 07_odata_pagination_select_filter.md:1 (/docs/
-    modkit_unified_system/07_odata_pagination_select_filter.md:1)
-
-  Что важно
-
-  - В нескольких openspec-доках внутри модулей ссылка на guidelines/DNA/REST/PAGINATION.md, но такого файла нет; актуальный файл: guidelines/DNA/
-    REST/QUERYING.md.
-      - simple-user-settings project.md:70 (/modules/simple-user-settings/openspec/project.md:70)
-      - types-registry project.md:136 (/modules/system/types-registry/openspec/project.md:136)
+- Для list/read использовать `GET` + фильтры на коллекции (включая `id.in`), а не `POST` batch-read.
+- Для пагинации использовать `limit` и `cursor`.
+- Для OData использовать `$filter`, `$orderby`, `$select`.
+- Документация OData `$filter`: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter
+- Формат list-ответа: `items` + `page_info`.

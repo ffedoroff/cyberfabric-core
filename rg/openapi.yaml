@@ -1,460 +1,341 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Resource Group API
-  description: API for managing resource groups and their hierarchical relationships
   version: 1.0.0
-  contact:
-    name: API Support
-    url: https://example.com/support
+  description: |
+    Resource Group API based on rg/api.md.
+    Supports cursor pagination and OData-style query options ($filter, $orderby, $select).
+    
+    OData:
+    - Protocol: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html
+    - $filter: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter
+    - $select: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionselect
+    - $orderby: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionorderby
 
+    Example hierarchy:
+    ```text
+    tenant T1 (11111111-1111-1111-1111-111111111111)
+    ├── department D2 (22222222-2222-2222-2222-222222222222)
+    │   ├── branch B3 (33333333-3333-3333-3333-333333333333)
+    │   │   └── resource R4
+    │   └── resource R5
+    ├── resource R4
+    ├── resource R6
+    └── tenant T7 (77777777-7777-7777-7777-777777777777)
+        └── resource R8
+    tenant T9 (99999999-9999-9999-9999-999999999999)
+    └── resource R0
+    ```
 servers:
   - url: https://api.example.com
-    description: Production server
-  - url: https://staging-api.example.com
-    description: Staging server
-
 security:
   - bearerAuth: []
-
+tags:
+  - name: types
+    description: Resource group types
+  - name: groups
+    description: Resource groups
+  - name: hierarchy
+    description: Ancestors and descendants queries
+  - name: references
+    description: Resource references bound to groups
 paths:
-  # Resource Group Type Endpoints
   /api/resource-group/v1/types:
+    get:
+      operationId: listTypes
+      tags: [types]
+      summary: List resource group types
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
+      responses:
+        '200':
+          description: Paginated list of types
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypePage'
     post:
-      tags:
-        - Resource Group Types
-      summary: Create a new resource group type
-      description: Creates a new resource group type with specified code, parents, and allowed applications
-      operationId: createResourceGroupType
+      operationId: createType
+      tags: [types]
+      summary: Create a resource group type
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateResourceGroupTypeRequest'
+              $ref: '#/components/schemas/CreateTypeRequest'
       responses:
         '201':
-          description: Resource group type created successfully
+          description: Type created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupTypeResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-    get:
-      tags:
-        - Resource Group Types
-      summary: List all resource group types
-      description: Retrieves a list of all resource group types
-      operationId: listResourceGroupTypes
-      responses:
-        '200':
-          description: List of resource group types retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ResourceGroupTypeResponse'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: '#/components/schemas/Type'
 
   /api/resource-group/v1/types/{code}:
+    parameters:
+      - $ref: '#/components/parameters/TypeCode'
     get:
-      tags:
-        - Resource Group Types
-      summary: Get a specific resource group type
-      description: Retrieves details of a specific resource group type by code
-      operationId: getResourceGroupType
+      operationId: getType
+      tags: [types]
+      summary: Get a type by code
       parameters:
-        - name: code
-          in: path
-          required: true
-          description: The unique code of the resource group type
-          schema:
-            type: string
-            pattern: '^[^\s]{1,63}$'
-            example: "DEPARTMENT"
+        - $ref: '#/components/parameters/ODataSelect'
       responses:
         '200':
-          description: Resource group type retrieved successfully
+          description: Type found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupTypeResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
+                $ref: '#/components/schemas/Type'
         '404':
           $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
     put:
-      tags:
-        - Resource Group Types
-      summary: Update a resource group type
-      description: Updates an existing resource group type (only owner or allowed applications can modify)
-      operationId: updateResourceGroupType
-      parameters:
-        - name: code
-          in: path
-          required: true
-          description: The unique code of the resource group type
-          schema:
-            type: string
-            pattern: '^[^\s]{1,63}$'
-            example: "DEPARTMENT"
+      operationId: updateType
+      tags: [types]
+      summary: Update a type by code
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateResourceGroupTypeRequest'
+              $ref: '#/components/schemas/UpdateTypeRequest'
       responses:
         '200':
-          description: Resource group type updated successfully
+          description: Type updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupTypeResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
+                $ref: '#/components/schemas/Type'
         '404':
           $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
     delete:
-      tags:
-        - Resource Group Types
-      summary: Delete a resource group type
-      description: Deletes an existing resource group type (only owner can delete)
-      operationId: deleteResourceGroupType
-      parameters:
-        - name: code
-          in: path
-          required: true
-          description: The unique code of the resource group type
-          schema:
-            type: string
-            pattern: '^[^\s]{1,63}$'
-            example: "DEPARTMENT"
+      operationId: deleteType
+      tags: [types]
+      summary: Delete a type by code
       responses:
         '204':
-          description: Resource group type deleted successfully
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+          description: Type deleted
 
-  # Resource Group Entity Endpoints
   /api/resource-group/v1/groups:
+    get:
+      operationId: listGroups
+      tags: [groups]
+      summary: List groups with filters and pagination
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/IdIn'
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
+      responses:
+        '200':
+          description: Paginated list of groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPage'
     post:
-      tags:
-        - Resource Group Entities
-      summary: Create a new resource group entity
-      description: Creates a new resource group entity with hierarchical relationships
-      operationId: createResourceGroupEntity
+      operationId: createGroup
+      tags: [groups]
+      summary: Create a group
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateResourceGroupRequest'
+              $ref: '#/components/schemas/CreateGroupRequest'
       responses:
         '201':
-          description: Resource group entity created successfully
+          description: Group created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: '#/components/schemas/Group'
 
   /api/resource-group/v1/groups/{id}:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
     get:
-      tags:
-        - Resource Group Entities
-      summary: Get a specific resource group entity
-      description: Retrieves details of a specific resource group entity by ID
-      operationId: getResourceGroupEntity
+      operationId: getGroup
+      tags: [groups]
+      summary: Get a group by id
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
+        - $ref: '#/components/parameters/ODataSelect'
       responses:
         '200':
-          description: Resource group entity retrieved successfully
+          description: Group found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupResponse'
+                $ref: '#/components/schemas/Group'
         '404':
           $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
     put:
-      tags:
-        - Resource Group Entities
-      summary: Update a resource group entity
-      description: Updates an existing resource group entity (only authorized applications can modify)
-      operationId: updateResourceGroupEntity
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
+      operationId: updateGroup
+      tags: [groups]
+      summary: Update a group by id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateResourceGroupRequest'
+              $ref: '#/components/schemas/UpdateGroupRequest'
       responses:
         '200':
-          description: Resource group entity updated successfully
+          description: Group updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
+                $ref: '#/components/schemas/Group'
         '404':
           $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
     delete:
-      tags:
-        - Resource Group Entities
-      summary: Delete a resource group entity
-      description: |
-        Deletes an existing resource group entity. If the entity has descendants and force=false, 
-        returns a conflict response with the list of descendants that must be handled first.
-      operationId: deleteResourceGroupEntity
+      operationId: deleteGroup
+      tags: [groups]
+      summary: Delete a group by id
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
-        - name: force
-          in: query
-          required: false
-          description: |
-            If true, deletes the entity and all its descendants. 
-            If false (default), deletion fails if descendants exist.
-          schema:
-            type: boolean
-            default: false
-            example: false
+        - $ref: '#/components/parameters/DeleteForce'
       responses:
         '204':
-          description: Resource group entity deleted successfully
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          description: |
-            Deletion conflict - entity has descendants and force=false.
-            Response includes list of descendants that prevent deletion.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-              example:
-                code: "Conflict"
-                message: "Resource group has descendants and cannot be deleted"
-                descendants:
-                  - group:
-                      id: "456e7890-e89b-12d3-a456-426614174001"
-                      parent_id: "123e4567-e89b-12d3-a456-426614174000"
-                      type_code: "SUB_DEPARTMENT"
-                      name: "Engineering Sub-Department"
-                      external_id: null
-                      created: "2024-01-15T10:30:00Z"
-                      modified: "2024-01-15T15:45:30Z"
-                    depth: 1
-        '500':
-          $ref: '#/components/responses/InternalError'
+          description: Group deleted
 
   /api/resource-group/v1/groups/{id}/ancestors:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
     get:
-      tags:
-        - Resource Group Entities
-      summary: Get ancestors of a resource group entity
-      description: Retrieves all ancestors of a specific resource group entity in the hierarchy
-      operationId: getResourceGroupAncestors
+      operationId: listAncestors
+      tags: [hierarchy]
+      summary: List ancestors of a group
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
       responses:
         '200':
-          description: Ancestors retrieved successfully
+          description: Paginated list of ancestors
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupHierarchyResponse'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: '#/components/schemas/HierarchyPage'
 
   /api/resource-group/v1/groups/{id}/descendants:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
     get:
-      tags:
-        - Resource Group Entities
-      summary: Get descendants of a resource group entity
-      description: Retrieves all descendants of a specific resource group entity in the hierarchy
-      operationId: getResourceGroupDescendants
+      operationId: listDescendants
+      tags: [hierarchy]
+      summary: List descendants of a group
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
       responses:
         '200':
-          description: Descendants retrieved successfully
+          description: Paginated list of descendants
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupHierarchyResponse'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: '#/components/schemas/HierarchyPage'
 
-  # Resource Group Reference Endpoints
-  /api/resource-group/v1/groups/{id}/references:
-    post:
-      tags:
-        - Resource Group References
-      summary: Create a resource group reference
-      description: Creates a new reference to an external resource for the specified resource group
-      operationId: createResourceGroupReference
+  /api/resource-group/v1/groups/ancestors:
+    get:
+      operationId: listAncestorsBatch
+      tags: [hierarchy]
+      summary: Batch read ancestors via filters
+      description: Use $filter with source_group_id in (...) for batch read.
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
+      responses:
+        '200':
+          description: Paginated batch ancestors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchHierarchyPage'
+
+  /api/resource-group/v1/groups/descendants:
+    get:
+      operationId: listDescendantsBatch
+      tags: [hierarchy]
+      summary: Batch read descendants via filters
+      description: Use $filter with source_group_id in (...) for batch read.
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
+      responses:
+        '200':
+          description: Paginated batch descendants
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchHierarchyPage'
+
+  /api/resource-group/v1/groups/{id}/references:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      operationId: listGroupReferences
+      tags: [references]
+      summary: List references bound to a group
+      parameters:
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataOrderBy'
+        - $ref: '#/components/parameters/ODataSelect'
+      responses:
+        '200':
+          description: Paginated references
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferencePage'
+    post:
+      operationId: addGroupReference
+      tags: [references]
+      summary: Attach reference to a group
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateResourceGroupReferenceRequest'
+              $ref: '#/components/schemas/CreateReferenceRequest'
       responses:
         '201':
-          description: Resource group reference created successfully
+          description: Reference attached
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceGroupReference'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
+                $ref: '#/components/schemas/Reference'
     delete:
-      tags:
-        - Resource Group References
-      summary: Delete a resource group reference
-      description: Deletes an existing reference to an external resource for the specified resource group
-      operationId: deleteResourceGroupReference
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: The unique identifier of the resource group entity
-          schema:
-            type: string
-            format: uuid
-            example: "123e4567-e89b-12d3-a456-426614174000"
+      operationId: deleteGroupReference
+      tags: [references]
+      summary: Detach reference from a group
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DeleteResourceGroupReferenceRequest'
+              $ref: '#/components/schemas/DeleteReferenceRequest'
       responses:
-        '200':
-          description: Resource group reference deleted successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ResourceGroupReference'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        '204':
+          description: Reference detached
 
 components:
   securitySchemes:
@@ -462,355 +343,304 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT token for application authentication
 
-  schemas:
-    # Resource Group Type Schemas
-    CreateResourceGroupTypeRequest:
-      type: object
-      required:
-        - code
-        - parents
-        - allowed_app_ids
-      properties:
-        code:
-          type: string
-          description: Unique identifier for the resource group type
-          pattern: '^[^\s]{1,63}$'
-          example: "DEPARTMENT"
-        parents:
-          type: array
-          description: List of parent resource group type codes
-          items:
-            type: string
-          example: ["ORGANIZATION", "DIVISION"]
-        allowed_app_ids:
-          type: array
-          description: List of application IDs allowed to manage this resource group type
-          items:
-            type: string
-            format: uuid
-          example: ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d7-8b9c-123456789012"]
-
-    UpdateResourceGroupTypeRequest:
-      type: object
-      required:
-        - parents
-        - allowed_app_ids
-      properties:
-        parents:
-          type: array
-          description: Updated list of parent resource group type codes
-          items:
-            type: string
-          example: ["ORGANIZATION"]
-        allowed_app_ids:
-          type: array
-          description: Updated list of application IDs allowed to manage this resource group type
-          items:
-            type: string
-            format: uuid
-          example: ["123e4567-e89b-12d3-a456-426614174000"]
-
-    ResourceGroupTypeResponse:
-      type: object
-      properties:
-        code:
-          type: string
-          description: Unique identifier for the resource group type
-          example: "DEPARTMENT"
-        parents:
-          type: array
-          description: List of parent resource group type codes
-          items:
-            type: string
-          example: ["ORGANIZATION"]
-        application_id:
-          type: string
-          format: uuid
-          description: ID of the application that owns this resource group type
-          example: "123e4567-e89b-12d3-a456-426614174000"
-        allowed_app_ids:
-          type: array
-          description: List of application IDs allowed to manage this resource group type
-          items:
-            type: string
-            format: uuid
-          example: ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d7-8b9c-123456789012"]
-
-    # Resource Group Entity Schemas
-    CreateResourceGroupRequest:
-      type: object
-      required:
-        - type_code
-        - name
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Optional UUID - if not provided, will be auto-generated
-          example: "123e4567-e89b-12d3-a456-426614174000"
-        parent_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Parent resource group ID for hierarchy
-          example: "987fcdeb-51a2-43d7-8b9c-123456789012"
-        type_code:
-          type: string
-          description: Resource group type code - must reference existing resource_group_type
-          minLength: 1
-          maxLength: 63
-          pattern: '^[^\s]+$'
-          example: "DEPARTMENT"
-        name:
-          type: string
-          description: Display name for the resource group
-          minLength: 1
-          maxLength: 255
-          example: "Engineering Department"
-        external_id:
-          type: string
-          nullable: true
-          description: Optional external identifier for integration
-          maxLength: 255
-          example: "EXT_DEPT_001"
-
-    UpdateResourceGroupRequest:
-      type: object
-      properties:
-        parent_id:
-          description: |
-            New parent resource group ID for hierarchy changes.
-            - null value: remove parent (make root)
-            - UUID value: set new parent
-            - omit field: don't change parent
-          type: string
-          format: uuid
-          nullable: true
-          example: "987fcdeb-51a2-43d7-8b9c-123456789012"
-        type_code:
-          type: string
-          description: New resource group type code - must reference existing resource_group_type
-          minLength: 1
-          maxLength: 63
-          pattern: '^[^\s]+$'
-          example: "UPDATED_DEPARTMENT"
-        name:
-          type: string
-          description: New display name for the resource group
-          minLength: 1
-          maxLength: 255
-          example: "Updated Engineering Department"
-        external_id:
-          description: |
-            New external identifier for integration.
-            - null value: remove external ID
-            - string value: set new external ID
-            - omit field: don't change external ID
-          type: string
-          maxLength: 255
-          nullable: true
-          example: "UPDATED_EXT_DEPT_001"
-
-    ResourceGroupResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Unique identifier for the resource group
-          example: "123e4567-e89b-12d3-a456-426614174000"
-        parent_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Parent resource group ID (null for root groups)
-          example: "987fcdeb-51a2-43d7-8b9c-123456789012"
-        type_code:
-          type: string
-          description: Resource group type code
-          example: "DEPARTMENT"
-        name:
-          type: string
-          description: Display name of the resource group
-          example: "Engineering Department"
-        external_id:
-          type: string
-          nullable: true
-          description: External identifier for integration
-          example: "EXT_DEPT_001"
-        created:
-          type: string
-          format: date-time
-          description: Creation timestamp
-          example: "2024-01-15T10:30:00Z"
-        modified:
-          type: string
-          format: date-time
-          description: Last modification timestamp
-          example: "2024-01-15T15:45:30Z"
-
-    ResourceGroupHierarchyItem:
-      type: object
-      properties:
-        group:
-          $ref: '#/components/schemas/ResourceGroupResponse'
-        depth:
-          type: integer
-          description: Hierarchical depth relative to the queried group
-          example: 2
-
-    ResourceGroupHierarchyResponse:
-      type: object
-      properties:
-        items:
-          type: array
-          description: List of resource groups with their hierarchical depth
-          items:
-            $ref: '#/components/schemas/ResourceGroupHierarchyItem'
-
-    # Resource Group Reference Schemas
-    CreateResourceGroupReferenceRequest:
-      type: object
-      required:
-        - reference_type
-        - reference_id
-      properties:
-        reference_type:
-          type: string
-          description: The type of the external resource being referenced
-          minLength: 1
-          example: "user"
-        reference_id:
-          type: string
-          description: The identifier of the external resource being referenced
-          minLength: 1
-          example: "user_123"
-
-    DeleteResourceGroupReferenceRequest:
-      type: object
-      required:
-        - reference_type
-        - reference_id
-      properties:
-        reference_type:
-          type: string
-          description: The type of the external resource being referenced
-          minLength: 1
-          example: "user"
-        reference_id:
-          type: string
-          description: The identifier of the external resource being referenced
-          minLength: 1
-          example: "user_123"
-
-    ResourceGroupReference:
-      type: object
-      properties:
-        group_id:
-          type: string
-          format: uuid
-          description: The unique identifier of the resource group
-          example: "123e4567-e89b-12d3-a456-426614174000"
-        reference_type:
-          type: string
-          description: The type of the external resource being referenced
-          example: "user"
-        reference_id:
-          type: string
-          description: The identifier of the external resource being referenced
-          example: "user_123"
-        application_id:
-          type: string
-          format: uuid
-          description: The unique identifier of the application that created this reference
-          example: "987fcdeb-51a2-43d7-8b9c-123456789012"
-
-    # Error Schemas
-    ApiError:
-      type: object
-      properties:
-        code:
-          type: string
-          description: Error code identifier
-          example: "Validation Error"
-        message:
-          type: string
-          description: Human-readable error message
-          example: "Request validation failed: Type code must be between 1 and 63 characters"
-        descendants:
-          type: array
-          description: List of descendant resource groups (only present in deletion conflict errors)
-          items:
-            $ref: '#/components/schemas/ResourceGroupHierarchyItem'
-          nullable: true
+  parameters:
+    GroupId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TypeCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+    TenantId:
+      name: tenant_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    IdIn:
+      name: id.in
+      in: query
+      required: false
+      description: Comma-separated list of group IDs for collection filtering.
+      schema:
+        type: string
+    DeleteForce:
+      name: force
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    PaginationLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    PaginationCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+    ODataSelect:
+      name: $select
+      in: query
+      required: false
+      description: OData v4.01 field projection.
+      schema:
+        type: string
+    ODataOrderBy:
+      name: $orderby
+      in: query
+      required: false
+      description: OData v4.01 ordering expression.
+      schema:
+        type: string
+    ODataFilter:
+      name: $filter
+      in: query
+      required: false
+      description: |
+        OData v4.01 filter expression.
+      schema:
+        type: string
 
   responses:
-    ValidationError:
-      description: Request validation failed
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiError'
-          example:
-            code: "Validation Error"
-            message: "Request validation failed: Type code must be between 1 and 63 characters"
-
-    Unauthorized:
-      description: Authentication required or invalid
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiError'
-          example:
-            code: "Unauthorized"
-            message: "Invalid or missing application ID in token"
-
-    Forbidden:
-      description: Access denied - insufficient permissions
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiError'
-          example:
-            code: "Forbidden"
-            message: "Access denied"
-
     NotFound:
       description: Resource not found
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ApiError'
-          example:
-            code: "Not Found"
-            message: "Resource group with code 'DEPARTMENT' was not found"
+            $ref: '#/components/schemas/Problem'
 
-    Conflict:
-      description: Resource already exists or conflicts with existing data
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiError'
-          example:
-            code: "Conflict"
-            message: "Resource already exists"
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        trace_id: { type: string }
 
-    InternalError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiError'
-          example:
-            code: "Internal Server Error"
-            message: "An unexpected error occurred"
+    PageInfo:
+      type: object
+      required: [limit]
+      properties:
+        limit:
+          type: integer
+        next_cursor:
+          type: [string, 'null']
+        prev_cursor:
+          type: [string, 'null']
 
-tags:
-  - name: Resource Group Types
-    description: Operations for managing resource group types and their relationships
-  - name: Resource Group Entities
-    description: Operations for managing resource group entities and hierarchical queries
-  - name: Resource Group References
-    description: Operations for managing references between resource groups and external resources 
+    Type:
+      type: object
+      required: [code, ancestors]
+      properties:
+        code:
+          type: string
+        ancestors:
+          type: array
+          items:
+            type: string
+
+    TypePage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Type'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    CreateTypeRequest:
+      type: object
+      required: [code, ancestors]
+      properties:
+        code:
+          type: string
+        ancestors:
+          type: array
+          items:
+            type: string
+
+    UpdateTypeRequest:
+      type: object
+      properties:
+        ancestors:
+          type: array
+          items:
+            type: string
+
+    Group:
+      type: object
+      required: [id, group_type, name, tenant_id]
+      properties:
+        id:
+          type: string
+          format: uuid
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+        group_type:
+          type: string
+        name:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        external_id:
+          type: [string, 'null']
+        created:
+          type: [string, 'null']
+          format: date-time
+        modified:
+          type: [string, 'null']
+          format: date-time
+
+    GroupPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    CreateGroupRequest:
+      type: object
+      required: [group_type, name, tenant_id]
+      properties:
+        group_type:
+          type: string
+        name:
+          type: string
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        external_id:
+          type: [string, 'null']
+
+    UpdateGroupRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+        external_id:
+          type: [string, 'null']
+
+    HierarchyItem:
+      type: object
+      required: [group, depth]
+      properties:
+        group:
+          $ref: '#/components/schemas/Group'
+        depth:
+          type: integer
+
+    HierarchyPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HierarchyItem'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    BatchHierarchyItem:
+      type: object
+      required: [source_group_id, group, depth]
+      properties:
+        source_group_id:
+          type: string
+          format: uuid
+        group:
+          $ref: '#/components/schemas/Group'
+        depth:
+          type: integer
+
+    BatchHierarchyPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchHierarchyItem'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    Reference:
+      type: object
+      required: [group_id, resource_type, resource_id, tenant_id]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+
+    ReferencePage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reference'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+
+    CreateReferenceRequest:
+      type: object
+      required: [resource_type, resource_id, tenant_id]
+      properties:
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+
+    DeleteReferenceRequest:
+      type: object
+      required: [resource_type, resource_id, tenant_id]
+      properties:
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
