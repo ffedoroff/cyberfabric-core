@@ -15,9 +15,9 @@ BEGIN;
 -- Group types used by the seed hierarchy.
 INSERT INTO resource_group_type (code, ancestors)
 VALUES
-    ('tenant', '{}'),
+    ('tenant', '{"",tenant}'),
     ('department', '{tenant}'),
-    ('branch', '{department,tenant}');
+    ('branch', '{department}');
 
 -- Groups only (resources are stored in membership table, not as group_type/resource_group rows).
 INSERT INTO resource_group (id, group_type, name, tenant_id, external_id)
