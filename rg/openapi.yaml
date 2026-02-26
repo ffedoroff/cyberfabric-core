@@ -115,9 +115,9 @@ paths:
           description: Type created
           content:
             application/json:
-            schema:
-              $ref: '#/components/schemas/Type'
-            example:
+              schema:
+                $ref: '#/components/schemas/Type'
+              example:
                 ancestors: [tenant]
                 code: department
 
@@ -184,9 +184,10 @@ paths:
           - `name` (eq, ne, in, contains, startswith, endswith)
           - `parent_id` (eq, ne, in)
           - `tenant_id` (eq, ne, in)
-          - `resource_id` (eq, ne, in, contains, startswith, endswith)
-          - `resource_type` (eq, ne, in)
-          - `resource_tenant_id` (eq, ne, in)
+          - `depth` (eq, ne, gt, ge, lt, le)
+          - `resources/resource_id`  (eq, ne, in, contains, startswith, endswith)
+          - `resources/resource_type` (eq, ne, in)
+          - `resources/resource_tenant_id` (eq, ne, in)
         - `$select`:
           - `created`
           - `external_id`
@@ -196,6 +197,10 @@ paths:
           - `name`
           - `parent_id`
           - `tenant_id`
+          - `depth`
+          - `resources/resource_id`
+          - `resources/resource_type`
+          - `resources/resource_tenant_id`
       x-odata-orderby:
         supported_fields: [id, parent_id, group_type, name, tenant_id, external_id, created, modified]
         supported_directions: [asc, desc]
@@ -337,7 +342,8 @@ paths:
           - `group.tenant_id` (asc, desc)
           - `source_group_id` (asc, desc)
         - `$filter`:
-          - `source_group_id` (eq, ne, in)
+          - `ancestor/depth` (eq, ne, gt, ge, lt, le)
+          - `ancestor/group_id` (eq, ne, in)
         - `$select`:
           - `depth`
           - `group.external_id`
