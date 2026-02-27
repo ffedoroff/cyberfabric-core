@@ -67,7 +67,9 @@ paths:
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataOrderBy'
-        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+        - $ref: '#/components/parameters/ODataCount'
       responses:
         '200':
           description: Paginated list of types
@@ -84,9 +86,9 @@ paths:
                   - parents: [department]
                     code: branch
                 page_info:
-                  limit: 50
-                  next_cursor: null
-                  prev_cursor: null
+                  top: 50
+                  
+                  
     post:
       operationId: createType
       tags: [types]
@@ -183,9 +185,6 @@ paths:
           - `name` indexed: eq, ne, in, full scan: contains, startswith, endswith
           - `parent_id` eq, ne, in
           - `tenant_id` eq, ne, in
-          - `resources/resource_id` (eq, ne, in, contains, startswith, endswith) Real OData: `any(r: r/resource_id eq '123')`
-          - `resources/resource_tenant_id` eq, ne, in
-          - `resources/resource_type` eq, ne, in
       x-odata-orderby:
         supported_fields: [id, parent_id, group_type, name, tenant_id, external_id]
         supported_directions: [asc, desc]
@@ -198,14 +197,12 @@ paths:
           name: [eq, ne, in, contains, startswith, endswith]
           tenant_id: [eq, ne, in]
           external_id: [eq, ne, in, contains, startswith, endswith]
-          resources/resource_id: [eq, ne, in, contains, startswith, endswith]
-          resources/resource_tenant_id: [eq, ne, in]
-          resources/resource_type: [eq, ne, in]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataOrderBy'
-        - $ref: '#/components/parameters/PaginationLimit'
-        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+        - $ref: '#/components/parameters/ODataCount'
       responses:
         '200':
           description: Paginated list of groups
@@ -221,17 +218,12 @@ paths:
                     name: D2
                     parent_id: 11111111-1111-1111-1111-111111111111
                     tenant_id: 11111111-1111-1111-1111-111111111111
-                    resources:
-                      - resource_id: 11002222-2222-2222-2222-222222222222
-                        resource_tenant_id: 11111111-1111-1111-1111-111111111111
-                        resource_type: user
-                      - resource_id: 678
-                        resource_tenant_id: 11111111-1111-1111-1111-111111111111
-                        resource_type: car
+                    depth: 0
                 page_info:
-                  limit: 50
-                  next_cursor: null
-                  prev_cursor: null
+                  top: 50
+                  skip: 0
+                  count: 1
+                                   
     post:
       operationId: createGroup
       tags: [groups]
@@ -339,6 +331,7 @@ paths:
         - `$filter`:
           - `resource_id` eq, ne, in
           - `resource_type` eq, ne, in
+          - `tenant_id` eq, ne, in
       x-odata-orderby:
         supported_fields: [resource_id, resource_type, tenant_id]
         supported_directions: [asc, desc]
@@ -351,7 +344,9 @@ paths:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataOrderBy'
         - $ref: '#/components/parameters/PaginationCursor'
-        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+        - $ref: '#/components/parameters/ODataCount'
       responses:
         '200':
           description: Paginated resources
@@ -366,9 +361,10 @@ paths:
                     resource_type: resource
                     tenant_id: 11111111-1111-1111-1111-111111111111
                 page_info:
-                  limit: 50
-                  next_cursor: null
-                  prev_cursor: null
+                  top: 50
+                  skip: 0
+                  count: 1
+
     post:
       operationId: addGroupMembership
       tags: [resources]
@@ -456,16 +452,38 @@ components:
         default: false
       example: false
 
-    PaginationLimit:
-      name: limit
+    ODataTop:
+      name: $top
       in: query
       required: false
+      description: OData v4.01 page size.
       schema:
         type: integer
         minimum: 1
         maximum: 300
         default: 50
       example: 50
+
+    ODataSkip:
+      name: $skip
+      in: query
+      required: false
+      description: OData v4.01 offset.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      example: 0
+
+    ODataCount:
+      name: $count
+      in: query
+      required: false
+      description: OData v4.01 include total count.
+      schema:
+        type: boolean
+        default: false
+      example: false
 
     ODataOrderBy:
       name: $orderby
@@ -520,14 +538,11 @@ components:
       properties:
         limit:
           type: integer
-        next_cursor:
-          type: [string, 'null']
-        prev_cursor:
-          type: [string, 'null']
       example:
-        limit: 50
-        next_cursor: null
-        prev_cursor: null
+        top: 50
+        skip: 0
+        count: 1  
+        
 
     Type:
       type: object
@@ -561,9 +576,9 @@ components:
           - parents: [department]
             code: branch
         page_info:
-          limit: 50
-          next_cursor: null
-          prev_cursor: null
+          top: 50
+          skip: 0
+          count: 1
 
     CreateTypeRequest:
       type: object
@@ -636,9 +651,9 @@ components:
             parent_id: 11111111-1111-1111-1111-111111111111
             tenant_id: 11111111-1111-1111-1111-111111111111
         page_info:
-          limit: 50
-          next_cursor: null
-          prev_cursor: null
+          top: 50
+          skip: 0
+          count: 1      
 
     CreateGroupRequest:
       type: object
@@ -724,9 +739,9 @@ components:
             resource_type: resource
             tenant_id: 11111111-1111-1111-1111-111111111111
         page_info:
-          limit: 50
-          next_cursor: null
-          prev_cursor: null
+          top: 50
+          skip: 0
+          count: 1     
 
     CreateMembershipRequest:
       type: object
