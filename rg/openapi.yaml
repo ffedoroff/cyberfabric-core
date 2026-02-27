@@ -41,8 +41,8 @@ tags:
     description: Resource group types
   - name: groups
     description: Resource groups
-  - name: memberships
-    description: Resource memberships bound to groups
+  - name: resources
+    description: Resource resources bound to groups
 
 paths:
   /api/resource-group/v1/types:
@@ -325,20 +325,17 @@ paths:
         '204':
           description: Group deleted
 
-  /api/resource-group/v1/groups/{id}/resources:
+  /api/resource-group/v1/resources:
     parameters:
       - $ref: '#/components/parameters/GroupId'
     get:
       operationId: listGroupResources
-      tags: [memberships]
+      tags: [resources]
       summary: List resources bound to a group
       description: |
         Returns paginated resources bound to a group using with OData query support. Use `$orderby` and `$filter` for advanced queries.
 
         OData support:
-        - `$orderby`:
-          - `resource_id` asc, desc
-          - `resource_type` asc, desc
         - `$filter`:
           - `resource_id` eq, ne, in
           - `resource_type` eq, ne, in
@@ -374,7 +371,7 @@ paths:
                   prev_cursor: null
     post:
       operationId: addGroupMembership
-      tags: [memberships]
+      tags: [resources]
       summary: Attach membership to a group
       requestBody:
         required: true
@@ -400,7 +397,7 @@ paths:
                 tenant_id: 11111111-1111-1111-1111-111111111111
     delete:
       operationId: deleteGroupMembership
-      tags: [memberships]
+      tags: [resources]
       summary: Detach membership from a group
       requestBody:
         required: true
