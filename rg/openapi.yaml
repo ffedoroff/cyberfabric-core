@@ -175,7 +175,7 @@ paths:
           - `parent_id` (asc, desc)
           - `tenant_id` (asc, desc)
         - `$filter`:
-          - `depth` (eq, ne, gt, ge, lt, le)
+          - `depth` (eq, ne, gt, ge, lt, le) could be negative `depth le -10 and depth gt 5`
           - `external_id` (eq, ne, in, contains, startswith, endswith)
           - `group_type` (eq, ne, in)
           - `id` (eq, ne, in)
