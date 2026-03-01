@@ -9,9 +9,8 @@ fn calculate_percent(used: u64, total: u64) -> u32 {
     if total == 0 {
         return 0;
     }
-    // Use f64 for division to satisfy clippy::integer_division
-    let percent = (used * 100) / total;
-    // Clamp to 0-100 range - percent is always positive here
+    // Widen to u128 before multiplying to prevent overflow (used * 100 wraps at ~184 PB on u64).
+    let percent = (u128::from(used) * 100 / u128::from(total)) as u64;
     percent.min(100).try_into().unwrap_or(0)
 }
 
