@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS resource_group_type (
     code TEXT PRIMARY KEY,
-    ancestors TEXT[] NOT NULL DEFAULT '{}'
+    ancestors TEXT[] NOT NULL DEFAULT '{}',
+    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    modified TIMESTAMP WITH TIME ZONE DEFAULT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_group_type_code_lower
