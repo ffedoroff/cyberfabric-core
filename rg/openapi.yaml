@@ -38,11 +38,18 @@ security:
   - bearerAuth: []
 tags:
   - name: types
-    description: Resource group types
+    description: |
+      Resource group types define the hierarchy structure (e.g. tenant → department → branch).
+      Types are tenant-independent and available to all tenants.
   - name: groups
-    description: Resource groups
+    description: |
+      Resource groups organized in a hierarchy. A tenant is itself a group (the root of the hierarchy).
+      Every group belongs to a tenant (`tenant_id`). The hierarchy may span a tenant and its sub-tenants,
+      so responses include `tenant_id` to distinguish which tenant each group belongs to.
   - name: memberships
-    description: Resource memberships bound to groups
+    description: |
+      Resource memberships bind resources to groups.
+      All memberships are always scoped to a single tenant, so `tenant_id` is not returned in list responses.
 
 paths:
   /api/resource-group/v1/types:
@@ -52,6 +59,8 @@ paths:
       summary: List resource group types
       description: |
         Returns paginated resource group types with OData query support. Use `$filter` for advanced queries.
+
+        Types are **tenant-independent** — they define the hierarchy structure globally and are available to all tenants.
 
         - `$filter`:
           - `code` indexed: eq, ne, in
@@ -166,6 +175,10 @@ paths:
       summary: List groups with filters and pagination
       description: |
         Returns paginated resource groups with OData query support. Use `$filter` for advanced queries.
+
+        A tenant is itself a group (the root of the hierarchy). Groups are scoped to a **tenant hierarchy** —
+        the response may contain groups belonging to the tenant and its sub-tenants.
+        Each group includes `tenant_id` to identify which tenant it belongs to.
 
         OData support:
         - `$filter`:
@@ -303,14 +316,14 @@ paths:
           description: Group deleted
 
   /api/resource-group/v1/memberships:
-    parameters:
-      - $ref: '#/components/parameters/GroupId'
     get:
       operationId: listMemberships
       tags: [memberships]
       summary: List memberships bound to a group
       description: |
         Returns paginated memberships bound to a group with OData query support. Use `$filter` for advanced queries.
+
+        All memberships are always within the scope of a **single tenant**, so `tenant_id` is not included in the response.
 
         OData support:
         - `$filter`:
@@ -341,7 +354,7 @@ paths:
                 items:
                   - group_id: 33333333-3333-3333-3333-333333333333
                     resource_id: R4
-                    resource_type: resource
+                    resource_type: User
                 page_info:
                   top: 50
                   skip: 0
@@ -359,7 +372,7 @@ paths:
             example:
               group_id: 33333333-3333-3333-3333-333333333333
               resource_id: R4
-              resource_type: resource
+              resource_type: User
       responses:
         '201':
           description: Membership attached
@@ -370,7 +383,7 @@ paths:
               example:
                 group_id: 33333333-3333-3333-3333-333333333333
                 resource_id: R4
-                resource_type: resource
+                resource_type: User
                 tenant_id: 11111111-1111-1111-1111-111111111111
     delete:
       operationId: deleteMembership
@@ -385,17 +398,12 @@ paths:
             example:
               group_id: 33333333-3333-3333-3333-333333333333
               resource_id: R4
-              resource_type: resource
+              resource_type: User
       responses:
         '204':
           description: Membership detached
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
 
   parameters:
     GroupId:
@@ -668,7 +676,7 @@ components:
           example: R4
         resource_type:
           type: string
-          example: resource
+          example: User
         tenant_id:
           type: string
           format: uuid
@@ -688,7 +696,7 @@ components:
         items:
           - group_id: 33333333-3333-3333-3333-333333333333
             resource_id: R4
-            resource_type: resource
+            resource_type: User
             tenant_id: 11111111-1111-1111-1111-111111111111
         page_info:
           top: 50
@@ -697,7 +705,7 @@ components:
 
     CreateMembershipRequest:
       type: object
-      required: [group_id, resource_id, resource_type, tenant_id]
+      required: [group_id, resource_id, resource_type]
       properties:
         group_id:
           type: string
@@ -708,15 +716,11 @@ components:
           example: R4
         resource_type:
           type: string
-          example: resource
-        tenant_id:
-          type: string
-          format: uuid
-          example: 11111111-1111-1111-1111-111111111111
+          example: User
 
     DeleteMembershipRequest:
       type: object
-      required: [group_id, resource_id, resource_type, tenant_id]
+      required: [group_id, resource_id, resource_type]
       properties:
         group_id:
           type: string
@@ -727,8 +731,4 @@ components:
           example: R4
         resource_type:
           type: string
-          example: resource
-        tenant_id:
-          type: string
-          format: uuid
-          example: 11111111-1111-1111-1111-111111111111
+          example: Course
