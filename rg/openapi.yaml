@@ -4,12 +4,12 @@ info:
   version: 1.0.0
   description: |
     Resource Group API based on rg/api.md.
-    Supports pagination and OData-style query options ($filter, $orderby).
+    Supports pagination and OData-style query options ($filter).
 
     OData:
     - Protocol: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html
     - $filter: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter
-    - $orderby: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionorderby
+
 
     Example types:
     ```text
@@ -51,25 +51,19 @@ paths:
       tags: [types]
       summary: List resource group types
       description: |
-        Returns paginated resource group types using with OData query support. Use `$orderby` and `$filter` for advanced queries.
-    
-        - `$orderby`:
-          - `code` asc, desc
+        Returns paginated resource group types with OData query support. Use `$filter` for advanced queries.
+
         - `$filter`:
-          - `code` indexed: eq, ne, in, full scan: contains, startswith, endswith
+          - `code` indexed: eq, ne, in
         - `$top`:
           - Page size (1..300), default `50`
         - `$skip`:
           - Offset from the beginning of the result set, default `0`
-      x-odata-orderby:
-        supported_fields: [code]
-        supported_directions: [asc, desc]
       x-odata-filter:
         supported_fields:
           code: [eq, ne, in, contains, startswith, endswith]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
-        - $ref: '#/components/parameters/ODataOrderBy'
         - $ref: '#/components/parameters/ODataTop'
         - $ref: '#/components/parameters/ODataSkip'
       responses:
@@ -171,13 +165,9 @@ paths:
       tags: [groups]
       summary: List groups with filters and pagination
       description: |
-        Returns paginated resource groups using with OData query support. Use `$orderby` and `$filter` for advanced queries.
+        Returns paginated resource groups with OData query support. Use `$filter` for advanced queries.
 
         OData support:
-        - `$orderby`:
-          - `group_type` asc, desc
-          - `name` asc, desc
-          - `parent_id` asc, desc
         - `$filter`:
           - `depth` eq, ne, gt, ge, lt, le. Could be negative e.g. `depth le -10 and depth gt 5`
           - `group_type` eq, ne, in
@@ -188,9 +178,6 @@ paths:
           - Page size (1..300), default `50`
         - `$skip`:
           - Offset from the beginning of the result set, default `0`
-      x-odata-orderby:
-        supported_fields: [id, parent_id, group_type, name, tenant_id, external_id]
-        supported_directions: [asc, desc]
       x-odata-filter:
         supported_fields:
           depth: [eq, ne, gt, ge, lt, le]
@@ -202,7 +189,6 @@ paths:
           external_id: [eq, ne, in, contains, startswith, endswith]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
-        - $ref: '#/components/parameters/ODataOrderBy'
         - $ref: '#/components/parameters/ODataTop'
         - $ref: '#/components/parameters/ODataSkip'
       responses:
@@ -326,10 +312,9 @@ paths:
       tags: [resources]
       summary: List resources bound to a group
       description: |
-        Returns paginated resources bound to a group using with OData query support. Use `$orderby` and `$filter` for advanced queries.
+        Returns paginated resources bound to a group with OData query support. Use `$filter` for advanced queries.
 
         OData support:
-          - `tenant_id` asc, desc
         - `$filter`:
           - `resource_id` eq, ne, in
           - `resource_type` eq, ne, in
@@ -338,9 +323,6 @@ paths:
           - Page size (1..300), default `50`
         - `$skip`:
           - Offset from the beginning of the result set, default `0`
-      x-odata-orderby:
-        supported_fields: [resource_id, resource_type, tenant_id]
-        supported_directions: [asc, desc]
       x-odata-filter:
         supported_fields:
           resource_id: [eq, ne, in, contains, startswith, endswith]
@@ -348,7 +330,6 @@ paths:
           tenant_id: [eq, ne, in]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
-        - $ref: '#/components/parameters/ODataOrderBy'
         - $ref: '#/components/parameters/ODataTop'
         - $ref: '#/components/parameters/ODataSkip'
       responses:
@@ -474,14 +455,6 @@ components:
         minimum: 0
         default: 0
       example: 0
-
-    ODataOrderBy:
-      name: $orderby
-      in: query
-      required: false
-      description: OData v4.01 ordering expression.
-      schema:
-        type: string
 
     ODataFilter:
       name: $filter
