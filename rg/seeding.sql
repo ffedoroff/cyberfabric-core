@@ -13,20 +13,20 @@
 BEGIN;
 
 -- Group types used by the seed hierarchy.
-INSERT INTO resource_group_type (code, ancestors)
+INSERT INTO resource_group_type (code, parents)
 VALUES
     ('tenant', '{"",tenant}'),
     ('department', '{tenant}'),
     ('branch', '{department}');
 
 -- Groups only (resources are stored in membership table, not as group_type/resource_group rows).
-INSERT INTO resource_group (id, group_type, name, tenant_id, external_id)
+INSERT INTO resource_group (id, parent_id, group_type, name, tenant_id, external_id)
 VALUES
-    ('11111111-1111-1111-1111-111111111111', 'tenant', 'T1', '11111111-1111-1111-1111-111111111111', 'T1'),
-    ('22222222-2222-2222-2222-222222222222', 'department', 'D2', '11111111-1111-1111-1111-111111111111', 'D2'),
-    ('33333333-3333-3333-3333-333333333333', 'branch', 'B3', '11111111-1111-1111-1111-111111111111', 'B3'),
-    ('77777777-7777-7777-7777-777777777777', 'tenant', 'T7', '11111111-1111-1111-1111-111111111111', 'T7'),
-    ('99999999-9999-9999-9999-999999999999', 'tenant', 'T9', '99999999-9999-9999-9999-999999999999', 'T9');
+    ('11111111-1111-1111-1111-111111111111', NULL,                                      'tenant',     'T1', '11111111-1111-1111-1111-111111111111', 'T1'),
+    ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111',     'department', 'D2', '11111111-1111-1111-1111-111111111111', 'D2'),
+    ('33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222',     'branch',     'B3', '11111111-1111-1111-1111-111111111111', 'B3'),
+    ('77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111',     'tenant',     'T7', '11111111-1111-1111-1111-111111111111', 'T7'),
+    ('99999999-9999-9999-9999-999999999999', NULL,                                      'tenant',     'T9', '99999999-9999-9999-9999-999999999999', 'T9');
 
 -- Closure entries for groups hierarchy.
 INSERT INTO resource_group_closure (ancestor_id, descendant_id, depth)

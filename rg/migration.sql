@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS resource_group_type (
     code TEXT PRIMARY KEY,
-    ancestors TEXT[] NOT NULL DEFAULT '{}',
+    parents TEXT[] NOT NULL DEFAULT '{}',
     created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     modified TIMESTAMP WITH TIME ZONE DEFAULT NULL
 );
@@ -9,10 +9,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_group_type_code_lower
     ON resource_group_type (LOWER(code));
 
 COMMENT ON TABLE resource_group_type
-    IS 'Resource group type definitions with ancestor relationships';
+    IS 'Resource group type definitions with parent type relationships';
 
 CREATE TABLE IF NOT EXISTS resource_group (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_id UUID,
     group_type TEXT NOT NULL,
     name TEXT NOT NULL,
     tenant_id UUID NOT NULL,
@@ -23,11 +24,18 @@ CREATE TABLE IF NOT EXISTS resource_group (
         FOREIGN KEY (group_type)
         REFERENCES resource_group_type(code)
         ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_resource_group_parent
+        FOREIGN KEY (parent_id)
+        REFERENCES resource_group(id)
+        ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
 
 COMMENT ON TABLE resource_group
     IS 'Hierarchical resource groups with closure table pattern for efficient ancestor/descendant queries';
+COMMENT ON COLUMN resource_group.parent_id
+    IS 'Direct parent group reference; NULL for root groups (e.g. top-level tenants)';
 COMMENT ON COLUMN resource_group.group_type
     IS 'Reference to resource_group_type.code defining the type of this resource group';
 COMMENT ON COLUMN resource_group.external_id
@@ -49,7 +57,6 @@ CREATE TABLE IF NOT EXISTS resource_group_closure (
         ON DELETE RESTRICT
 );
 
-
 COMMENT ON TABLE resource_group_closure
     IS 'Closure table for resource group hierarchy - stores all ancestor-descendant relationships with depth';
 COMMENT ON COLUMN resource_group_closure.depth
@@ -59,6 +66,7 @@ CREATE TABLE IF NOT EXISTS resource_group_membership (
     group_id UUID NOT NULL,
     resource_type TEXT NOT NULL,
     resource_id TEXT NOT NULL,
+    tenant_id UUID NOT NULL,
     created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_resource_group_membership_group_id
         FOREIGN KEY (group_id)
