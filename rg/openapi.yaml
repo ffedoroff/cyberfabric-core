@@ -359,20 +359,15 @@ paths:
                   top: 50
                   skip: 0
 
+  /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id}:
+    parameters:
+      - $ref: '#/components/parameters/MembershipGroupId'
+      - $ref: '#/components/parameters/MembershipResourceType'
+      - $ref: '#/components/parameters/MembershipResourceId'
     post:
       operationId: addMembership
       tags: [memberships]
       summary: Attach membership to a group
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateMembershipRequest'
-            example:
-              group_id: 33333333-3333-3333-3333-333333333333
-              resource_id: R4
-              resource_type: User
       responses:
         '201':
           description: Membership attached
@@ -389,16 +384,6 @@ paths:
       operationId: deleteMembership
       tags: [memberships]
       summary: Detach membership from a group
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeleteMembershipRequest'
-            example:
-              group_id: 33333333-3333-3333-3333-333333333333
-              resource_id: R4
-              resource_type: User
       responses:
         '204':
           description: Membership detached
@@ -422,6 +407,31 @@ components:
       schema:
         type: string
       example: department
+
+    MembershipGroupId:
+      name: group_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: 33333333-3333-3333-3333-333333333333
+
+    MembershipResourceType:
+      name: resource_type
+      in: path
+      required: true
+      schema:
+        type: string
+      example: User
+
+    MembershipResourceId:
+      name: resource_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: R4
 
     DeleteForce:
       name: force
@@ -703,32 +713,3 @@ components:
           skip: 0
                
 
-    CreateMembershipRequest:
-      type: object
-      required: [group_id, resource_id, resource_type]
-      properties:
-        group_id:
-          type: string
-          format: uuid
-          example: 33333333-3333-3333-3333-333333333333
-        resource_id:
-          type: string
-          example: R4
-        resource_type:
-          type: string
-          example: User
-
-    DeleteMembershipRequest:
-      type: object
-      required: [group_id, resource_id, resource_type]
-      properties:
-        group_id:
-          type: string
-          format: uuid
-          example: 33333333-3333-3333-3333-333333333333
-        resource_id:
-          type: string
-          example: R4
-        resource_type:
-          type: string
-          example: Course
