@@ -200,7 +200,7 @@ paths:
                 items:
                   - external_id: D2
                     group_type: department
-                    id: 22222222-2222-2222-2222-222222222222
+                    group_id: 22222222-2222-2222-2222-222222222222
                     name: D2
                     parent_id: 11111111-1111-1111-1111-111111111111
                     tenant_id: 11111111-1111-1111-1111-111111111111
@@ -234,19 +234,19 @@ paths:
               example:
                 external_id: D2
                 group_type: department
-                id: 22222222-2222-2222-2222-222222222222
+                group_id: 22222222-2222-2222-2222-222222222222
                 name: D2
                 parent_id: 11111111-1111-1111-1111-111111111111
                 tenant_id: 11111111-1111-1111-1111-111111111111
-  /api/resource-group/v1/groups/{id}:
+  /api/resource-group/v1/groups/{group_id}:
     parameters:
       - $ref: '#/components/parameters/GroupId'
     get:
       operationId: getGroup
       tags: [groups]
-      summary: Get a group by id
+      summary: Get a group by group_id
       description: |
-        Returns a single group by `id`.
+        Returns a single group by `group_id`.
       responses:
         '200':
           description: Group found
@@ -257,7 +257,7 @@ paths:
               example:
                 external_id: D2
                 group_type: department
-                id: 22222222-2222-2222-2222-222222222222
+                group_id: 22222222-2222-2222-2222-222222222222
                 name: D2
                 parent_id: 11111111-1111-1111-1111-111111111111
                 tenant_id: 11111111-1111-1111-1111-111111111111
@@ -266,7 +266,7 @@ paths:
     put:
       operationId: updateGroup
       tags: [groups]
-      summary: Update a group by id
+      summary: Update a group by group_id
       requestBody:
         required: true
         content:
@@ -288,14 +288,14 @@ paths:
               example:
                 external_id: D2
                 group_type: department
-                id: 22222222-2222-2222-2222-222222222222
+                group_id: 22222222-2222-2222-2222-222222222222
                 name: D2
                 parent_id: 11111111-1111-1111-1111-111111111111
                 tenant_id: 11111111-1111-1111-1111-111111111111
     delete:
       operationId: deleteGroup
       tags: [groups]
-      summary: Delete a group by id
+      summary: Delete a group by group_id
       parameters:
         - $ref: '#/components/parameters/DeleteForce'
       responses:
@@ -399,7 +399,7 @@ components:
 
   parameters:
     GroupId:
-      name: id
+      name: group_id
       in: path
       required: true
       schema:
@@ -560,9 +560,9 @@ components:
 
     Group:
       type: object
-      required: [id, group_type, name, tenant_id]
+      required: [group_id, group_type, name, tenant_id]
       properties:
-        id:
+        group_id:
           type: string
           format: uuid
           example: 22222222-2222-2222-2222-222222222222
@@ -598,7 +598,7 @@ components:
         items:
           - external_id: D2
             group_type: department
-            id: 22222222-2222-2222-2222-222222222222
+            group_id: 22222222-2222-2222-2222-222222222222
             name: D2
             parent_id: 11111111-1111-1111-1111-111111111111
             tenant_id: 11111111-1111-1111-1111-111111111111
@@ -631,9 +631,9 @@ components:
 
     UpdateGroupRequest:
       type: object
-      required: [id, group_type, name, tenant_id]
+      required: [group_id, group_type, name, tenant_id]
       properties:
-        id:
+        group_id:
           type: string
           format: uuid
           example: 22222222-2222-2222-2222-222222222222
