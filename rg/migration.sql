@@ -46,9 +46,10 @@ CREATE INDEX idx_rg_name
 CREATE INDEX idx_rg_external_id
     ON resource_group (external_id);
 
--- group_type: queries 4e (eq), 4g (in), 4aa, 4ab, 4ac, 4ae, 4af
+-- group_type + id: queries 4e (eq), 4g (in), 4aa, 4ab, 4ac, 4ae, 4af
+-- Composite allows seek by group_type and ordered scan by id (avoids PK scan + filter)
 CREATE INDEX idx_rg_group_type
-    ON resource_group (group_type);
+    ON resource_group (group_type, id);
 
 COMMENT ON TABLE resource_group
     IS 'Hierarchical resource groups with closure table pattern for efficient ancestor/descendant queries';

@@ -651,7 +651,7 @@ with open("queries.sql") as f:
 def make_comment(qid):
     r = results[qid]
     lines = []
-    lines.append(f"-- EXPLAIN ANALYZE (100K groups, 300K closure, 200K memberships):")
+    lines.append(f"-- EXPLAIN ANALYZE (4M groups, 27M closure, 5M memberships):")
     # Extract key plan lines (skip buffers detail, keep structure)
     plan_lines = r['plan'].strip().split('\n')
     for pl in plan_lines:
