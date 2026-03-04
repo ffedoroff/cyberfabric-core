@@ -40,14 +40,16 @@ Authorization flows additionally need a stable source for ownership hierarchy an
 - Policy authoring or policy decisioning.
 - SQL predicate generation for PEP query execution.
 - Replacing AuthN/AuthZ resolver contracts.
+- Being a mandatory dependency for AuthZ — AuthZ can operate without RG.
 
 ### 1.5 Glossary
 
 | Term | Definition |
 |------|------------|
 | Resource Group Type | Type schema for group entities and allowed parent type set. |
-| Resource Group Entity | Concrete node in the hierarchy. |
-| Membership | Explicit many-to-many link between group entity and resource identifier. |
+| Resource Group Entity | Concrete node in the hierarchy (stored in `resource_group` table). |
+| Resource Type | Caller-defined classification of a resource (e.g. `User`, `Document`). Part of membership composite key. |
+| Membership | Explicit many-to-many link between group entity and resource identifier, qualified by resource type. Composite key: `(group_id, resource_type, resource_id)`. |
 | Forest | Collection of trees with single parent per node and no cycles. |
 | Closure Table | Ancestor-descendant projection for efficient hierarchy queries. |
 | Query Profile | Optional hierarchy guardrails `(max_depth, max_width)` used for performance/SLO tracking; limits can be disabled. |
@@ -56,33 +58,33 @@ Authorization flows additionally need a stable source for ownership hierarchy an
 
 ### 2.1 Human Actors
 
-#### Platform Operator
+#### Instance Administrator
 
-**ID**: `cpt-cf-resource-group-actor-platform-operator`
+**ID**: `cpt-cf-resource-group-actor-instance-administrator`
 
-- **Role**: configures hierarchy query profile and operates migrations.
-- **Needs**: predictable behavior when constraints are tightened.
+- **Role**: manages resource group types, resource group items, and seeding (tenants). Configures hierarchy query profile and operates migrations.
+- **Needs**: full control over type definitions, deterministic seeding, predictable behavior when constraints are tightened.
 
-#### Security Engineer
+#### Tenant Administrator
 
-**ID**: `cpt-cf-resource-group-actor-security-engineer`
+**ID**: `cpt-cf-resource-group-actor-tenant-administrator`
 
-- **Role**: validates isolation and deterministic failure behavior in ownership graph usage.
-- **Needs**: strict hierarchy invariants and fail-safe write validation.
+- **Role**: within one tenant, manages sub items — groups, departments, sub-tenants.
+- **Needs**: scoped management API, tenant-boundary enforcement, clear visibility of hierarchy within tenant scope.
 
 ### 2.2 System Actors
 
-#### Domain Module Client
+#### Apps
 
-**ID**: `cpt-cf-resource-group-actor-domain-module-client`
+**ID**: `cpt-cf-resource-group-actor-apps`
 
-- **Role**: manages types, groups, and memberships.
+- **Role**: add/remove resource-to-group memberships, read memberships and hierarchy.
 
 #### AuthZ Resolver Plugin (via AuthZ Resolver module)
 
 **ID**: `cpt-cf-resource-group-actor-authz-plugin-consumer`
 
-- **Role**: reads hierarchy/membership context from Resource Group to build AuthZ constraints.
+- **Role**: reads hierarchy/membership context from Resource Group to build AuthZ constraints. AuthZ can operate without RG — RG is an optional data source for AuthZ plugin logic.
 
 ## 3. Operational Concept & Environment
 
@@ -107,6 +109,8 @@ The integration point between AuthZ and Resource Group is at AuthZ plugin/PDP lo
 - AuthZ plugin reads hierarchy/membership context from Resource Group.
 - AuthZ plugin returns constraints in AuthZ response format.
 - PEP (`PolicyEnforcer` + compiler) translates constraints to `AccessScope`/SQL.
+
+AuthZ can operate without Resource Group. RG is an optional data source — AuthZ plugin logic decides whether to consume RG data. When RG is not deployed or not configured, AuthZ flows proceed without group-based constraints.
 
 This preserves approved AuthN/AuthZ architecture and keeps Resource Group AuthZ-agnostic.
 
@@ -133,9 +137,11 @@ This aligns Resource Group behavior with `docs/arch/authorization/RESOURCE_GROUP
 - Dynamic type management API.
 - Group entity lifecycle API.
 - Closure-table-based hierarchy operations.
-- Membership lifecycle and lookup operations.
+- Membership lifecycle and lookup operations (qualified by `resource_type`).
 - Query profile constraints (`max_depth`, `max_width`) and enforcement behavior.
 - Generic read ports consumable by external modules/plugins.
+- REST API endpoints (`/api/resource-group/v1/...`) with OData query support (`$filter`, `$top`, `$skip`).
+- Deterministic type seeding for bootstrapping.
 
 ### 4.2 Out of Scope
 
@@ -157,7 +163,6 @@ A type includes:
 
 - `code` (unique, case-insensitive)
 - `parents` (allowed parent type codes)
-- `owner_id`
 
 #### Validate Type Code Format
 
@@ -205,12 +210,13 @@ The module **MUST** provide API operations for:
 
 Entity fields:
 
-- `id` (UUIDv7)
-- `type_code`
+- `id` (UUID)
+- `group_type` (reference to type code)
 - `name` (1..255)
 - `external_id` (optional, <=255)
 - `parent_id` (optional)
-- timestamps
+- `tenant_id` (required)
+- timestamps (`created`, `modified`)
 
 In `ownership-graph` profile, entity also carries tenant scope metadata for tenant compatibility validation.
 
@@ -251,7 +257,16 @@ In `ownership-graph` profile, create/move/membership operations **MUST** reject 
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-manage-membership`
 
-The module **MUST** support add/remove membership links between group entity and resource identifier.
+The module **MUST** support add/remove membership links between group entity and resource identifier, qualified by `resource_type`.
+
+Membership composite key: `(group_id, resource_type, resource_id)`.
+
+Membership fields:
+
+- `group_id` (UUID, reference to group entity)
+- `resource_type` (string, caller-defined resource classification)
+- `resource_id` (string, caller-defined resource identifier)
+- `tenant_id` (UUID, tenant scope of the membership row)
 
 Membership persistence **MUST** store `tenant_id` for each link in `ownership-graph` profile.
 
@@ -261,8 +276,9 @@ Membership persistence **MUST** store `tenant_id` for each link in `ownership-gr
 
 The module **MUST** support deterministic membership lookups:
 
-- by resource
-- by group
+- by resource (`resource_type` + `resource_id`)
+- by group (`group_id`)
+- by group and resource type (`group_id` + `resource_type`)
 
 ### 5.4 Hierarchy Operations (Closure Table)
 
@@ -332,7 +348,43 @@ If enabled limits are reduced and stored data exceeds new limits, and no migrati
 
 Operator is responsible for separate data migration to restore compliance.
 
-### 5.6 AuthZ Integration Contract (Without Coupling)
+### 5.6 REST API and Query Support
+
+#### REST API Endpoints
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-rest-api`
+
+The module **MUST** expose REST API endpoints under `/api/resource-group/v1/` for:
+
+- types: list, create, get, update, delete
+- groups: list, create, get, update, delete
+- memberships: list, add, remove
+
+#### OData Query Support
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-odata-query`
+
+List endpoints **MUST** support OData v4.01 query options:
+
+- `$filter` with field-specific operators (eq, ne, in, contains, startswith, endswith where applicable)
+- `$top` (page size, 1..300, default 50)
+- `$skip` (offset, default 0)
+
+#### Group List with Hierarchy Depth
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-list-groups-depth`
+
+Group list endpoint **MUST** include `depth` field (distance from hierarchy root) and support depth-based filtering (`eq`, `ne`, `gt`, `ge`, `lt`, `le`).
+
+#### Force Delete
+
+- [ ] `p2` - **ID**: `cpt-cf-resource-group-fr-force-delete`
+
+Group delete endpoint **MUST** support optional `force` query parameter to control cascade deletion behavior.
+
+### 5.7 AuthZ Integration Contract (Without Coupling)
+
+> Note: AuthZ can operate without Resource Group. RG is an optional PIP data source for AuthZ plugin logic.
 
 #### Provide Generic Read Port for External Consumers
 
@@ -365,7 +417,7 @@ Resource Group **MUST NOT**:
 - return AuthZ constraint objects
 - return SQL fragments or ORM filters
 
-### 5.7 Deterministic Error Semantics
+### 5.8 Deterministic Error Semantics
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-deterministic-errors`
 
@@ -502,7 +554,8 @@ Membership read rows (`resolve_memberships(ctx, ..)`):
 |------|------|----------|-------------|
 | `group_id` | UUID | Yes | Group identifier |
 | `tenant_id` | UUID | Yes | Membership tenant scope (stored on membership row; must match group tenant) |
-| `resource_id` | UUID | Yes | Resource identifier |
+| `resource_type` | string | Yes | Resource type classification |
+| `resource_id` | string | Yes | Resource identifier |
 
 Example calls:
 
@@ -570,9 +623,9 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ### Scenario: Add Membership (Tenant-Compatible)
 
-- **GIVEN** group `G1` and resource `R1` tenant scopes are compatible under configured tenant hierarchy rules
-- **WHEN** caller invokes `add_membership` with caller `SecurityContext`
-- **THEN** membership link `(G1, R1)` is created
+- **GIVEN** group `G1` and resource `(User, R1)` tenant scopes are compatible under configured tenant hierarchy rules
+- **WHEN** caller invokes `add_membership` with caller `SecurityContext`, `resource_type = "User"`, `resource_id = "R1"`
+- **THEN** membership link `(G1, User, R1)` is created
 - **AND** operation remains policy-agnostic (no AuthZ decision payload)
 
 ### Scenario: Reject Tenant-Incompatible Membership Add
@@ -583,8 +636,8 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ### Scenario: Remove Membership
 
-- **GIVEN** membership link `(G1, R1)` exists
-- **WHEN** caller invokes `remove_membership` with caller `SecurityContext`
+- **GIVEN** membership link `(G1, User, R1)` exists
+- **WHEN** caller invokes `remove_membership` with caller `SecurityContext`, `resource_type = "User"`, `resource_id = "R1"`
 - **THEN** the link is removed
 - **AND** tenant-incompatible attempts are rejected under ownership-graph tenant rules
 
@@ -623,7 +676,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ## 9. Acceptance Criteria
 
-- [ ] Dynamic type API is available with validation and ownership metadata.
+- [ ] Dynamic type API is available with validation.
 - [ ] Entity hierarchy remains strict forest under all operations.
 - [ ] Closure-table ancestor/descendant queries are available and ordered by depth.
 - [ ] Subtree move/delete are supported with transactional closure updates.
@@ -634,6 +687,9 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - [ ] Integration read rows include `tenant_id` in `ownership-graph` profile for deterministic caller-side tenant validation in AuthZ flows.
 - [ ] `resource_group_membership` stores `tenant_id`, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
 - [ ] Platform-admin provisioning via Resource Group API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
+- [ ] Membership operations use composite key `(group_id, resource_type, resource_id)`.
+- [ ] REST API endpoints available under `/api/resource-group/v1/` with OData query support.
+- [ ] Group list endpoint returns `depth` and supports depth-based filtering.
 
 ## 10. Dependencies
 
@@ -661,8 +717,8 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ## 13. Open Questions
 
-- Should delete behavior support both `leaf-only` and `subtree-cascade` modes in v1?
-- Should non-UUID external resource IDs be first-class in membership schema, or remain adapter-mapped?
+- Should delete behavior support both `leaf-only` and `subtree-cascade` modes in v1? (REST API defines `force` query parameter for cascade control.)
+- Should `resource_group_membership` be partitioned by `tenant_id` for production scale (projected 455M rows, ~117 GB)?
 
 ## 14. Traceability
 

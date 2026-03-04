@@ -20,7 +20,15 @@ Resource Group is intentionally policy-agnostic:
 - no decision semantics
 - no SQL filter generation
 
-Cyber Fabric ships this module as the built-in Resource Group provider. Deployments may also use a vendor-specific provider through the same read contracts (resolver/plugin path), similar to Tenant Resolver extensibility.
+The architecture consists of:
+
+- **RG Resolver SDK** — read and write trait contracts (`ResourceGroupClient`, `ResourceGroupReadClient`)
+- **RG Module (Gateway)** — routes requests to built-in or vendor-specific provider
+- **RG Plugin** — full service with database, REST API, seeding, and domain logic
+
+Deployments use either: (RG Plugin + RG Service) or (Vendor RG Plugin + Vendor RG Service) — both behind the same SDK contracts.
+
+AuthZ can operate without Resource Group. RG is an optional PIP data source for AuthZ plugin logic.
 
 For AuthZ-facing deployments aligned with current platform architecture, `ownership-graph` is the required profile; provider selection (built-in provider or vendor-specific backend) is deployment-specific.
 
@@ -31,6 +39,9 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 
 | Requirement                                                   | Design Response                                                                                                                       |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `cpt-cf-resource-group-fr-rest-api`                           | REST API layer with OperationBuilder and OData query support.                                                                         |
+| `cpt-cf-resource-group-fr-odata-query`                        | OData `$filter`, `$top`, `$skip` on all list endpoints.                                                                               |
+| `cpt-cf-resource-group-fr-list-groups-depth`                  | Group list includes depth from closure table with depth-based filtering.                                                              |
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `code_ci` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                           |
@@ -81,7 +92,8 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 
 | Layer                  | Responsibility                                    | Technology                    |
 | ---------------------- | ------------------------------------------------- | ----------------------------- |
-| API Layer              | expose type/entity/membership + read contracts    | Rust SDK traits + ClientHub   |
+| REST API Layer         | HTTP endpoints with OData query support           | OperationBuilder + REST handlers |
+| SDK API Layer          | expose type/entity/membership + read contracts    | Rust SDK traits + ClientHub   |
 | Domain Layer           | validate type compatibility and forest invariants | domain services               |
 | Hierarchy Engine       | closure-table updates/queries and profile checks  | domain service + repositories |
 | Integration Read Layer | read-only hierarchy/membership projections        | `ResourceGroupReadClient`     |
@@ -148,21 +160,22 @@ Reducing enabled `max_depth`/`max_width` cannot rewrite existing rows. Writes th
 
 **Planned locations**:
 
-- `modules/system/resource-group/resource-group-sdk/src/models.rs`
-- `modules/system/resource-group/resource-group-sdk/src/api.rs`
-- `modules/system/resource-group/resource-group-sdk/src/error.rs`
-- `modules/system/resource-group/resource-group/src/domain/`
+- `modules/system/resource-group/resource-group-sdk/src/models.rs` — SDK models and DTOs
+- `modules/system/resource-group/resource-group-sdk/src/api.rs` — SDK trait contracts
+- `modules/system/resource-group/resource-group-sdk/src/error.rs` — SDK error types
+- `modules/system/resource-group/resource-group/src/domain/` — domain services and invariants
+- `modules/system/resource-group/resource-group/src/api/` — REST API handlers
 
 **Core entities**:
 
 
-| Entity                    | Description                                     |
-| ------------------------- | ----------------------------------------------- |
-| `ResourceGroupType`       | type code, allowed parent types, owner metadata |
-| `ResourceGroupEntity`     | group node with optional parent                 |
-| `ResourceGroupMembership` | resource-to-group many-to-many link             |
-| `ResourceGroupClosure`    | ancestor-descendant-depth projection            |
-| `ResourceGroupError`      | deterministic public error taxonomy             |
+| Entity                    | Description                                                         |
+| ------------------------- | ------------------------------------------------------------------- |
+| `ResourceGroupType`       | type code and allowed parent types                                  |
+| `ResourceGroupEntity`     | group node with optional parent, stored in `resource_group` table   |
+| `ResourceGroupMembership` | resource-to-group many-to-many link, qualified by `resource_type`   |
+| `ResourceGroupClosure`    | ancestor-descendant-depth projection                                |
+| `ResourceGroupError`      | deterministic public error taxonomy                                 |
 
 
 ### 3.2 Component Model
@@ -186,7 +199,7 @@ graph TD
 
 
 
-#### Resource Group Module
+#### Resource Group Module (Gateway)
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-component-module`
 
@@ -194,6 +207,7 @@ Responsibilities:
 
 - wire services and repositories
 - register public clients in ClientHub
+- expose REST API endpoints under `/api/resource-group/v1/`
 - load query profile config
 - route `ResourceGroupReadClient` calls to built-in data path or configured vendor-specific plugin path
 
@@ -279,7 +293,7 @@ Boundaries:
 | `move_entity`                                                | subtree move with invariant checks |
 | `delete_entity`                                              | deletion with reference policy     |
 | `list_ancestors` / `list_descendants`                        | hierarchy reads                    |
-| `add_membership` / `remove_membership`                       | membership lifecycle               |
+| `add_membership` / `remove_membership`                       | membership lifecycle (by `group_id` + `resource_type` + `resource_id`) |
 | `list_memberships_by_resource` / `list_memberships_by_group` | membership reads                   |
 
 
@@ -292,12 +306,14 @@ use uuid::Uuid;
 
 pub struct AddMembershipRequest {
     pub group_id: Uuid,
-    pub resource_id: Uuid,
+    pub resource_type: String,
+    pub resource_id: String,
 }
 
 pub struct RemoveMembershipRequest {
     pub group_id: Uuid,
-    pub resource_id: Uuid,
+    pub resource_type: String,
+    pub resource_id: String,
 }
 
 #[async_trait]
@@ -330,7 +346,8 @@ rg.add_membership(
     &authz_ctx,
     AddMembershipRequest {
         group_id: group_a,
-        resource_id: task_1,
+        resource_type: "User".to_string(),
+        resource_id: "task_1".to_string(),
     },
 ).await?;
 
@@ -338,13 +355,15 @@ rg.remove_membership(
     &authz_ctx,
     RemoveMembershipRequest {
         group_id: group_a,
-        resource_id: task_1,
+        resource_type: "User".to_string(),
+        resource_id: "task_1".to_string(),
     },
 ).await?;
 ```
 
 Membership write semantics for AuthZ-facing profile:
 
+- membership operations are keyed by `(group_id, resource_type, resource_id)`
 - in `ownership-graph` mode, add/remove validates tenant scope via caller `SecurityContext` effective scope and target group tenant
 - membership row stores explicit `tenant_id` and must match target group tenant
 - tenant-incompatible membership writes fail deterministically (`Validation`/`Conflict` mapping)
@@ -356,6 +375,38 @@ Platform-admin provisioning exception:
 - this exception applies to provisioning/management operations only, not AuthZ query path
 - data invariants remain strict: parent-child and membership links must satisfy tenant hierarchy compatibility rules
 
+#### REST API Endpoints
+
+Base path: `/api/resource-group/v1`
+
+| Method | Path | Operation | Description |
+| ------ | ---- | --------- | ----------- |
+| GET | `/types` | `listTypes` | List types with OData query |
+| POST | `/types` | `createType` | Create type |
+| GET | `/types/{code}` | `getType` | Get type by code |
+| PUT | `/types/{code}` | `updateType` | Update type |
+| DELETE | `/types/{code}` | `deleteType` | Delete type |
+| GET | `/groups` | `listGroups` | List groups with OData query (includes `depth`) |
+| POST | `/groups` | `createGroup` | Create group (explicit `tenant_id` in body) |
+| GET | `/groups/{group_id}` | `getGroup` | Get group by ID |
+| PUT | `/groups/{group_id}` | `updateGroup` | Update group (including parent move) |
+| DELETE | `/groups/{group_id}` | `deleteGroup` | Delete group (optional `?force=true`) |
+| GET | `/memberships` | `listMemberships` | List memberships with OData query |
+| POST | `/memberships/{group_id}/{resource_type}/{resource_id}` | `addMembership` | Add membership |
+| DELETE | `/memberships/{group_id}/{resource_type}/{resource_id}` | `deleteMembership` | Remove membership |
+
+OData query support on all list endpoints:
+
+- `$filter` — field-specific operators (eq, ne, in, contains, startswith, endswith where applicable)
+- `$top` — page size (1..300, default 50)
+- `$skip` — offset (default 0)
+
+Group list `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in), `parent_id` (eq, ne, in), `group_id` (eq, ne, in), `name` (eq, ne, in, contains, startswith, endswith), `external_id` (eq, ne, in, contains, startswith, endswith).
+
+Membership list `$filter` fields: `resource_id` (eq, ne, in, contains, startswith, endswith), `resource_type` (eq, ne, in), `group_id` (eq, ne, in).
+
+Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
+
 **Integration read API** (`ResourceGroupReadClient`, stable):
 
 
@@ -363,7 +414,7 @@ Platform-admin provisioning exception:
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `resolve_descendants(ctx, root_id)`   | tenant-scoped descendant rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope             |
 | `resolve_ancestors(ctx, node_id)`     | tenant-scoped ancestor rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope               |
-| `resolve_memberships(ctx, group_ids)` | tenant-scoped membership rows with `group_id`, `resource_id`, and `tenant_id` for each row; rows may include multiple tenant scopes within effective tenant hierarchy scope |
+| `resolve_memberships(ctx, group_ids)` | tenant-scoped membership rows with `group_id`, `resource_type`, `resource_id`, and `tenant_id` for each row; rows may include multiple tenant scopes within effective tenant hierarchy scope |
 
 
 Target Rust trait signature (SDK contract, tenant-resolver-style pass-through):
@@ -384,7 +435,8 @@ pub struct ResourceGroupHierarchyRow {
 pub struct ResourceGroupMembershipRow {
     pub group_id: Uuid,
     pub tenant_id: Uuid,
-    pub resource_id: Uuid,
+    pub resource_type: String,
+    pub resource_id: String,
 }
 
 #[async_trait]
@@ -452,7 +504,7 @@ Returned models are generic graph/membership objects. They do not encode AuthZ d
 Tenant projection rule for integration reads:
 
 - in `ownership-graph` profile, `tenant_id` is required in every returned row from `ResourceGroupReadClient`
-- for membership reads, `tenant_id` is read from `resource_group_membership.tenant_id` (must match `resource_group_entity.tenant_id`)
+- for membership reads, `tenant_id` is read from `resource_group_membership.tenant_id` (must match `resource_group.tenant_id`)
 - rows can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
 - this keeps Resource Group policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
 
@@ -481,11 +533,12 @@ The integration read contract returns **data rows only** (no policy/decision fie
 `resolve_memberships(ctx, group_ids)` returns membership rows:
 
 
-| Field         | Type | Required                | Description                                                                                                                  |
-| ------------- | ---- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `group_id`    | UUID | Yes                     | Group identifier from request set                                                                                            |
-| `tenant_id`   | UUID | Yes (`ownership-graph`) | Membership tenant scope (stored in membership row; must match group tenant; can differ per row under tenant hierarchy scope) |
-| `resource_id` | UUID | Yes                     | Resource identifier                                                                                                          |
+| Field           | Type   | Required                | Description                                                                                                                  |
+| --------------- | ------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `group_id`      | UUID   | Yes                     | Group identifier from request set                                                                                            |
+| `tenant_id`     | UUID   | Yes (`ownership-graph`) | Membership tenant scope (stored in membership row; must match group tenant; can differ per row under tenant hierarchy scope) |
+| `resource_type` | string | Yes                     | Resource type classification                                                                                                 |
+| `resource_id`   | string | Yes                     | Resource identifier                                                                                                          |
 
 
 Tenant consistency behavior for integration reads:
@@ -612,21 +665,25 @@ let rows = rg_read
   {
     "group_id": "11111111-1111-1111-1111-111111111111",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "resource_type": "User",
     "resource_id": "R4"
   },
   {
     "group_id": "11111111-1111-1111-1111-111111111111",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "resource_type": "User",
     "resource_id": "R6"
   },
   {
     "group_id": "33333333-3333-3333-3333-333333333333",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "resource_type": "User",
     "resource_id": "R4"
   },
   {
     "group_id": "77777777-7777-7777-7777-777777777777",
     "tenant_id": "77777777-7777-7777-7777-777777777777",
+    "resource_type": "User",
     "resource_id": "R8"
   }
 ]
@@ -749,78 +806,81 @@ This is the fixed boundary:
 #### Table: `resource_group_type`
 
 
-| Column       | Type        | Description                        |
-| ------------ | ----------- | ---------------------------------- |
-| `code`       | TEXT        | original type code                 |
-| `code_ci`    | TEXT        | normalized lowercase code (unique) |
-| `parents`    | JSON/TEXT[] | allowed parent type codes          |
-| `owner_id`   | UUID        | owner identifier                   |
-| `created_at` | TIMESTAMP   | creation time                      |
-| `updated_at` | TIMESTAMP   | update time                        |
+| Column     | Type        | Description               |
+| ---------- | ----------- | ------------------------- |
+| `code`     | TEXT        | type code (PK)            |
+| `parents`  | TEXT[]      | allowed parent type codes |
+| `created`  | TIMESTAMPTZ | creation time             |
+| `modified` | TIMESTAMPTZ | update time (nullable)    |
 
 
 Constraints:
 
-- PK/UNIQUE on `code_ci`
+- PK on `code`
+- unique functional index on `LOWER(code)` for case-insensitive uniqueness
 
-#### Table: `resource_group_entity`
-
-
-| Column         | Type      | Description                                       |
-| -------------- | --------- | ------------------------------------------------- |
-| `id`           | UUIDv7    | entity ID                                         |
-| `type_code_ci` | TEXT      | normalized type code                              |
-| `tenant_id`    | UUID NULL | tenant scope (required for ownership-graph usage) |
-| `parent_id`    | UUID NULL | parent entity                                     |
-| `name`         | TEXT      | display name                                      |
-| `external_id`  | TEXT NULL | optional external ID                              |
-| `created_at`   | TIMESTAMP | creation time                                     |
-| `updated_at`   | TIMESTAMP | update time                                       |
+#### Table: `resource_group`
 
 
-Note:
+| Column        | Type        | Description                                       |
+| ------------- | ----------- | ------------------------------------------------- |
+| `id`          | UUID        | entity ID (PK, default `gen_random_uuid()`)       |
+| `parent_id`   | UUID NULL   | parent entity (FK to `resource_group.id`)         |
+| `group_type`  | TEXT        | type code (FK to `resource_group_type.code`)      |
+| `name`        | TEXT        | display name                                      |
+| `tenant_id`   | UUID        | tenant scope                                      |
+| `external_id` | TEXT NULL   | optional external ID                              |
+| `created`     | TIMESTAMPTZ | creation time                                     |
+| `modified`    | TIMESTAMPTZ | update time (nullable)                            |
 
-- In `resource_group_entity`, API field `type_code` is accepted in any case and normalized before persistence; the system stores this normalized value in `type_code_ci` for case-insensitive lookups and uniqueness checks.
+
+Constraints:
+
+- FK `group_type` → `resource_group_type(code)` ON UPDATE CASCADE ON DELETE RESTRICT
+- FK `parent_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
 
 Indexes:
 
 - `(parent_id)`
-- `(type_code_ci)`
-- `(tenant_id, parent_id)`
-- optional `(external_id)`
+- `(name)`
+- `(external_id)`
+- `(group_type, id)` — composite for type-scoped queries
 
 #### Table: `resource_group_membership`
 
 
-| Column        | Type      | Description                    |
-| ------------- | --------- | ------------------------------ |
-| `tenant_id`   | UUID      | tenant scope of membership row |
-| `group_id`    | UUID      | group entity ID                |
-| `resource_id` | UUID      | resource identifier            |
-| `created_at`  | TIMESTAMP | creation time                  |
+| Column          | Type        | Description                                |
+| --------------- | ----------- | ------------------------------------------ |
+| `group_id`      | UUID        | group entity ID (FK to `resource_group.id`)|
+| `resource_type` | TEXT        | caller-defined resource classification     |
+| `resource_id`   | TEXT        | caller-defined resource identifier         |
+| `tenant_id`     | UUID        | tenant scope of membership row             |
+| `created`       | TIMESTAMPTZ | creation time                              |
 
 
 Constraints/indexes:
 
-- PK `(group_id, resource_id)`
-- index `(tenant_id, group_id)`
-- index `(tenant_id, resource_id)`
-- in ownership-graph usage, `tenant_id` is persisted on write, validated against operation context for tenant-scoped callers, and must match `resource_group_entity.tenant_id`
+- UNIQUE `(group_id, resource_type, resource_id)`
+- FK `group_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
+- index `(resource_type, resource_id)` — for reverse lookups by resource
+- in ownership-graph usage, `tenant_id` is persisted on write, validated against operation context for tenant-scoped callers, and must match `resource_group.tenant_id`
 
 #### Table: `resource_group_closure`
 
 
-| Column          | Type | Description                |
-| --------------- | ---- | -------------------------- |
-| `ancestor_id`   | UUID | ancestor (parent on path)  |
-| `descendant_id` | UUID | descendant (child on path) |
-| `depth`         | INT  | distance, 0 for self       |
+| Column          | Type    | Description                |
+| --------------- | ------- | -------------------------- |
+| `ancestor_id`   | UUID    | ancestor (parent on path), FK to `resource_group(id)` |
+| `descendant_id` | UUID    | descendant (child on path), FK to `resource_group(id)` |
+| `depth`         | INTEGER | distance, 0 for self       |
 
 
 Constraints/indexes:
 
-- PK `(ancestor_id, descendant_id)`
-- index `(descendant_id)`
+- FK `ancestor_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
+- FK `descendant_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
+- index `(descendant_id)` — for ancestor lookups
+- index `(ancestor_id, depth)` — for descendant queries with depth filtering
 - self-row required for each entity (`ancestor_id = descendant_id`, `depth = 0`)
 
 Compatibility note:
@@ -870,9 +930,11 @@ Ownership-graph tenant enforcement:
 ## 4. Additional Context
 
 - AuthN/AuthZ module contracts remain unchanged.
+- AuthZ can operate without Resource Group — RG is an optional data source.
 - AuthZ extensibility is implemented through plugin behavior that consumes RG read contracts.
 - Resource Group provider is swappable by configuration (built-in module or vendor-specific provider) without changing consumer contracts.
 - SQL conversion remains in existing PEP flow (`PolicyEnforcer` + compiler), consistent with approved architecture.
+- Production projections estimate ~455M membership rows (~117 GB with indexes). `resource_group_membership` partitioning by `tenant_id` is a candidate optimization for production scale.
 
 ## 5. Traceability
 
