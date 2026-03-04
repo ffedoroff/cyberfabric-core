@@ -80,7 +80,7 @@ Authorization flows additionally need a stable source for ownership hierarchy an
 
 **ID**: `cpt-cf-resource-group-actor-apps`
 
-- **Role**: add/remove resource-to-group memberships, read memberships and hierarchy.
+- **Role**: programmatic access to RG via `ResourceGroupClient` SDK — manage types, groups, and memberships; read hierarchy and membership data.
 
 #### AuthZ Resolver Plugin (via AuthZ Resolver module)
 
@@ -502,6 +502,13 @@ Memory recommendations:
 - Recommended: 48 GB RAM (shared_buffers = 12 GB) to keep hot indexes in memory
 
 Partitioning of `resource_group_membership` by tenant scope is a candidate optimization for production scale (see Open Questions).
+
+### NFR Exclusions
+
+- **Usability (UX)**: Not applicable — RG is a backend infrastructure module with no user-facing UI. Consumers interact via REST API and SDK traits.
+- **Operations (OPS)**: Not applicable — RG follows standard CyberFabric deployment and monitoring patterns. No module-specific operational requirements beyond platform defaults.
+- **Compliance (COMPL)**: Not applicable — RG does not directly handle PII or regulated data. Compliance requirements are owned by consuming modules and platform-level controls.
+- **Safety (SAFE)**: Not applicable — RG is a data infrastructure module with no physical interaction or safety-critical operations.
 
 ## 7. Public Library Interfaces
 
@@ -989,8 +996,8 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ## 13. Open Questions
 
-- Should delete behavior support both `leaf-only` and `subtree-cascade` modes in v1? (REST API defines `force` query parameter for cascade control.)
-- Should `resource_group_membership` be partitioned for production scale (projected 455M rows, ~117 GB)? Partitioning strategy needs evaluation since tenant scope is derived via group FK, not stored directly.
+- Should delete behavior support both `leaf-only` and `subtree-cascade` modes in v1? (REST API defines `force` query parameter for cascade control.) **Owner**: platform team. **Target**: resolve before DECOMPOSITION.
+- Should `resource_group_membership` be partitioned for production scale (projected 455M rows, ~117 GB)? Partitioning strategy needs evaluation since tenant scope is derived via group FK, not stored directly. **Owner**: platform team. **Target**: resolve before production deployment.
 
 ## 14. Traceability
 
