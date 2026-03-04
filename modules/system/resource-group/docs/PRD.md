@@ -398,13 +398,13 @@ The same public read contract must remain stable across provider strategies:
 - built-in RG provider
 - vendor-specific provider selected via resolver/plugin path
 
-In `ownership-graph` profile, integration read responses **MUST** include `tenant_id` for each returned row:
+In `ownership-graph` profile, integration read responses match REST API schemas:
 
-- hierarchy reads (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) return group row + tenant scope
-- membership reads (`resolve_memberships(ctx, ..)`) return membership row + tenant scope
+- hierarchy reads (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) return `ResourceGroupWithDepth` (matches REST `GroupWithDepth`) — includes `tenant_id` per group
+- membership reads (`resolve_memberships(ctx, ..)`) return `ResourceGroupMembership` (matches REST `Membership`) — no `tenant_id`; callers derive tenant scope from group data obtained via hierarchy reads
 - integration read methods accept caller `SecurityContext`; RG passes it through to selected provider path (for plugin path, pass-through is unchanged)
 - in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory and used to resolve effective tenant scope for tenant-scoped reads and compiled SQL predicates
-- when effective tenant scope contains multiple related tenants, read responses may contain rows with different `tenant_id` values
+- when effective tenant scope contains multiple related tenants, hierarchy read responses may contain rows with different `tenant_id` values
 
 The read contract **MUST NOT** contain AuthZ decision semantics.
 
@@ -481,6 +481,11 @@ Entity/membership changes and derived closure updates **MUST** be transactionall
 - **Description**: read-only hierarchy/membership contract for external consumers (including AuthZ plugins)
 - **Stability**: stable
 
+Integration read models reuse REST-aligned SDK structs (see DESIGN.md for full definitions):
+
+- `resolve_descendants` / `resolve_ancestors` return `Vec<ResourceGroupWithDepth>` (matches REST `GroupWithDepth`)
+- `resolve_memberships` returns `Vec<ResourceGroupMembership>` (matches REST `Membership` — no `tenant_id`; tenant scope derived from group data via hierarchy reads)
+
 Target trait shape (aligned with tenant-resolver pass-through `SecurityContext` pattern):
 
 ```rust
@@ -490,19 +495,19 @@ pub trait ResourceGroupReadClient: Send + Sync {
         &self,
         ctx: &SecurityContext,
         root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_ancestors(
         &self,
         ctx: &SecurityContext,
         node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_memberships(
         &self,
         ctx: &SecurityContext,
         group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembershipRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -515,19 +520,19 @@ pub trait ResourceGroupReadPluginClient: Send + Sync {
         &self,
         ctx: &SecurityContext,
         root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_ancestors(
         &self,
         ctx: &SecurityContext,
         node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_memberships(
         &self,
         ctx: &SecurityContext,
         group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembershipRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -539,24 +544,29 @@ Gateway behavior:
 
 ### 7.2 Integration Read Schemas (Ownership-Graph)
 
-For AuthZ-facing usage, `ResourceGroupReadClient` returns data-only rows with explicit tenant scope.
+For AuthZ-facing usage, `ResourceGroupReadClient` returns data-only rows. Schemas match REST API models.
 
-Hierarchy read rows (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`):
+Hierarchy read rows (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) — `ResourceGroupWithDepth` (matches REST `GroupWithDepth`):
 
 | Field | Type | Required | Description |
 |------|------|----------|-------------|
 | `group_id` | UUID | Yes | Group identifier |
+| `parent_id` | UUID / null | No | Parent group (null for root) |
+| `group_type` | string | Yes | Type code |
+| `name` | string | Yes | Display name |
 | `tenant_id` | UUID | Yes | Group tenant scope |
-| `depth` | INT | Yes | Distance from input node (`0` = self) |
+| `external_id` | string / null | No | Optional external ID |
+| `depth` | INT | Yes | Relative distance from input node (`0` = self) |
 
-Membership read rows (`resolve_memberships(ctx, ..)`):
+Membership read rows (`resolve_memberships(ctx, ..)`) — `ResourceGroupMembership` (matches REST `Membership`):
 
 | Field | Type | Required | Description |
 |------|------|----------|-------------|
 | `group_id` | UUID | Yes | Group identifier |
-| `tenant_id` | UUID | Yes | Membership tenant scope (derived from group's `tenant_id` via `group_id` JOIN; not stored on membership row) |
 | `resource_type` | string | Yes | Resource type classification |
 | `resource_id` | string | Yes | Resource identifier |
+
+Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `resolve_descendants`/`resolve_ancestors`.
 
 Example calls:
 
@@ -575,7 +585,7 @@ let memberships = rg_read
     .await?;
 ```
 
-These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic uses `tenant_id` to validate tenant ownership before producing group-based constraints.
+These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic uses `tenant_id` from hierarchy rows to validate tenant ownership before producing group-based constraints.
 
 ## 8. Use Cases
 
@@ -669,9 +679,10 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ### Scenario: AuthZ Consumer Validates Tenant Scope from Read Rows
 
-- **GIVEN** plugin calls `resolve_descendants` and `resolve_memberships` for candidate groups
-- **WHEN** RG returns rows with `tenant_id` for each entry
-- **THEN** plugin validates each row `tenant_id` against caller effective tenant scope
+- **GIVEN** plugin calls `resolve_descendants` for candidate groups and `resolve_memberships` for their members
+- **WHEN** RG returns hierarchy rows with `tenant_id` per group (via `ResourceGroupWithDepth`) and membership rows without `tenant_id` (via `ResourceGroupMembership`)
+- **THEN** plugin validates each group `tenant_id` against caller effective tenant scope
+- **AND** plugin maps `group_id → tenant_id` from hierarchy data to derive membership tenant scope
 - **AND** plugin excludes/rejects out-of-tenant groups before generating AuthZ constraints
 - **AND** RG still returns no policy decision fields
 
@@ -685,7 +696,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - [ ] RG remains AuthZ-agnostic while exposing integration read contracts.
 - [ ] No changes are required in existing AuthN/AuthZ resolver contracts.
 - [ ] Tenant-scoped constraints for AuthZ usage are enforced and tenant-incompatible links are rejected.
-- [ ] Integration read rows include `tenant_id` in `ownership-graph` profile for deterministic caller-side tenant validation in AuthZ flows.
+- [ ] Integration read hierarchy rows include `tenant_id` (via `ResourceGroupWithDepth`); membership rows match REST `Membership` schema (no `tenant_id`). Callers derive membership tenant scope from group data.
 - [ ] `resource_group_membership` derives tenant scope from the referenced group's `tenant_id` via `group_id` JOIN, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
 - [ ] Platform-admin provisioning via RG API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
 - [ ] Membership operations use composite key `(group_id, resource_type, resource_id)`.

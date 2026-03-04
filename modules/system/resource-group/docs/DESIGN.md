@@ -287,54 +287,170 @@ Boundaries:
 **Core API** (`ResourceGroupClient`, stable):
 
 
-| Method                                                       | Description                        |
-| ------------------------------------------------------------ | ---------------------------------- |
-| `create_type` / `update_type` / `delete_type`                | type lifecycle                     |
-| `list_types` / `get_type`                                    | type reads                         |
-| `create_entity` / `get_entity` / `update_entity`             | entity lifecycle                   |
-| `move_entity`                                                | subtree move with invariant checks |
-| `delete_entity`                                              | deletion with reference policy     |
-| `list_ancestors` / `list_descendants`                        | hierarchy reads                    |
-| `add_membership` / `remove_membership`                       | membership lifecycle (by `group_id` + `resource_type` + `resource_id`) |
-| `list_memberships_by_resource` / `list_memberships_by_group` | membership reads                   |
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `create_type` / `update_type` | `ResourceGroupType` | type lifecycle |
+| `get_type` | `ResourceGroupType` | get type by code |
+| `list_types` | `Page<ResourceGroupType>` | list types with OData query |
+| `delete_type` | `()` | delete type |
+| `create_group` / `update_group` | `ResourceGroup` | group lifecycle |
+| `get_group` | `ResourceGroup` | get group by ID |
+| `list_groups` | `Page<ResourceGroup>` | list groups with OData query |
+| `delete_group` | `()` | delete group (optional `force`) |
+| `list_group_depth` | `Page<ResourceGroupWithDepth>` | traverse hierarchy from reference group with relative depth |
+| `add_membership` | `ResourceGroupMembership` | add membership |
+| `remove_membership` | `()` | remove membership |
+| `list_memberships` | `Page<ResourceGroupMembership>` | list memberships with OData query |
 
 
-Core membership operation shape (target SDK contract fragment):
+SDK models (aligned with REST API schemas):
 
 ```rust
-use async_trait::async_trait;
-use modkit_security::SecurityContext;
 use uuid::Uuid;
 
+// ── Type ────────────────────────────────────────────────────────────────
+
+/// Matches REST `Type` schema.
+#[derive(Debug, Clone)]
+pub struct ResourceGroupType {
+    pub code: String,
+    pub parents: Vec<String>,
+}
+
+/// Matches REST `CreateTypeRequest` schema.
+#[derive(Debug, Clone)]
+pub struct CreateTypeRequest {
+    pub code: String,
+    pub parents: Vec<String>,
+}
+
+/// Matches REST `UpdateTypeRequest` schema.
+#[derive(Debug, Clone)]
+pub struct UpdateTypeRequest {
+    pub parents: Vec<String>,
+}
+
+// ── Group ───────────────────────────────────────────────────────────────
+
+/// Matches REST `Group` schema.
+#[derive(Debug, Clone)]
+pub struct ResourceGroup {
+    pub group_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub group_type: String,
+    pub name: String,
+    pub tenant_id: Uuid,
+    pub external_id: Option<String>,
+}
+
+/// Matches REST `GroupWithDepth` schema.
+#[derive(Debug, Clone)]
+pub struct ResourceGroupWithDepth {
+    pub group_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub group_type: String,
+    pub name: String,
+    pub tenant_id: Uuid,
+    pub external_id: Option<String>,
+    pub depth: i32,
+}
+
+/// Matches REST `CreateGroupRequest` schema.
+#[derive(Debug, Clone)]
+pub struct CreateGroupRequest {
+    pub group_type: String,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+    pub tenant_id: Uuid,
+    pub external_id: Option<String>,
+}
+
+/// Matches REST `UpdateGroupRequest` schema.
+#[derive(Debug, Clone)]
+pub struct UpdateGroupRequest {
+    pub group_type: String,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+    pub external_id: Option<String>,
+}
+
+// ── Membership ──────────────────────────────────────────────────────────
+
+/// Matches REST `Membership` schema.
+#[derive(Debug, Clone)]
+pub struct ResourceGroupMembership {
+    pub group_id: Uuid,
+    pub resource_type: String,
+    pub resource_id: String,
+}
+
+/// Matches REST `addMembership` / `deleteMembership` path params.
+#[derive(Debug, Clone)]
 pub struct AddMembershipRequest {
     pub group_id: Uuid,
     pub resource_type: String,
     pub resource_id: String,
 }
 
+/// Matches REST `addMembership` / `deleteMembership` path params.
+#[derive(Debug, Clone)]
 pub struct RemoveMembershipRequest {
     pub group_id: Uuid,
     pub resource_type: String,
     pub resource_id: String,
 }
 
-#[async_trait]
-pub trait ResourceGroupClient: Send + Sync {
-    async fn add_membership(
-        &self,
-        ctx: &SecurityContext,
-        request: AddMembershipRequest,
-    ) -> Result<(), ResourceGroupError>;
+// ── Pagination ──────────────────────────────────────────────────────────
 
-    async fn remove_membership(
-        &self,
-        ctx: &SecurityContext,
-        request: RemoveMembershipRequest,
-    ) -> Result<(), ResourceGroupError>;
+/// Matches REST `PageInfo` schema.
+#[derive(Debug, Clone)]
+pub struct PageInfo {
+    pub top: i32,
+    pub skip: i32,
+}
+
+/// Generic paginated response. Matches REST `*Page` schemas.
+#[derive(Debug, Clone)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub page_info: PageInfo,
 }
 ```
 
-Core membership operation examples:
+Core API trait shape (target SDK contract fragment):
+
+```rust
+use async_trait::async_trait;
+use modkit_security::SecurityContext;
+use uuid::Uuid;
+
+#[async_trait]
+pub trait ResourceGroupClient: Send + Sync {
+    // ── Type lifecycle ──────────────────────────────────────────────
+    async fn create_type(&self, ctx: &SecurityContext, request: CreateTypeRequest) -> Result<ResourceGroupType, ResourceGroupError>;
+    async fn get_type(&self, ctx: &SecurityContext, code: &str) -> Result<ResourceGroupType, ResourceGroupError>;
+    async fn list_types(&self, ctx: &SecurityContext, query: ListQuery) -> Result<Page<ResourceGroupType>, ResourceGroupError>;
+    async fn update_type(&self, ctx: &SecurityContext, code: &str, request: UpdateTypeRequest) -> Result<ResourceGroupType, ResourceGroupError>;
+    async fn delete_type(&self, ctx: &SecurityContext, code: &str) -> Result<(), ResourceGroupError>;
+
+    // ── Group lifecycle ─────────────────────────────────────────────
+    async fn create_group(&self, ctx: &SecurityContext, request: CreateGroupRequest) -> Result<ResourceGroup, ResourceGroupError>;
+    async fn get_group(&self, ctx: &SecurityContext, group_id: Uuid) -> Result<ResourceGroup, ResourceGroupError>;
+    async fn list_groups(&self, ctx: &SecurityContext, query: ListQuery) -> Result<Page<ResourceGroup>, ResourceGroupError>;
+    async fn update_group(&self, ctx: &SecurityContext, group_id: Uuid, request: UpdateGroupRequest) -> Result<ResourceGroup, ResourceGroupError>;
+    async fn delete_group(&self, ctx: &SecurityContext, group_id: Uuid, force: bool) -> Result<(), ResourceGroupError>;
+
+    // ── Hierarchy ───────────────────────────────────────────────────
+    async fn list_group_depth(&self, ctx: &SecurityContext, group_id: Uuid, query: ListQuery) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
+
+    // ── Membership lifecycle ────────────────────────────────────────
+    async fn add_membership(&self, ctx: &SecurityContext, request: AddMembershipRequest) -> Result<ResourceGroupMembership, ResourceGroupError>;
+    async fn remove_membership(&self, ctx: &SecurityContext, request: RemoveMembershipRequest) -> Result<(), ResourceGroupError>;
+    async fn list_memberships(&self, ctx: &SecurityContext, query: ListQuery) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
+}
+```
+
+Core API usage examples:
 
 ```rust
 let rg = hub.get::<dyn ResourceGroupClient>()?;
@@ -422,10 +538,15 @@ Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
 
 | Method                                | Description                                                                                                                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resolve_descendants(ctx, root_id)`   | tenant-scoped descendant rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope             |
-| `resolve_ancestors(ctx, node_id)`     | tenant-scoped ancestor rows with `group_id`, `tenant_id`, and depth metadata; rows may include multiple tenant scopes within effective tenant hierarchy scope               |
-| `resolve_memberships(ctx, group_ids)` | tenant-scoped membership rows with `group_id`, `resource_type`, `resource_id`, and `tenant_id` for each row; rows may include multiple tenant scopes within effective tenant hierarchy scope |
+| `resolve_descendants(ctx, root_id)`   | descendant groups with full group fields + relative `depth`; matches REST `GroupWithDepth` schema             |
+| `resolve_ancestors(ctx, node_id)`     | ancestor groups with full group fields + relative `depth`; matches REST `GroupWithDepth` schema               |
+| `resolve_memberships(ctx, group_ids)` | membership rows matching REST `Membership` schema (`group_id`, `resource_type`, `resource_id`); tenant scope derived from group via `group_id` |
 
+
+Integration read models reuse the same SDK structs defined above:
+
+- `resolve_descendants` / `resolve_ancestors` return `Vec<ResourceGroupWithDepth>` (matches REST `GroupWithDepth`)
+- `resolve_memberships` returns `Vec<ResourceGroupMembership>` (matches REST `Membership` — no `tenant_id`; tenant scope is available from group data the caller already has via `resolve_descendants`/`resolve_ancestors`)
 
 Target Rust trait signature (SDK contract, tenant-resolver-style pass-through):
 
@@ -434,40 +555,25 @@ use async_trait::async_trait;
 use modkit_security::SecurityContext;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
-pub struct ResourceGroupHierarchyRow {
-    pub group_id: Uuid,
-    pub tenant_id: Uuid,
-    pub depth: i32,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResourceGroupMembershipRow {
-    pub group_id: Uuid,
-    pub tenant_id: Uuid,
-    pub resource_type: String,
-    pub resource_id: String,
-}
-
 #[async_trait]
 pub trait ResourceGroupReadClient: Send + Sync {
     async fn resolve_descendants(
         &self,
         ctx: &SecurityContext,
         root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_ancestors(
         &self,
         ctx: &SecurityContext,
         node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_memberships(
         &self,
         ctx: &SecurityContext,
         group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembershipRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -484,19 +590,19 @@ pub trait ResourceGroupReadPluginClient: Send + Sync {
         &self,
         ctx: &SecurityContext,
         root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_ancestors(
         &self,
         ctx: &SecurityContext,
         node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupHierarchyRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
 
     async fn resolve_memberships(
         &self,
         ctx: &SecurityContext,
         group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembershipRow>, ResourceGroupError>;
+    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -513,9 +619,9 @@ Returned models are generic graph/membership objects. They do not encode AuthZ d
 
 Tenant projection rule for integration reads:
 
-- in `ownership-graph` profile, `tenant_id` is required in every returned row from `ResourceGroupReadClient`
-- for membership reads, `tenant_id` is derived from `resource_group.tenant_id` via JOIN on `group_id` (not stored on membership row)
-- rows can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
+- hierarchy reads (`resolve_descendants`, `resolve_ancestors`) return `ResourceGroupWithDepth` which includes `tenant_id` per group — callers use this to validate tenant scope
+- membership reads (`resolve_memberships`) return `ResourceGroupMembership` without `tenant_id` — callers derive tenant scope from group data already obtained via hierarchy reads
+- rows from hierarchy reads can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
 - this keeps RG policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
 
 Caller identity propagation rule (aligned with Tenant Resolver pattern):
@@ -528,33 +634,37 @@ Caller identity propagation rule (aligned with Tenant Resolver pattern):
 
 #### Integration Read Schemas (AuthZ-facing)
 
-The integration read contract returns **data rows only** (no policy/decision fields).
+The integration read contract returns **data rows only** (no policy/decision fields). Schemas match REST API models.
 
-`resolve_descendants(ctx, root_id)` and `resolve_ancestors(ctx, node_id)` return hierarchy rows with the same schema:
-
-
-| Field       | Type | Required                | Description                                                                  |
-| ----------- | ---- | ----------------------- | ---------------------------------------------------------------------------- |
-| `group_id`  | UUID | Yes                     | Group identifier for the returned row (descendant or ancestor)               |
-| `tenant_id` | UUID | Yes (`ownership-graph`) | Tenant scope of `group_id` (can differ per row under tenant hierarchy scope) |
-| `depth`     | INT  | Yes                     | Distance from input node (`0` for self row)                                  |
+`resolve_descendants(ctx, root_id)` and `resolve_ancestors(ctx, node_id)` return `ResourceGroupWithDepth` (matches REST `GroupWithDepth`):
 
 
-`resolve_memberships(ctx, group_ids)` returns membership rows:
+| Field         | Type        | Required | Description                                                                  |
+| ------------- | ----------- | -------- | ---------------------------------------------------------------------------- |
+| `group_id`    | UUID        | Yes      | Group identifier                                                             |
+| `parent_id`   | UUID / null | No       | Parent group (null for root groups)                                          |
+| `group_type`  | string      | Yes      | Type code                                                                    |
+| `name`        | string      | Yes      | Display name                                                                 |
+| `tenant_id`   | UUID        | Yes      | Tenant scope (can differ per row under tenant hierarchy scope)               |
+| `external_id` | string / null | No     | Optional external ID                                                         |
+| `depth`       | INT         | Yes      | Relative distance from input node (`0` = self, positive = descendants, negative = ancestors) |
 
 
-| Field           | Type   | Required                | Description                                                                                                                  |
-| --------------- | ------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `group_id`      | UUID   | Yes                     | Group identifier from request set                                                                                            |
-| `tenant_id`     | UUID   | Yes (`ownership-graph`) | Membership tenant scope (derived from group's `tenant_id` via `group_id` JOIN; can differ per row under tenant hierarchy scope) |
-| `resource_type` | string | Yes                     | Resource type classification                                                                                                 |
-| `resource_id`   | string | Yes                     | Resource identifier                                                                                                          |
+`resolve_memberships(ctx, group_ids)` returns `ResourceGroupMembership` (matches REST `Membership`):
 
+
+| Field           | Type   | Required | Description                           |
+| --------------- | ------ | -------- | ------------------------------------- |
+| `group_id`      | UUID   | Yes      | Group identifier from request set     |
+| `resource_type` | string | Yes      | Resource type classification          |
+| `resource_id`   | string | Yes      | Resource identifier                   |
+
+Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `resolve_descendants`/`resolve_ancestors`.
 
 Tenant consistency behavior for integration reads:
 
-- in `ownership-graph` profile, rows with missing tenant scope are invalid and must fail with deterministic error mapping
-- callers can use returned `tenant_id` to validate row scope against caller effective tenant scope before generating AuthZ group constraints
+- hierarchy rows include `tenant_id` per group — callers validate row scope against effective tenant scope before generating AuthZ group constraints
+- membership rows are keyed by `group_id` — callers map `group_id → tenant_id` from hierarchy data
 - in AuthZ query path, mixed-tenant rows are valid when each row tenant is inside effective tenant scope resolved from `ctx`
 
 #### Integration Read Examples
@@ -610,12 +720,20 @@ let rows = rg_read
 [
   {
     "group_id": "22222222-2222-2222-2222-222222222222",
+    "parent_id": "11111111-1111-1111-1111-111111111111",
+    "group_type": "department",
+    "name": "D2",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "external_id": "D2",
     "depth": 0
   },
   {
     "group_id": "33333333-3333-3333-3333-333333333333",
+    "parent_id": "22222222-2222-2222-2222-222222222222",
+    "group_type": "branch",
+    "name": "B3",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "external_id": "B3",
     "depth": 1
   }
 ]
@@ -638,19 +756,31 @@ In this example, tenant root is also returned as an ancestor row.
 ```json
 [
   {
-    "group_id": "33333333-3333-3333-3333-333333333333",
+    "group_id": "11111111-1111-1111-1111-111111111111",
+    "parent_id": null,
+    "group_type": "tenant",
+    "name": "T1",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "depth": 0
+    "external_id": "T1",
+    "depth": -2
   },
   {
     "group_id": "22222222-2222-2222-2222-222222222222",
+    "parent_id": "11111111-1111-1111-1111-111111111111",
+    "group_type": "department",
+    "name": "D2",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "depth": 1
+    "external_id": "D2",
+    "depth": -1
   },
   {
-    "group_id": "11111111-1111-1111-1111-111111111111",
+    "group_id": "33333333-3333-3333-3333-333333333333",
+    "parent_id": "22222222-2222-2222-2222-222222222222",
+    "group_type": "branch",
+    "name": "B3",
     "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "depth": 2
+    "external_id": "B3",
+    "depth": 0
   }
 ]
 ```
@@ -674,25 +804,21 @@ let rows = rg_read
 [
   {
     "group_id": "11111111-1111-1111-1111-111111111111",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
     "resource_type": "User",
     "resource_id": "R4"
   },
   {
     "group_id": "11111111-1111-1111-1111-111111111111",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
     "resource_type": "User",
     "resource_id": "R6"
   },
   {
     "group_id": "33333333-3333-3333-3333-333333333333",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
     "resource_type": "User",
     "resource_id": "R4"
   },
   {
     "group_id": "77777777-7777-7777-7777-777777777777",
-    "tenant_id": "77777777-7777-7777-7777-777777777777",
     "resource_type": "User",
     "resource_id": "R8"
   }
