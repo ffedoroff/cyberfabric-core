@@ -1013,6 +1013,7 @@ Constraints/indexes:
 
 Constraints/indexes:
 
+- PRIMARY KEY `(ancestor_id, descendant_id)`
 - FK `ancestor_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
 - FK `descendant_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
 - index `(descendant_id)` — for ancestor lookups

@@ -64,6 +64,7 @@ CREATE TABLE resource_group_closure (
     ancestor_id UUID NOT NULL,
     descendant_id UUID NOT NULL,
     depth INTEGER NOT NULL,
+    PRIMARY KEY (ancestor_id, descendant_id),
     CONSTRAINT fk_closure_ancestor
         FOREIGN KEY (ancestor_id)
         REFERENCES resource_group(id)

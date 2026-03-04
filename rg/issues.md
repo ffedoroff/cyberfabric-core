@@ -42,20 +42,6 @@ UpdateGroupRequest:
 
 ---
 
-## 3. [LOW] Closure таблица без PK/UNIQUE constraint
+## 3. ~~[LOW] Closure таблица без PK/UNIQUE constraint~~ [RESOLVED]
 
-**migration.sql** (line 63-77):
-```sql
-CREATE TABLE resource_group_closure (
-    ancestor_id UUID NOT NULL,
-    descendant_id UUID NOT NULL,
-    depth INTEGER NOT NULL,
-    ...
-);
-```
-
-Нет PRIMARY KEY и нет UNIQUE constraint на `(ancestor_id, descendant_id)`. В forest-структуре между каждой парой ancestor-descendant существует ровно один путь, поэтому дубликаты невозможны семантически, но без constraint база не защитит от ошибок в коде.
-
-**DESIGN.md** Section 3.7 (line 878-894) — тоже не описывает PK/UNIQUE для closure.
-
-**Решение:** добавить `PRIMARY KEY (ancestor_id, descendant_id)` в migration и DESIGN.md.
+**Решение:** добавлен `PRIMARY KEY (ancestor_id, descendant_id)` в `migration.sql` и `DESIGN.md`.
