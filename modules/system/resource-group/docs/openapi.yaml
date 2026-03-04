@@ -1,0 +1,1130 @@
+openapi: 3.1.0
+info:
+  title: Resource Group API
+  version: 1.0.0
+  description: |
+    Resource Group API based on rg/api.md.
+    Supports pagination and OData-style query options ($filter).
+
+    OData:
+    - Protocol: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html
+    - $filter: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter
+
+
+    Example types:
+    ```text
+      tenant (parents: ["", tenant])
+      └── department (parents: [tenant])
+          └── branch (parents: [department])
+    ```
+
+    Example hierarchy:
+    ```text
+      tenant T1 (11111111-1111-1111-1111-111111111111)
+      ├── department D2 (22222222-2222-2222-2222-222222222222)
+      │   ├── branch B3 (33333333-3333-3333-3333-333333333333)
+      │   │   └── resource R4
+      │   └── resource R5
+      ├── resource R4
+      ├── resource R6
+      └── tenant T7 (77777777-7777-7777-7777-777777777777)
+          └── resource R8
+      tenant T9 (99999999-9999-9999-9999-999999999999)
+      └── resource R0
+    ```
+servers:
+  - url: https://api.example.com
+tags:
+  - name: types
+    description: |
+      Resource group types define the hierarchy structure (e.g. tenant → department → branch).
+      Types are tenant-independent and available to all tenants.
+  - name: groups
+    description: |
+      Resource groups organized in a hierarchy. A tenant is itself a group (the root of the hierarchy).
+      Every group belongs to a tenant (`tenant_id`). The hierarchy may span a tenant and its sub-tenants,
+      so responses include `tenant_id` to distinguish which tenant each group belongs to.
+  - name: memberships
+    description: |
+      Resource memberships bind resources to groups.
+      All memberships are always scoped to a single tenant, so `tenant_id` is not returned in list responses.
+
+paths:
+  /api/resource-group/v1/types:
+    get:
+      operationId: listTypes
+      tags: [types]
+      summary: List resource group types
+      description: |
+        Returns paginated resource group types with OData query support. Use `$filter` for advanced queries.
+
+        Types are **tenant-independent** — they define the hierarchy structure globally and are available to all tenants.
+
+        **Sorting**: results are always sorted by `code` ASC.
+        The sort order is deterministic and stable across requests for consistent pagination.
+
+        - `$filter`:
+          - `code`: eq, ne, in, contains, startswith, endswith
+        - `$top`:
+          - Page size (1..300), default `50`
+        - `$skip`:
+          - Offset from the beginning of the result set, default `0`
+      x-odata-filter:
+        supported_fields:
+          code: [eq, ne, in, contains, startswith, endswith]
+      parameters:
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+      responses:
+        '200':
+          description: Paginated list of types
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypePage'
+              example:
+                items:
+                  - parents: [department]
+                    code: branch
+                  - parents: [tenant]
+                    code: department
+                  - parents: ['', tenant]
+                    code: tenant
+                page_info:
+                  top: 50
+                  skip: 0
+    post:
+      operationId: createType
+      tags: [types]
+      summary: Create a resource group type
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTypeRequest'
+            example:
+              parents: [tenant]
+              code: department
+      responses:
+        '201':
+          description: Type created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Type'
+              example:
+                parents: [tenant]
+                code: department
+  /api/resource-group/v1/types/{code}:
+    parameters:
+      - $ref: '#/components/parameters/TypeCode'
+    get:
+      operationId: getType
+      tags: [types]
+      summary: Get a type by code
+      description: |
+        Returns a single resource group type by `code`.
+      responses:
+        '200':
+          description: Type found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Type'
+              example:
+                parents: [tenant]
+                code: department
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateType
+      tags: [types]
+      summary: Update a type by code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTypeRequest'
+            example:
+              parents: [tenant]
+      responses:
+        '200':
+          description: Type updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Type'
+              example:
+                parents: [tenant]
+                code: department
+    delete:
+      operationId: deleteType
+      tags: [types]
+      summary: Delete a type by code
+      responses:
+        '204':
+          description: Type deleted
+
+  /api/resource-group/v1/groups:
+    get:
+      operationId: listGroups
+      tags: [groups]
+      summary: List groups with filters and pagination
+      description: |
+        Returns paginated resource groups with OData query support. Use `$filter` for advanced queries.
+
+        A tenant is itself a group (the root of the hierarchy). Groups are scoped to a **tenant hierarchy** —
+        the response may contain groups belonging to the tenant and its sub-tenants.
+        Each group includes `tenant_id` to identify which tenant it belongs to.
+
+        For hierarchy traversal (ancestors, descendants, depth-based queries),
+        use the dedicated [`/{group_id}/depth`](#/groups/listGroupDepth) endpoint.
+
+        **Sorting**: results are always sorted by `group_id` ASC.
+        The sort order is deterministic and stable across requests for consistent pagination.
+
+        OData support:
+        - `$filter`:
+          - `group_type`: eq, ne, in
+          - `parent_id`: eq, ne, in
+          - `group_id`: eq, ne, in
+          - `name`: eq, ne, in, contains, startswith, endswith
+          - `external_id`: eq, ne, in, contains, startswith, endswith
+        - `$top`:
+          - Page size (1..300), default `50`
+        - `$skip`:
+          - Offset from the beginning of the result set, default `0`
+      x-odata-filter:
+        supported_fields:
+          group_type: [eq, ne, in]
+          parent_id: [eq, ne, in]
+          group_id: [eq, ne, in]
+          name: [eq, ne, in, contains, startswith, endswith]
+          external_id: [eq, ne, in, contains, startswith, endswith]
+      parameters:
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+      responses:
+        '200':
+          description: Paginated list of groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPage'
+              examples:
+                no-filter:
+                  summary: "GET ...groups — no filter"
+                  description: |
+                    GET /api/resource-group/v1/groups
+
+                    All groups in the tenant hierarchy.
+                  value:
+                    items:
+                      - group_id: 11111111-1111-1111-1111-111111111111
+                        parent_id: null
+                        group_type: tenant
+                        name: T1
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: T1
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                      - group_id: 77777777-7777-7777-7777-777777777777
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: tenant
+                        name: T7
+                        tenant_id: 77777777-7777-7777-7777-777777777777
+                        external_id: T7
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                group-type-eq:
+                  summary: "$filter=group_type eq 'department'"
+                  description: |
+                    GET /api/resource-group/v1/groups?$filter=group_type eq 'department'
+
+                    Only groups of type department.
+                  value:
+                    items:
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                parent-id-eq:
+                  summary: "$filter=parent_id eq '11111111-1111-1111-1111-111111111111'"
+                  description: |
+                    GET /api/resource-group/v1/groups?$filter=parent_id eq '11111111-1111-1111-1111-111111111111'
+
+                    Direct children of T1.
+                  value:
+                    items:
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                      - group_id: 77777777-7777-7777-7777-777777777777
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: tenant
+                        name: T7
+                        tenant_id: 77777777-7777-7777-7777-777777777777
+                        external_id: T7
+                    page_info:
+                      top: 50
+                      skip: 0
+
+    post:
+      operationId: createGroup
+      tags: [groups]
+      summary: Create a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+            example:
+              external_id: D2
+              group_type: department
+              name: D2
+              parent_id: 11111111-1111-1111-1111-111111111111
+              tenant_id: 11111111-1111-1111-1111-111111111111
+      responses:
+        '201':
+          description: Group created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+              example:
+                external_id: D2
+                group_type: department
+                group_id: 22222222-2222-2222-2222-222222222222
+                name: D2
+                parent_id: 11111111-1111-1111-1111-111111111111
+                tenant_id: 11111111-1111-1111-1111-111111111111
+  /api/resource-group/v1/groups/{group_id}:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      operationId: getGroup
+      tags: [groups]
+      summary: Get a group by group_id
+      description: |
+        Returns a single group by `group_id`.
+      responses:
+        '200':
+          description: Group found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+              example:
+                external_id: D2
+                group_type: department
+                group_id: 22222222-2222-2222-2222-222222222222
+                name: D2
+                parent_id: 11111111-1111-1111-1111-111111111111
+                tenant_id: 11111111-1111-1111-1111-111111111111
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateGroup
+      tags: [groups]
+      summary: Update a group by group_id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGroupRequest'
+            example:
+              external_id: D2
+              group_type: department
+              name: D2
+              parent_id: 11111111-1111-1111-1111-111111111111
+      responses:
+        '200':
+          description: Group updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+              example:
+                external_id: D2
+                group_type: department
+                group_id: 22222222-2222-2222-2222-222222222222
+                name: D2
+                parent_id: 11111111-1111-1111-1111-111111111111
+                tenant_id: 11111111-1111-1111-1111-111111111111
+    delete:
+      operationId: deleteGroup
+      tags: [groups]
+      summary: Delete a group by group_id
+      parameters:
+        - $ref: '#/components/parameters/DeleteForce'
+      responses:
+        '204':
+          description: Group deleted
+
+  /api/resource-group/v1/groups/{group_id}/depth:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      operationId: listGroupDepth
+      tags: [groups]
+      summary: Traverse hierarchy from a reference group
+      description: |
+        Returns groups related to the reference group `{group_id}` in the hierarchy,
+        with a computed `depth` field indicating the relative position.
+
+        - `depth = 0` — the reference group itself
+        - `depth > 0` — descendants (children, grandchildren, …)
+        - `depth < 0` — ancestors (parent, grandparent, …)
+
+        The reference group (`{group_id}`) is always included when the depth range covers `0`.
+
+        **Implementation note**: negative depth is computed by reversing the closure table lookup direction.
+        The closure table stores only non-negative depth values; the API negates them for ancestor results.
+
+        **Sorting**: results are always sorted by `depth` ASC, `group_id` ASC.
+        Ancestors appear first (most distant ancestor at top), then self, then descendants.
+
+        OData support:
+        - `$filter`:
+          - `depth`: eq, ne, gt, ge, lt, le — e.g. `depth ge -10 and depth le 5`
+          - `group_type`: eq, ne, in — e.g. `group_type in ('department','branch')`
+        - `$top`:
+          - Page size (1..300), default `50`
+        - `$skip`:
+          - Offset from the beginning of the result set, default `0`
+      x-odata-filter:
+        supported_fields:
+          depth: [eq, ne, gt, ge, lt, le]
+          group_type: [eq, ne, in]
+      parameters:
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+      responses:
+        '200':
+          description: Paginated list of groups with relative depth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupWithDepthPage'
+              examples:
+                no-filter:
+                  summary: "GET ...groups/{T1}/depth — no filter"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth
+
+                    All relatives of T1 (self + all descendants).
+                  value:
+                    items:
+                      - group_id: 11111111-1111-1111-1111-111111111111
+                        parent_id: null
+                        group_type: tenant
+                        name: T1
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: T1
+                        depth: 0
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: 1
+                      - group_id: 77777777-7777-7777-7777-777777777777
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: tenant
+                        name: T7
+                        tenant_id: 77777777-7777-7777-7777-777777777777
+                        external_id: T7
+                        depth: 1
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                        depth: 2
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-eq-0:
+                  summary: "$filter=depth eq 0"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth eq 0
+
+                    Only the reference group itself (ref: T1).
+                  value:
+                    items:
+                      - group_id: 11111111-1111-1111-1111-111111111111
+                        parent_id: null
+                        group_type: tenant
+                        name: T1
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: T1
+                        depth: 0
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-eq-1:
+                  summary: "$filter=depth eq 1"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth eq 1
+
+                    Direct children of T1 (depth = 1).
+                  value:
+                    items:
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: 1
+                      - group_id: 77777777-7777-7777-7777-777777777777
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: tenant
+                        name: T7
+                        tenant_id: 77777777-7777-7777-7777-777777777777
+                        external_id: T7
+                        depth: 1
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-le-5:
+                  summary: "$filter=depth le 5"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth le 5
+
+                    Self + descendants up to 5 levels deep (ref: T1).
+                  value:
+                    items:
+                      - group_id: 11111111-1111-1111-1111-111111111111
+                        parent_id: null
+                        group_type: tenant
+                        name: T1
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: T1
+                        depth: 0
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: 1
+                      - group_id: 77777777-7777-7777-7777-777777777777
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: tenant
+                        name: T7
+                        tenant_id: 77777777-7777-7777-7777-777777777777
+                        external_id: T7
+                        depth: 1
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                        depth: 2
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-eq-minus-1:
+                  summary: "$filter=depth eq -1"
+                  description: |
+                    GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/depth?$filter=depth eq -1
+
+                    Direct parent of B3 (ref: B3).
+                  value:
+                    items:
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: -1
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-ge-minus-10-le-minus-1:
+                  summary: "$filter=depth ge -10 and depth le -1"
+                  description: |
+                    GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/depth?$filter=depth ge -10 and depth le -1
+
+                    All ancestors of B3 up to 10 levels above (ref: B3).
+                  value:
+                    items:
+                      - group_id: 11111111-1111-1111-1111-111111111111
+                        parent_id: null
+                        group_type: tenant
+                        name: T1
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: T1
+                        depth: -2
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: -1
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-ge-minus-10-le-5:
+                  summary: "$filter=depth ge -10 and depth le 5"
+                  description: |
+                    GET /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222/depth?$filter=depth ge -10 and depth le 5
+
+                    Full range: ancestors + self + descendants (ref: D2).
+                  value:
+                    items:
+                      - group_id: 11111111-1111-1111-1111-111111111111
+                        parent_id: null
+                        group_type: tenant
+                        name: T1
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: T1
+                        depth: -1
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: 0
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                        depth: 1
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-gt-0-and-type:
+                  summary: "$filter=depth gt 0 and depth le 5 and group_type eq 'department'"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth gt 0 and depth le 5 and group_type eq 'department'
+
+                    Descendants of type 'department', max 5 levels deep (ref: T1).
+                  value:
+                    items:
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: 1
+                    page_info:
+                      top: 50
+                      skip: 0
+
+                depth-with-pagination:
+                  summary: "$filter=depth ge -10 and depth le 5&$top=2&$skip=1"
+                  description: |
+                    GET /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222/depth?$filter=depth ge -10 and depth le 5&$top=2&$skip=1
+
+                    Full depth range with pagination: page size 2, skip 1 (ref: D2).
+                  value:
+                    items:
+                      - group_id: 22222222-2222-2222-2222-222222222222
+                        parent_id: 11111111-1111-1111-1111-111111111111
+                        group_type: department
+                        name: D2
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: D2
+                        depth: 0
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                        depth: 1
+                    page_info:
+                      top: 2
+                      skip: 1
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/resource-group/v1/memberships:
+    get:
+      operationId: listMemberships
+      tags: [memberships]
+      summary: List memberships bound to a group
+      description: |
+        Returns paginated memberships bound to a group with OData query support. Use `$filter` for advanced queries.
+
+        All memberships are always within the scope of a **single tenant**, so `tenant_id` is not included in the response.
+
+        **Sorting**: results are always sorted by `group_id` ASC, `resource_type` ASC, `resource_id` ASC.
+        The sort order is deterministic and stable across requests for consistent pagination.
+
+        OData support:
+        - `$filter`:
+          - `resource_id`: eq, ne, in, contains, startswith, endswith
+          - `resource_type`: eq, ne, in
+          - `group_id`: eq, ne, in
+        - `$top`:
+          - Page size (1..300), default `50`
+        - `$skip`:
+          - Offset from the beginning of the result set, default `0`
+      x-odata-filter:
+        supported_fields:
+          resource_id: [eq, ne, in, contains, startswith, endswith]
+          resource_type: [eq, ne, in]
+          group_id: [eq, ne, in]
+      parameters:
+        - $ref: '#/components/parameters/ODataFilter'
+        - $ref: '#/components/parameters/ODataTop'
+        - $ref: '#/components/parameters/ODataSkip'
+      responses:
+        '200':
+          description: Paginated resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembershipPage'
+              example:
+                items:
+                  - group_id: 33333333-3333-3333-3333-333333333333
+                    resource_id: R4
+                    resource_type: User
+                page_info:
+                  top: 50
+                  skip: 0
+
+  /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id}:
+    parameters:
+      - $ref: '#/components/parameters/MembershipGroupId'
+      - $ref: '#/components/parameters/MembershipResourceType'
+      - $ref: '#/components/parameters/MembershipResourceId'
+    post:
+      operationId: addMembership
+      tags: [memberships]
+      summary: Attach membership to a group
+      responses:
+        '201':
+          description: Membership attached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Membership'
+              example:
+                group_id: 33333333-3333-3333-3333-333333333333
+                resource_id: R4
+                resource_type: User
+    delete:
+      operationId: deleteMembership
+      tags: [memberships]
+      summary: Detach membership from a group
+      responses:
+        '204':
+          description: Membership detached
+
+components:
+
+  parameters:
+    GroupId:
+      name: group_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: 22222222-2222-2222-2222-222222222222
+
+    TypeCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+      example: department
+
+    MembershipGroupId:
+      name: group_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: 33333333-3333-3333-3333-333333333333
+
+    MembershipResourceType:
+      name: resource_type
+      in: path
+      required: true
+      schema:
+        type: string
+      example: User
+
+    MembershipResourceId:
+      name: resource_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: R4
+
+    DeleteForce:
+      name: force
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+      example: false
+
+    ODataTop:
+      name: $top
+      in: query
+      required: false
+      description: OData v4.01 page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 300
+        default: 50
+      example: 50
+
+    ODataSkip:
+      name: $skip
+      in: query
+      required: false
+      description: OData v4.01 offset.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      example: 0
+
+    ODataFilter:
+      name: $filter
+      in: query
+      required: false
+      description: |
+        OData v4.01 filter expression.
+      schema:
+        type: string
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            detail: Requested entity does not exist
+            status: 404
+            title: Resource not found
+            trace_id: 01HXYZRGNOTFOUND
+            type: https://api.example.com/errors/not-found
+
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        trace_id: { type: string }
+      example:
+        detail: Requested entity does not exist
+        status: 404
+        title: Resource not found
+        trace_id: 01HXYZRGNOTFOUND
+        type: https://api.example.com/errors/not-found
+
+    PageInfo:
+      type: object
+      required: [top, skip]
+      properties:
+        top:
+          type: integer
+        skip:
+          type: integer
+      example:
+        top: 50
+        skip: 0
+
+    Type:
+      type: object
+      required: [code, parents]
+      properties:
+        code:
+          type: string
+          example: department
+        parents:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: "Allowed parent type codes (min 1 element). Empty string '' permits root placement (no parent_id). Empty array [] is invalid."
+          example: [tenant]
+
+    TypePage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Type'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+      example:
+        items:
+          - parents: [department]
+            code: branch
+          - parents: [tenant]
+            code: department
+          - parents: ['', tenant]
+            code: tenant
+        page_info:
+          top: 50
+          skip: 0
+
+    CreateTypeRequest:
+      type: object
+      required: [code, parents]
+      properties:
+        code:
+          type: string
+          example: department
+        parents:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          example: [tenant]
+
+    UpdateTypeRequest:
+      type: object
+      required: [parents]
+      properties:
+        parents:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          example: [tenant]
+
+    Group:
+      type: object
+      required: [group_id, group_type, name, tenant_id]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+          example: 22222222-2222-2222-2222-222222222222
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        group_type:
+          type: string
+          example: department
+        name:
+          type: string
+          example: D2
+        tenant_id:
+          type: string
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        external_id:
+          type: [string, 'null']
+          example: D2
+
+    GroupPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+      example:
+        items:
+          - external_id: D2
+            group_type: department
+            group_id: 22222222-2222-2222-2222-222222222222
+            name: D2
+            parent_id: 11111111-1111-1111-1111-111111111111
+            tenant_id: 11111111-1111-1111-1111-111111111111
+        page_info:
+          top: 50
+          skip: 0
+
+    GroupWithDepth:
+      type: object
+      description: |
+        A group with a computed `depth` field relative to the reference group.
+      required: [group_id, group_type, name, tenant_id, depth]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+          example: 22222222-2222-2222-2222-222222222222
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        group_type:
+          type: string
+          example: department
+        name:
+          type: string
+          example: D2
+        tenant_id:
+          type: string
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        external_id:
+          type: [string, 'null']
+          example: D2
+        depth:
+          type: integer
+          description: |
+            Relative depth from the reference group.
+            0 = the reference group itself, positive = descendants, negative = ancestors.
+          example: 1
+
+    GroupWithDepthPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupWithDepth'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+      example:
+        items:
+          - external_id: D2
+            group_type: department
+            group_id: 22222222-2222-2222-2222-222222222222
+            name: D2
+            parent_id: 11111111-1111-1111-1111-111111111111
+            tenant_id: 11111111-1111-1111-1111-111111111111
+            depth: 1
+        page_info:
+          top: 50
+          skip: 0
+
+    CreateGroupRequest:
+      type: object
+      required: [group_type, name, tenant_id]
+      properties:
+        group_type:
+          type: string
+          example: department
+        name:
+          type: string
+          example: D2
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        tenant_id:
+          type: string
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        external_id:
+          type: [string, 'null']
+          example: D2
+
+    UpdateGroupRequest:
+      type: object
+      required: [group_type, name]
+      properties:
+        group_type:
+          type: string
+          example: department
+        name:
+          type: string
+          example: D2
+        parent_id:
+          type: [string, 'null']
+          format: uuid
+          example: 11111111-1111-1111-1111-111111111111
+        external_id:
+          type: [string, 'null']
+          example: D2
+
+    Membership:
+      type: object
+      required: [group_id, resource_id, resource_type]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+          example: 33333333-3333-3333-3333-333333333333
+        resource_id:
+          type: string
+          example: R4
+        resource_type:
+          type: string
+          example: User
+
+    MembershipPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
+        page_info:
+          $ref: '#/components/schemas/PageInfo'
+      example:
+        items:
+          - group_id: 33333333-3333-3333-3333-333333333333
+            resource_id: R4
+            resource_type: User
+        page_info:
+          top: 50
+          skip: 0
