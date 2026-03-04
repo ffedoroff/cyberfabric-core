@@ -732,6 +732,13 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **WHEN** caller moves `B1` to `parent_id = T1`
 - **THEN** `InvalidParentType`
 
+#### Scenario: Reject Move — Tenant Scope Change via Parent
+
+- **GIVEN** group `B1` (type `branch`, `tenant_id = A`) currently under `D1` (`tenant_id = A`)
+- **AND** new target parent `D2` belongs to `tenant_id = B`
+- **WHEN** caller moves `B1` to `parent_id = D2`
+- **THEN** operation is rejected — changing `parent_id` to a node in a different tenant would implicitly change tenant ownership of `B1` and its descendants, which is prohibited via API
+
 #### Scenario: Reject Create Entity — Cross-Tenant Parent (Unrelated Tenants)
 
 - **GIVEN** parent entity `D1` belongs to tenant `A`
