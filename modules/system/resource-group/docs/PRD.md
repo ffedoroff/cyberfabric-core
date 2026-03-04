@@ -431,6 +431,23 @@ The module **MUST** map all failures to deterministic categories:
 - `service_unavailable`
 - `internal`
 
+### 5.9 Authentication Modes
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-dual-auth-modes`
+
+RG REST API supports two authentication modes:
+
+**JWT (public, all endpoints)**: standard user/service requests via bearer token. All endpoints available. Every request goes through AuthZ evaluation via `PolicyEnforcer` — identical flow to any other domain service (courses, users, etc.).
+
+**MTLS (private, hierarchy endpoint only)**: service-to-service requests via mutual TLS client certificate. Used by AuthZ plugin to read tenant hierarchy. Only `GET /groups/{group_id}/depth` is allowed — all other endpoints return `403 Forbidden`. MTLS requests **bypass AuthZ evaluation entirely** because:
+- AuthZ plugin is the caller and cannot evaluate itself (circular dependency)
+- MTLS certificate identity is a trusted system principal
+- Single read-only endpoint — minimal attack surface
+
+In monolith deployment, AuthZ uses `ResourceGroupReadHierarchy` via in-process ClientHub — no network, no MTLS, type system enforces hierarchy-only access. In microservice deployment, the same trait is backed by an MTLS-authenticated gRPC/REST call.
+
+See DESIGN.md `cpt-cf-resource-group-seq-auth-modes` for detailed sequence diagrams.
+
 ## 6. Non-Functional Requirements
 
 ### 6.1 Hierarchy Query Latency
@@ -544,20 +561,7 @@ Gateway behavior:
 
 ### 7.2 Authentication Modes
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-dual-auth-modes`
-
-RG REST API supports two authentication modes:
-
-**JWT (public, all endpoints)**: standard user/service requests via bearer token. All endpoints available. Every request goes through AuthZ evaluation via `PolicyEnforcer` — identical flow to any other domain service (courses, users, etc.).
-
-**MTLS (private, hierarchy endpoint only)**: service-to-service requests via mutual TLS client certificate. Used by AuthZ plugin to read tenant hierarchy. Only `GET /groups/{group_id}/depth` is allowed — all other endpoints return `403 Forbidden`. MTLS requests **bypass AuthZ evaluation entirely** because:
-- AuthZ plugin is the caller and cannot evaluate itself (circular dependency)
-- MTLS certificate identity is a trusted system principal
-- Single read-only endpoint — minimal attack surface
-
-In monolith deployment, AuthZ uses `ResourceGroupReadHierarchy` via in-process ClientHub — no network, no MTLS, type system enforces hierarchy-only access. In microservice deployment, the same trait is backed by an MTLS-authenticated gRPC/REST call.
-
-See DESIGN.md `cpt-cf-resource-group-seq-auth-modes` for detailed sequence diagrams.
+See `cpt-cf-resource-group-fr-dual-auth-modes` in section 5.9 for the full authentication modes requirement.
 
 ### 7.3 Integration Read Schemas (Ownership-Graph)
 
