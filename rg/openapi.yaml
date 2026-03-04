@@ -150,7 +150,6 @@ paths:
               $ref: '#/components/schemas/UpdateTypeRequest'
             example:
               parents: [tenant]
-              code: department
       responses:
         '200':
           description: Type updated
@@ -939,11 +938,8 @@ components:
 
     UpdateTypeRequest:
       type: object
-      required: [code, parents]
+      required: [parents]
       properties:
-        code:
-          type: string
-          example: department
         parents:
           type: array
           items:
