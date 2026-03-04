@@ -939,6 +939,105 @@ This is the fixed boundary:
 - AuthZ plugin creates constraints.
 - PEP/compiler creates SQL.
 
+#### Module Initialization Order
+
+**ID**: `cpt-cf-resource-group-seq-init-order`
+
+RG Management API depends on AuthZ SDK; AuthZ plugin depends on RG Access API SDK. This circular dependency is resolved by phased initialization:
+
+```
+Phase 1 (SystemCapability):
+  1. RG Module init
+     → registers ResourceGroupReadClient in ClientHub
+     → registers ResourceGroupClient in ClientHub
+     → REST/gRPC endpoints NOT yet accepting traffic
+
+  2. AuthZ Resolver init (deps: [types-registry])
+     → registers AuthZResolverClient in ClientHub
+     → plugin discovery is lazy (first evaluate() call)
+
+Phase 2 (ready):
+  3. RG Module starts accepting REST/gRPC traffic
+     → write operations call PolicyEnforcer → AuthZResolverClient (available since step 2)
+     → seed operations run with system SecurityContext (bypass AuthZ)
+
+  4. AuthZ plugin on first evaluate() call
+     → lazy-discovers RG plugin via types-registry
+     → calls ResourceGroupReadClient (available since step 1)
+```
+
+There is no deadlock: RG registers its read clients before AuthZ initializes, and AuthZ registers its client before RG starts accepting write traffic. Seed operations use a system-level `SecurityContext` and bypass the AuthZ evaluation path.
+
+#### End-to-End Authorization Flow (Example)
+
+**ID**: `cpt-cf-resource-group-seq-e2e-authz-flow`
+
+Concrete example: a user of tenant `T1` requests a list of courses. The tenant hierarchy grants access to courses in `T1` and its child tenant `T7`.
+
+```text
+Tenant hierarchy:
+  tenant T1 (11111111-...)
+  └── tenant T7 (77777777-...)
+  tenant T9 (99999999-...)
+```
+
+```mermaid
+sequenceDiagram
+    participant U as User (tenant T1)
+    participant GW as API Gateway
+    participant AN as AuthNResolverClient
+    participant CS as Courses Service
+    participant PE as PolicyEnforcer
+    participant AZ as AuthZ Resolver Plugin
+    participant RG as ResourceGroupReadClient
+    participant DB as Courses DB
+
+    U->>GW: GET /api/lms/v1/courses (JWT: subject_id, subject_tenant_id=T1)
+    GW->>AN: authenticate(bearer_token)
+    AN-->>GW: SecurityContext {subject_id, subject_tenant_id=T1, token_scopes}
+    GW->>CS: handler(ctx: SecurityContext)
+
+    CS->>PE: access_scope(ctx, COURSE, "list", None)
+    PE->>AZ: evaluate(EvaluationRequest)
+    Note right of AZ: subject.properties.tenant_id = T1<br/>action.name = "list"<br/>resource.type = "gts.x.lms.course.v1~"<br/>context.require_constraints = true<br/>context.supported_properties = ["owner_tenant_id"]
+
+    AZ->>RG: list_group_depth(system_ctx, T1, filter: "depth ge 0 and group_type eq 'tenant'")
+    RG-->>AZ: [{T1, depth:0}, {T7, depth:1}]
+    Note right of AZ: PDP logic: T1 owns T7,<br/>user sees both tenants
+
+    AZ-->>PE: decision=true, constraints=[{owner_tenant_id IN (T1, T7)}]
+    PE->>PE: compile_to_access_scope()
+    PE-->>CS: AccessScope {owner_tenant_id IN (T1, T7)}
+
+    CS->>DB: SELECT * FROM courses WHERE owner_tenant_id IN (T1, T7)
+    DB-->>CS: courses from T1 + T7
+    CS-->>U: 200 OK [{...T1 courses...}, {...T7 courses...}]
+```
+
+Step-by-step:
+
+1. **AuthN** — API Gateway extracts JWT bearer token, calls `AuthNResolverClient.authenticate()`. The authn plugin validates the token and returns a `SecurityContext` with `subject_id`, `subject_tenant_id = T1`, and `token_scopes`. Gateway injects `SecurityContext` into request extensions.
+
+2. **Domain service** — Courses handler receives the request with `SecurityContext`. Before querying the database, it calls `PolicyEnforcer.access_scope(&ctx, &COURSE_RESOURCE, "list", None)` to obtain row-level access constraints.
+
+3. **AuthZ evaluation** — `PolicyEnforcer` builds an `EvaluationRequest` (subject with `tenant_id = T1`, action `"list"`, resource type `"gts.x.lms.course.v1~"`, `require_constraints = true`, `supported_properties = ["owner_tenant_id"]`) and calls `AuthZResolverClient.evaluate()`.
+
+4. **Hierarchy resolution** — The AuthZ plugin calls `ResourceGroupReadClient.list_group_depth()` with `tenant_id = T1` and a depth filter to resolve the tenant hierarchy. RG returns `[T1 (depth 0), T7 (depth 1)]` — the accessible tenant subtree. The plugin does NOT see `T9` because it is outside `T1`'s hierarchy.
+
+5. **Constraint generation** — The AuthZ plugin applies its policy logic to the hierarchy data and produces constraints: `owner_tenant_id IN (T1, T7)`. This is returned in `EvaluationResponse` with `decision = true`.
+
+6. **Constraint compilation** — `PolicyEnforcer` calls `compile_to_access_scope()` which converts the PDP constraints into an `AccessScope` with `ScopeFilter::in("owner_tenant_id", [T1, T7])`.
+
+7. **SQL execution** — Courses service applies the `AccessScope` via SecureORM, which appends `WHERE owner_tenant_id IN ('T1', 'T7')` to the query. The user sees courses from both tenants.
+
+Key separation of concerns:
+
+| Component | Knows about | Does NOT know about |
+| --------- | ----------- | ------------------- |
+| Courses service | course domain, SQL schema | tenant hierarchy, access policies |
+| AuthZ plugin | access policies, tenant hierarchy (via RG) | courses, SQL schema |
+| RG | hierarchy data, group membership | courses, access policies, SQL |
+
 ### 3.7 Database schemas & tables
 
 #### Table: `resource_group_type`
