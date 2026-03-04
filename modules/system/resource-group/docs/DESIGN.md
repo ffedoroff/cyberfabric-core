@@ -24,7 +24,7 @@ RG is intentionally policy-agnostic:
 
 The architecture consists of:
 
-- **RG Resolver SDK** — read and write trait contracts (`ResourceGroupClient`, `ResourceGroupReadClient`)
+- **RG Resolver SDK** — read and write trait contracts (`ResourceGroupClient`, `ResourceGroupReadHierarchy`, `ResourceGroupReadClient`)
 - **RG Module (Gateway)** — routes requests to built-in or vendor-specific provider
 - **RG Plugin** — full service with database, REST API, seeding, and domain logic
 
@@ -98,7 +98,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | SDK API Layer          | expose type/entity/membership + read contracts    | Rust SDK traits + ClientHub   |
 | Domain Layer           | validate type compatibility and forest invariants | domain services               |
 | Hierarchy Engine       | closure-table updates/queries and profile checks  | domain service + repositories |
-| Integration Read Layer | read-only hierarchy/membership queries            | `ResourceGroupReadClient`     |
+| Integration Read Layer | read-only hierarchy/membership queries            | `ResourceGroupReadHierarchy` + `ResourceGroupReadClient` |
 | Persistence Layer      | transactional storage and indexing                | SQL + SeaORM repositories     |
 
 
@@ -185,9 +185,11 @@ Reducing enabled `max_depth`/`max_width` cannot rewrite existing rows. Writes th
 ```mermaid
 graph TD
     A[Domain Client] --> B[ResourceGroupClient]
-    X[External Consumer / AuthZ Plugin] --> C[ResourceGroupReadClient]
+    Y[General Consumer] --> C[ResourceGroupReadClient]
+    X[AuthZ Plugin] --> Z[ResourceGroupReadHierarchy]
     B --> D[RG Module]
     C --> D
+    Z --> D
     D --> E[Type Service]
     D --> F[Entity Service]
     D --> G[Hierarchy Service]
@@ -198,6 +200,8 @@ graph TD
     H --> I
     I --> J[(SQL DB)]
 ```
+
+Trait hierarchy: `ResourceGroupReadClient` extends `ResourceGroupReadHierarchy`. AuthZ plugin depends only on the narrow `ReadHierarchy` trait (hierarchy-only). General consumers use the full `ReadClient` (hierarchy + memberships).
 
 
 
@@ -211,7 +215,7 @@ Responsibilities:
 - register public clients in ClientHub
 - expose REST API endpoints under `/api/resource-group/v1/`
 - load query profile config
-- route `ResourceGroupReadClient` calls to built-in data path or configured vendor-specific plugin path
+- route `ResourceGroupReadHierarchy` / `ResourceGroupReadClient` calls to built-in data path or configured vendor-specific plugin path
 
 Boundaries:
 
@@ -533,13 +537,19 @@ REST API field projection notes:
 
 Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
 
-**Integration read API** (`ResourceGroupReadClient`, stable):
+**Integration read API** (stable, two-tier trait hierarchy):
+
+The read API is split into two traits via Rust trait inheritance:
+
+- `ResourceGroupReadHierarchy` — narrow hierarchy-only contract (used by AuthZ plugin)
+- `ResourceGroupReadClient` — full read contract extending `ReadHierarchy` (used by general consumers)
 
 
-| Method                                          | Description                                                                                                                                    |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_group_depth(ctx, group_id, query)`        | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/depth` — supports OData `$filter` (depth, group_type), `$top`, `$skip` |
-| `list_memberships(ctx, query)`                  | membership rows matching REST `GET /memberships` — supports OData `$filter` (group_id, resource_type, resource_id), `$top`, `$skip`             |
+| Trait | Method | Description |
+| ----- | ------ | ----------- |
+| `ResourceGroupReadHierarchy` | `list_group_depth(ctx, group_id, query)` | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/depth` — supports OData `$filter` (depth, group_type), `$top`, `$skip` |
+| `ResourceGroupReadClient` | _(inherits `list_group_depth`)_ | inherited from `ResourceGroupReadHierarchy` |
+| `ResourceGroupReadClient` | `list_memberships(ctx, query)` | membership rows matching REST `GET /memberships` — supports OData `$filter` (group_id, resource_type, resource_id), `$top`, `$skip` |
 
 
 Integration read models reuse the same SDK structs defined above:
@@ -547,15 +557,17 @@ Integration read models reuse the same SDK structs defined above:
 - `list_group_depth` returns `Page<ResourceGroupWithDepth>` (matches REST `GroupWithDepthPage`)
 - `list_memberships` returns `Page<ResourceGroupMembership>` (matches REST `MembershipPage` — no `tenant_id`; tenant scope is available from group data the caller already has via `list_group_depth`)
 
-Target Rust trait signature (SDK contract, mirrors REST API):
+Target Rust trait signatures (SDK contract, mirrors REST API):
 
 ```rust
 use async_trait::async_trait;
 use modkit_security::SecurityContext;
 use uuid::Uuid;
 
+/// Narrow hierarchy-only read contract.
+/// Used by AuthZ plugin — provides only hierarchy traversal, no memberships.
 #[async_trait]
-pub trait ResourceGroupReadClient: Send + Sync {
+pub trait ResourceGroupReadHierarchy: Send + Sync {
     /// Matches REST `GET /groups/{group_id}/depth` with OData query.
     async fn list_group_depth(
         &self,
@@ -563,7 +575,12 @@ pub trait ResourceGroupReadClient: Send + Sync {
         group_id: Uuid,
         query: ListQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
+}
 
+/// Full read contract — hierarchy + memberships. Extends `ResourceGroupReadHierarchy`.
+/// Used by general consumers that need both hierarchy traversal and membership queries.
+#[async_trait]
+pub trait ResourceGroupReadClient: ResourceGroupReadHierarchy {
     /// Matches REST `GET /memberships` with OData query.
     async fn list_memberships(
         &self,
@@ -580,15 +597,9 @@ use async_trait::async_trait;
 use modkit_security::SecurityContext;
 use uuid::Uuid;
 
+/// Plugin hierarchy read contract. Extends `ResourceGroupReadHierarchy`.
 #[async_trait]
-pub trait ResourceGroupReadPluginClient: Send + Sync {
-    async fn list_group_depth(
-        &self,
-        ctx: &SecurityContext,
-        group_id: Uuid,
-        query: ListQuery,
-    ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
-
+pub trait ResourceGroupReadPluginClient: ResourceGroupReadHierarchy {
     async fn list_memberships(
         &self,
         ctx: &SecurityContext,
@@ -597,9 +608,23 @@ pub trait ResourceGroupReadPluginClient: Send + Sync {
 }
 ```
 
+ClientHub registration (single implementation, two registrations):
+
+```rust
+let svc: Arc<RgService> = Arc::new(RgService::new(/* ... */));
+
+// AuthZ plugin: hub.get::<dyn ResourceGroupReadHierarchy>()
+hub.register::<dyn ResourceGroupReadHierarchy>(svc.clone());
+
+// General consumers: hub.get::<dyn ResourceGroupReadClient>()
+hub.register::<dyn ResourceGroupReadClient>(svc.clone());
+```
+
 Plugin gateway routing notes:
 
-- `ResourceGroupReadClient` is the public inter-module contract from ClientHub
+- `ResourceGroupReadHierarchy` is the narrow inter-module contract for AuthZ plugin (hierarchy only)
+- `ResourceGroupReadClient` is the full inter-module contract for general consumers (hierarchy + memberships)
+- both are registered in ClientHub backed by the same implementation
 - module service resolves configured provider:
   - built-in provider: serve reads from local RG persistence path
   - vendor-specific provider: resolve plugin instance by configured vendor and delegate to `ResourceGroupReadPluginClient`
@@ -688,9 +713,13 @@ Client initialization + caller context:
 
 ```rust
 use modkit_security::SecurityContext;
-use resource_group_sdk::ResourceGroupReadClient;
+use resource_group_sdk::{ResourceGroupReadHierarchy, ResourceGroupReadClient};
 use uuid::Uuid;
 
+// AuthZ plugin — hierarchy only
+let rg_hierarchy = hub.get::<dyn ResourceGroupReadHierarchy>()?;
+
+// General consumer — hierarchy + memberships
 let rg_read = hub.get::<dyn ResourceGroupReadClient>()?;
 
 let authz_ctx = SecurityContext::builder()
@@ -842,8 +871,10 @@ let page = rg_read
 | Dependency                            | Interface                       | Purpose                                                       |
 | ------------------------------------- | ------------------------------- | ------------------------------------------------------------- |
 | SQL database                          | SeaORM repositories             | durable canonical + closure storage                           |
+| AuthZ Resolver SDK                    | `PolicyEnforcer` / `AuthZResolverClient` | AuthZ evaluation for JWT-authenticated RG API requests (write + read) |
 | Vendor-specific RG backend (optional) | `ResourceGroupReadPluginClient` | alternative hierarchy/membership source for integration reads |
-| AuthZ plugin consumer (optional)      | `ResourceGroupReadClient`       | read hierarchy/membership context in PDP logic                |
+| AuthZ plugin consumer (optional)      | `ResourceGroupReadHierarchy`    | read hierarchy context in PDP logic (narrow, hierarchy-only, MTLS/in-process) |
+| General read consumers (optional)     | `ResourceGroupReadClient`       | read hierarchy + membership context                           |
 
 
 ### 3.6 Interactions & Sequences
@@ -919,12 +950,12 @@ Write-concurrency rule for hierarchy mutations (`create/move/delete`):
 sequenceDiagram
     participant PEP as Domain PEP
     participant AZ as AuthZ Resolver Plugin
-    participant RG as ResourceGroupReadClient
+    participant RG as ResourceGroupReadHierarchy
     participant CMP as PEP Constraint Compiler
     participant DB as Domain DB
 
     PEP->>AZ: evaluate(subject, action, resource, context)
-    AZ->>RG: read hierarchy/membership context
+    AZ->>RG: list_group_depth(tenant_id, ...)
     RG-->>AZ: graph data only
     AZ-->>PEP: decision + constraints
     PEP->>CMP: compile constraints
@@ -948,6 +979,7 @@ RG Management API depends on AuthZ SDK; AuthZ plugin depends on RG Access API SD
 ```
 Phase 1 (SystemCapability):
   1. RG Module init
+     → registers ResourceGroupReadHierarchy in ClientHub
      → registers ResourceGroupReadClient in ClientHub
      → registers ResourceGroupClient in ClientHub
      → REST/gRPC endpoints NOT yet accepting traffic
@@ -963,7 +995,7 @@ Phase 2 (ready):
 
   4. AuthZ plugin on first evaluate() call
      → lazy-discovers RG plugin via types-registry
-     → calls ResourceGroupReadClient (available since step 1)
+     → calls ResourceGroupReadHierarchy (available since step 1)
 ```
 
 There is no deadlock: RG registers its read clients before AuthZ initializes, and AuthZ registers its client before RG starts accepting write traffic. Seed operations use a system-level `SecurityContext` and bypass the AuthZ evaluation path.
@@ -989,7 +1021,7 @@ sequenceDiagram
     participant CS as Courses Service
     participant PE as PolicyEnforcer
     participant AZ as AuthZ Resolver Plugin
-    participant RG as ResourceGroupReadClient
+    participant RG as ResourceGroupReadHierarchy
     participant DB as Courses DB
 
     U->>GW: GET /api/lms/v1/courses (JWT: subject_id, subject_tenant_id=T1)
@@ -1022,7 +1054,7 @@ Step-by-step:
 
 3. **AuthZ evaluation** — `PolicyEnforcer` builds an `EvaluationRequest` (subject with `tenant_id = T1`, action `"list"`, resource type `"gts.x.lms.course.v1~"`, `require_constraints = true`, `supported_properties = ["owner_tenant_id"]`) and calls `AuthZResolverClient.evaluate()`.
 
-4. **Hierarchy resolution** — The AuthZ plugin calls `ResourceGroupReadClient.list_group_depth()` with `tenant_id = T1` and a depth filter to resolve the tenant hierarchy. RG returns `[T1 (depth 0), T7 (depth 1)]` — the accessible tenant subtree. The plugin does NOT see `T9` because it is outside `T1`'s hierarchy.
+4. **Hierarchy resolution** — The AuthZ plugin calls `ResourceGroupReadHierarchy.list_group_depth()` with `tenant_id = T1` and a depth filter to resolve the tenant hierarchy. RG returns `[T1 (depth 0), T7 (depth 1)]` — the accessible tenant subtree. The plugin does NOT see `T9` because it is outside `T1`'s hierarchy.
 
 5. **Constraint generation** — The AuthZ plugin applies its policy logic to the hierarchy data and produces constraints: `owner_tenant_id IN (T1, T7)`. This is returned in `EvaluationResponse` with `decision = true`.
 
@@ -1037,6 +1069,155 @@ Key separation of concerns:
 | Courses service | course domain, SQL schema | tenant hierarchy, access policies |
 | AuthZ plugin | access policies, tenant hierarchy (via RG) | courses, SQL schema |
 | RG | hierarchy data, group membership | courses, access policies, SQL |
+
+#### RG Authentication Modes: JWT vs MTLS
+
+**ID**: `cpt-cf-resource-group-seq-auth-modes`
+
+RG Module exposes its REST/gRPC API with **two authentication modes**. The mode determines whether the request passes through AuthZ evaluation.
+
+##### Mode 1: JWT (public API — all endpoints)
+
+Standard user/service requests authenticated via JWT bearer token. **All** RG REST API endpoints are available. Every request goes through AuthZ evaluation via `PolicyEnforcer`, same as any other domain service (e.g. courses).
+
+Applies to:
+- `GET /api/resource-group/v1/types` — list/get types
+- `POST/PUT/DELETE /api/resource-group/v1/types/{code}` — type lifecycle
+- `GET /api/resource-group/v1/groups` — list/get groups
+- `POST/PUT/DELETE /api/resource-group/v1/groups/{group_id}` — group lifecycle
+- `GET /api/resource-group/v1/groups/{group_id}/depth` — hierarchy traversal
+- `GET /api/resource-group/v1/memberships` — list memberships
+- `POST/DELETE /api/resource-group/v1/memberships/{...}` — membership lifecycle
+
+##### Mode 2: MTLS (private API — hierarchy endpoint only)
+
+Service-to-service requests authenticated via mutual TLS client certificate. Used exclusively by AuthZ plugin to read tenant hierarchy. **Only one endpoint** is available in MTLS mode:
+
+- `GET /api/resource-group/v1/groups/{group_id}/depth` — hierarchy traversal
+
+All other endpoints return `403 Forbidden` in MTLS mode. This is enforced by RG gateway-level allowlist, not by AuthZ evaluation.
+
+MTLS requests **bypass AuthZ evaluation entirely** — no `PolicyEnforcer` call, no `access_evaluation_request`. This is critical because:
+1. AuthZ plugin **is the caller** — it cannot evaluate itself (circular dependency)
+2. MTLS certificate identity is a trusted system principal — access is granted by transport-level authentication
+3. The single allowed endpoint returns read-only hierarchy data — minimal attack surface
+
+##### Authentication Decision Flow
+
+```mermaid
+flowchart TD
+    REQ[Incoming request] --> AUTH_CHECK{Authentication<br/>method?}
+
+    AUTH_CHECK -->|JWT bearer token| JWT_PATH[AuthN Resolver validates JWT]
+    JWT_PATH --> SEC_CTX[SecurityContext from token]
+    SEC_CTX --> AUTHZ[PolicyEnforcer.access_scope]
+    AUTHZ --> CONSTRAINTS[Apply AccessScope to query]
+    CONSTRAINTS --> EXEC[Execute with SQL predicates]
+
+    AUTH_CHECK -->|MTLS client cert| MTLS_PATH[Verify client certificate]
+    MTLS_PATH --> ENDPOINT_CHECK{Endpoint in<br/>MTLS allowlist?}
+    ENDPOINT_CHECK -->|Yes: /groups/id/depth| SYSTEM_CTX[System SecurityContext]
+    SYSTEM_CTX --> EXEC_DIRECT[Execute directly — no AuthZ]
+    ENDPOINT_CHECK -->|No: any other endpoint| REJECT[403 Forbidden]
+
+    style REJECT fill:#f66,color:#fff
+    style EXEC_DIRECT fill:#6b6,color:#fff
+    style EXEC fill:#6b6,color:#fff
+```
+
+##### Sequence: MTLS request from AuthZ plugin
+
+**ID**: `cpt-cf-resource-group-seq-mtls-authz-read`
+
+```mermaid
+sequenceDiagram
+    participant AZ as AuthZ Plugin
+    participant RG_GW as RG Gateway
+    participant RG_SVC as RG Hierarchy Service
+    participant DB as RG Database
+
+    AZ->>RG_GW: GET /groups/{T1}/depth (MTLS cert)
+    RG_GW->>RG_GW: verify client certificate
+    RG_GW->>RG_GW: check endpoint allowlist → ✓ /groups/{id}/depth
+
+    Note over RG_GW: MTLS mode: skip AuthZ evaluation
+
+    RG_GW->>RG_SVC: list_group_depth(system_ctx, T1, query)
+    RG_SVC->>DB: SELECT from closure + groups WHERE ancestor_id = T1
+    DB-->>RG_SVC: [{T1, depth:0}, {T7, depth:1}]
+    RG_SVC-->>RG_GW: Page<ResourceGroupWithDepth>
+    RG_GW-->>AZ: 200 OK [{T1, depth:0}, {T7, depth:1}]
+```
+
+##### Sequence: JWT request from user to RG (same AuthZ flow as any domain service)
+
+**ID**: `cpt-cf-resource-group-seq-jwt-rg-request`
+
+```mermaid
+sequenceDiagram
+    participant U as User (tenant T1)
+    participant GW as API Gateway
+    participant AN as AuthN Resolver
+    participant RG_GW as RG Gateway
+    participant PE as PolicyEnforcer
+    participant AZ as AuthZ Plugin
+    participant RG_HIER as RG ReadHierarchy (internal)
+    participant RG_SVC as RG Service
+    participant DB as RG Database
+
+    U->>GW: GET /api/resource-group/v1/groups?$filter=... (JWT)
+    GW->>AN: authenticate(bearer_token)
+    AN-->>GW: SecurityContext {subject_id, tenant_id=T1}
+    GW->>RG_GW: handler(ctx)
+
+    Note over RG_GW: JWT mode: run AuthZ evaluation
+
+    RG_GW->>PE: access_scope(ctx, RESOURCE_GROUP, "list")
+    PE->>AZ: evaluate(EvaluationRequest)
+    AZ->>RG_HIER: list_group_depth(system_ctx, T1, ...) [via MTLS/ClientHub]
+    RG_HIER-->>AZ: [{T1, depth:0}, {T7, depth:1}]
+    AZ-->>PE: decision=true, constraints=[owner_tenant_id IN (T1, T7)]
+    PE-->>RG_GW: AccessScope {owner_tenant_id IN (T1, T7)}
+
+    RG_GW->>RG_SVC: list_groups(ctx, query, access_scope)
+    RG_SVC->>DB: SELECT * FROM resource_group WHERE owner_tenant_id IN (T1, T7) AND ...
+    DB-->>RG_SVC: groups
+    RG_SVC-->>RG_GW: Page<ResourceGroup>
+    RG_GW-->>U: 200 OK
+```
+
+Note: when a user calls RG REST API with JWT, the AuthZ flow is **identical** to any other domain service (courses, users, etc.):
+1. API Gateway authenticates JWT → `SecurityContext`
+2. RG gateway calls `PolicyEnforcer.access_scope()` → AuthZ evaluates → constraints returned
+3. RG applies `AccessScope` to its own query via SecureORM
+4. AuthZ plugin internally reads hierarchy via `ResourceGroupReadHierarchy` (MTLS or in-process ClientHub) — this internal read bypasses AuthZ
+
+The key insight: RG is simultaneously a **consumer** of AuthZ (for its own JWT-authenticated endpoints) and a **data provider** for AuthZ (via MTLS/ClientHub hierarchy reads). The MTLS bypass prevents the circular call.
+
+##### MTLS Allowlist Configuration
+
+The MTLS endpoint allowlist is configured at the RG gateway level:
+
+```yaml
+modules:
+  resource_group:
+    mtls:
+      enabled: true
+      allowed_endpoints:
+        - method: GET
+          path: /api/resource-group/v1/groups/{group_id}/depth
+```
+
+Only explicitly listed method+path combinations are reachable via MTLS. Any request to an unlisted endpoint returns `403 Forbidden` regardless of certificate validity.
+
+##### In-Process vs Out-of-Process
+
+| Deployment | AuthZ → RG hierarchy read | Auth mechanism |
+| ---------- | ------------------------- | -------------- |
+| Monolith (single process) | `hub.get::<dyn ResourceGroupReadHierarchy>()` — direct in-process call via ClientHub | No network auth needed — trusted in-process call, system `SecurityContext` |
+| Microservices (separate processes) | gRPC/REST call to RG service | MTLS client certificate — only `/groups/{id}/depth` endpoint allowed |
+
+In both cases, the AuthZ plugin uses `ResourceGroupReadHierarchy` trait. The trait implementation is either a direct local call (monolith) or an MTLS-authenticated remote call (microservices). The RG gateway applies the same allowlist logic in both cases — but in monolith mode, the in-process ClientHub path skips the gateway entirely (no HTTP, no MTLS, no allowlist check needed — the type system enforces that only `list_group_depth` is callable via `dyn ResourceGroupReadHierarchy`).
 
 ### 3.7 Database schemas & tables
 
