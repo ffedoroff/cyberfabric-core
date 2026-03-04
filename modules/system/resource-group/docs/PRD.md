@@ -554,7 +554,7 @@ Membership read rows (`resolve_memberships(ctx, ..)`):
 | Field | Type | Required | Description |
 |------|------|----------|-------------|
 | `group_id` | UUID | Yes | Group identifier |
-| `tenant_id` | UUID | Yes | Membership tenant scope (stored on membership row; must match group tenant) |
+| `tenant_id` | UUID | Yes | Membership tenant scope (derived from group's `tenant_id` via `group_id` JOIN; not stored on membership row) |
 | `resource_type` | string | Yes | Resource type classification |
 | `resource_id` | string | Yes | Resource identifier |
 
@@ -686,7 +686,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - [ ] No changes are required in existing AuthN/AuthZ resolver contracts.
 - [ ] Tenant-scoped constraints for AuthZ usage are enforced and tenant-incompatible links are rejected.
 - [ ] Integration read rows include `tenant_id` in `ownership-graph` profile for deterministic caller-side tenant validation in AuthZ flows.
-- [ ] `resource_group_membership` stores `tenant_id`, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
+- [ ] `resource_group_membership` derives tenant scope from the referenced group's `tenant_id` via `group_id` JOIN, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
 - [ ] Platform-admin provisioning via RG API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
 - [ ] Membership operations use composite key `(group_id, resource_type, resource_id)`.
 - [ ] REST API endpoints available under `/api/resource-group/v1/` with OData query support.
@@ -719,7 +719,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 ## 13. Open Questions
 
 - Should delete behavior support both `leaf-only` and `subtree-cascade` modes in v1? (REST API defines `force` query parameter for cascade control.)
-- Should `resource_group_membership` be partitioned by `tenant_id` for production scale (projected 455M rows, ~117 GB)?
+- Should `resource_group_membership` be partitioned for production scale (projected 455M rows, ~117 GB)? Partitioning strategy needs evaluation since tenant scope is derived via group FK, not stored directly.
 
 ## 14. Traceability
 

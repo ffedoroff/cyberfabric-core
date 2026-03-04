@@ -367,7 +367,7 @@ Membership write semantics for AuthZ-facing profile:
 
 - membership operations are keyed by `(group_id, resource_type, resource_id)`
 - in `ownership-graph` mode, add/remove validates tenant scope via caller `SecurityContext` effective scope and target group tenant
-- membership row stores explicit `tenant_id` and must match target group tenant
+- membership tenant scope is derived from the target group's `tenant_id` via `group_id` (JOIN, not stored on membership row)
 - tenant-incompatible membership writes fail deterministically (`Validation`/`Conflict` mapping)
 - no policy decision fields are produced by RG for these operations
 
@@ -413,7 +413,7 @@ Membership list `$filter` fields: `resource_id` (eq, ne, in, contains, startswit
 REST API field projection notes:
 
 - Group responses (`Group` schema) do not include `created`/`modified` timestamps. These fields exist in the database for audit purposes but are not exposed in API responses.
-- Membership list responses (`Membership` schema) do not include `tenant_id`. Memberships are always scoped to a single tenant; `tenant_id` is stored in the database for data integrity and integration read paths but is not returned in REST API list responses.
+- Membership list responses (`Membership` schema) do not include `tenant_id`. Memberships are always scoped to a single tenant; tenant scope is derived from the group's `tenant_id` via `group_id` JOIN and is not stored on the membership row itself.
 
 Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
 
@@ -514,7 +514,7 @@ Returned models are generic graph/membership objects. They do not encode AuthZ d
 Tenant projection rule for integration reads:
 
 - in `ownership-graph` profile, `tenant_id` is required in every returned row from `ResourceGroupReadClient`
-- for membership reads, `tenant_id` is read from `resource_group_membership.tenant_id` (must match `resource_group.tenant_id`)
+- for membership reads, `tenant_id` is derived from `resource_group.tenant_id` via JOIN on `group_id` (not stored on membership row)
 - rows can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
 - this keeps RG policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
 
@@ -546,7 +546,7 @@ The integration read contract returns **data rows only** (no policy/decision fie
 | Field           | Type   | Required                | Description                                                                                                                  |
 | --------------- | ------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `group_id`      | UUID   | Yes                     | Group identifier from request set                                                                                            |
-| `tenant_id`     | UUID   | Yes (`ownership-graph`) | Membership tenant scope (stored in membership row; must match group tenant; can differ per row under tenant hierarchy scope) |
+| `tenant_id`     | UUID   | Yes (`ownership-graph`) | Membership tenant scope (derived from group's `tenant_id` via `group_id` JOIN; can differ per row under tenant hierarchy scope) |
 | `resource_type` | string | Yes                     | Resource type classification                                                                                                 |
 | `resource_id`   | string | Yes                     | Resource identifier                                                                                                          |
 
@@ -864,16 +864,16 @@ Indexes:
 | `group_id`      | UUID        | group entity ID (FK to `resource_group.id`)|
 | `resource_type` | TEXT        | caller-defined resource classification     |
 | `resource_id`   | TEXT        | caller-defined resource identifier         |
-| `tenant_id`     | UUID        | tenant scope of membership row             |
 | `created`       | TIMESTAMPTZ | creation time                              |
 
+Tenant scope is not stored on membership rows. It is derived from `resource_group.tenant_id` via JOIN on `group_id`.
 
 Constraints/indexes:
 
 - UNIQUE `(group_id, resource_type, resource_id)`
 - FK `group_id` → `resource_group(id)` ON UPDATE CASCADE ON DELETE RESTRICT
 - index `(resource_type, resource_id)` — for reverse lookups by resource
-- in ownership-graph usage, `tenant_id` is persisted on write, validated against operation context for tenant-scoped callers, and must match `resource_group.tenant_id`
+- in ownership-graph usage, tenant scope is validated against operation context for tenant-scoped callers via the referenced group's `tenant_id`
 
 #### Table: `resource_group_closure`
 
@@ -917,7 +917,7 @@ Profile reduction for enabled limits requires external operator migration to res
 Ownership-graph tenant enforcement:
 
 - parent-child edges must be tenant-hierarchy-compatible (same-tenant or allowed related-tenant link)
-- membership row `tenant_id` must match target group tenant; tenant-scoped callers must stay within effective tenant scope from `subject_tenant_id`
+- membership tenant scope is derived from the target group's `tenant_id`; tenant-scoped callers must stay within effective tenant scope from `subject_tenant_id`
 - platform-admin provisioning calls may bypass caller-tenant scope checks, but cannot create tenant-incompatible links
 - violations return deterministic conflict/validation errors
 
@@ -944,7 +944,7 @@ Ownership-graph tenant enforcement:
 - AuthZ extensibility is implemented through plugin behavior that consumes RG read contracts.
 - RG provider is swappable by configuration (built-in module or vendor-specific provider) without changing consumer contracts.
 - SQL conversion remains in existing PEP flow (`PolicyEnforcer` + compiler), consistent with approved architecture.
-- Production projections estimate ~455M membership rows (~117 GB with indexes). `resource_group_membership` partitioning by `tenant_id` is a candidate optimization for production scale.
+- Production projections estimate ~455M membership rows (~117 GB with indexes). Partitioning strategy (e.g. by `group_id` range or by derived tenant via group FK) is a candidate optimization for production scale.
 
 ## 5. Traceability
 
