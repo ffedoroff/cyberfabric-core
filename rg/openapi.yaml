@@ -219,7 +219,10 @@ paths:
               examples:
                 no-filter:
                   summary: "GET ...groups — no filter"
-                  description: "All groups in the tenant hierarchy"
+                  description: |
+                    GET /api/resource-group/v1/groups
+
+                    All groups in the tenant hierarchy.
                   value:
                     items:
                       - group_id: 11111111-1111-1111-1111-111111111111
@@ -252,7 +255,10 @@ paths:
 
                 group-type-eq:
                   summary: "$filter=group_type eq 'department'"
-                  description: "Only groups of type department"
+                  description: |
+                    GET /api/resource-group/v1/groups?$filter=group_type eq 'department'
+
+                    Only groups of type department.
                   value:
                     items:
                       - group_id: 22222222-2222-2222-2222-222222222222
@@ -267,7 +273,10 @@ paths:
 
                 parent-id-eq:
                   summary: "$filter=parent_id eq '11111111-1111-1111-1111-111111111111'"
-                  description: "Direct children of T1"
+                  description: |
+                    GET /api/resource-group/v1/groups?$filter=parent_id eq '11111111-1111-1111-1111-111111111111'
+
+                    Direct children of T1.
                   value:
                     items:
                       - group_id: 22222222-2222-2222-2222-222222222222
@@ -429,7 +438,10 @@ paths:
               examples:
                 no-filter:
                   summary: "GET ...groups/{T1}/depth — no filter"
-                  description: "All relatives of T1 (self + all descendants)"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth
+
+                    All relatives of T1 (self + all descendants).
                   value:
                     items:
                       - group_id: 11111111-1111-1111-1111-111111111111
@@ -446,13 +458,6 @@ paths:
                         tenant_id: 11111111-1111-1111-1111-111111111111
                         external_id: D2
                         depth: 1
-                      - group_id: 33333333-3333-3333-3333-333333333333
-                        parent_id: 22222222-2222-2222-2222-222222222222
-                        group_type: branch
-                        name: B3
-                        tenant_id: 11111111-1111-1111-1111-111111111111
-                        external_id: B3
-                        depth: 2
                       - group_id: 77777777-7777-7777-7777-777777777777
                         parent_id: 11111111-1111-1111-1111-111111111111
                         group_type: tenant
@@ -460,13 +465,23 @@ paths:
                         tenant_id: 11111111-1111-1111-1111-111111111111
                         external_id: T7
                         depth: 1
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                        depth: 2
                     page_info:
                       top: 50
                       skip: 0
 
                 depth-eq-0:
                   summary: "$filter=depth eq 0"
-                  description: "Only the reference group itself"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth eq 0
+
+                    Only the reference group itself (ref: T1).
                   value:
                     items:
                       - group_id: 11111111-1111-1111-1111-111111111111
@@ -482,7 +497,10 @@ paths:
 
                 depth-eq-1:
                   summary: "$filter=depth eq 1"
-                  description: "Direct children of T1 (depth = 1)"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth eq 1
+
+                    Direct children of T1 (depth = 1).
                   value:
                     items:
                       - group_id: 22222222-2222-2222-2222-222222222222
@@ -505,7 +523,10 @@ paths:
 
                 depth-le-5:
                   summary: "$filter=depth le 5"
-                  description: "Self + descendants up to 5 levels deep (ref: T1)"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth le 5
+
+                    Self + descendants up to 5 levels deep (ref: T1).
                   value:
                     items:
                       - group_id: 11111111-1111-1111-1111-111111111111
@@ -522,13 +543,6 @@ paths:
                         tenant_id: 11111111-1111-1111-1111-111111111111
                         external_id: D2
                         depth: 1
-                      - group_id: 33333333-3333-3333-3333-333333333333
-                        parent_id: 22222222-2222-2222-2222-222222222222
-                        group_type: branch
-                        name: B3
-                        tenant_id: 11111111-1111-1111-1111-111111111111
-                        external_id: B3
-                        depth: 2
                       - group_id: 77777777-7777-7777-7777-777777777777
                         parent_id: 11111111-1111-1111-1111-111111111111
                         group_type: tenant
@@ -536,13 +550,23 @@ paths:
                         tenant_id: 11111111-1111-1111-1111-111111111111
                         external_id: T7
                         depth: 1
+                      - group_id: 33333333-3333-3333-3333-333333333333
+                        parent_id: 22222222-2222-2222-2222-222222222222
+                        group_type: branch
+                        name: B3
+                        tenant_id: 11111111-1111-1111-1111-111111111111
+                        external_id: B3
+                        depth: 2
                     page_info:
                       top: 50
                       skip: 0
 
                 depth-eq-minus-1:
                   summary: "$filter=depth eq -1"
-                  description: "Direct parent of B3 (ref: B3)"
+                  description: |
+                    GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/depth?$filter=depth eq -1
+
+                    Direct parent of B3 (ref: B3).
                   value:
                     items:
                       - group_id: 22222222-2222-2222-2222-222222222222
@@ -558,7 +582,10 @@ paths:
 
                 depth-ge-minus-10-le-minus-1:
                   summary: "$filter=depth ge -10 and depth le -1"
-                  description: "All ancestors of B3 up to 10 levels above (ref: B3)"
+                  description: |
+                    GET /api/resource-group/v1/groups/33333333-3333-3333-3333-333333333333/depth?$filter=depth ge -10 and depth le -1
+
+                    All ancestors of B3 up to 10 levels above (ref: B3).
                   value:
                     items:
                       - group_id: 11111111-1111-1111-1111-111111111111
@@ -581,7 +608,10 @@ paths:
 
                 depth-ge-minus-10-le-5:
                   summary: "$filter=depth ge -10 and depth le 5"
-                  description: "Full range: ancestors + self + descendants (ref: D2)"
+                  description: |
+                    GET /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222/depth?$filter=depth ge -10 and depth le 5
+
+                    Full range: ancestors + self + descendants (ref: D2).
                   value:
                     items:
                       - group_id: 11111111-1111-1111-1111-111111111111
@@ -611,7 +641,10 @@ paths:
 
                 depth-gt-0-and-type:
                   summary: "$filter=depth gt 0 and depth le 5 and group_type eq 'department'"
-                  description: "Descendants of type 'department', max 5 levels deep (ref: T1)"
+                  description: |
+                    GET /api/resource-group/v1/groups/11111111-1111-1111-1111-111111111111/depth?$filter=depth gt 0 and depth le 5 and group_type eq 'department'
+
+                    Descendants of type 'department', max 5 levels deep (ref: T1).
                   value:
                     items:
                       - group_id: 22222222-2222-2222-2222-222222222222
@@ -627,7 +660,10 @@ paths:
 
                 depth-with-pagination:
                   summary: "$filter=depth ge -10 and depth le 5&$top=2&$skip=1"
-                  description: "Full depth range with pagination: page size 2, skip 1 (ref: D2)"
+                  description: |
+                    GET /api/resource-group/v1/groups/22222222-2222-2222-2222-222222222222/depth?$filter=depth ge -10 and depth le 5&$top=2&$skip=1
+
+                    Full depth range with pagination: page size 2, skip 1 (ref: D2).
                   value:
                     items:
                       - group_id: 22222222-2222-2222-2222-222222222222
