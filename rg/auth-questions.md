@@ -25,9 +25,24 @@ AuthZ зависит от RG Access API SDK, RG Management API зависит о
 Или RG Management и RG Access — это один модуль с двумя фазами init?
 
 Ответ:
-Пользователь заходит на страницу со списком курсов. Ему доступны курсы своего и дочерних тенантов.
-Как это работает:
 
+    Example hierarchy:
+    ```text
+      tenant T1 (11111111-1111-1111-1111-111111111111)
+      └── tenant T7 (77777777-7777-7777-7777-777777777777)
+      tenant T9 (99999999-9999-9999-9999-999999999999)
+    ```
+
+Пользователь тенанта T1 заходит на страницу со списком курсов. Ему доступны курсы своего T1 и дочернего T7 тенантов.
+Как это работает:
+JWT token содержит user_id, tenant_id аналоги (подробнее уточни в modules/system/authn-resolver)
+пользователь отправляет запрос /api/lms/v1/courses с JWT токеном в котором есть tenant_id T1 (11111111-1111-1111-1111-111111111111)
+courses rust сервис использует modules/system/authz-resolver/authz-resolver-sdk для дальнейшего получения access_evaluation_request
+authz-resolver-sdk получает запрос от courses и отправляет приватный запрос в ResourceGroupReadHierarchy с tenant_id T1, user_id 123
+authz-resolver-sdk получив список тенантов T1 и T7 и других constraints от ResourceGroupReadHierarchy преобразует их в constraints и отправляет в courses
+courses получив constraints преобразует их в sql предикаты (фильтры) и добавляет их к своему запросу по выводу курсов
+таким образом, authz ничего не знает про курсы, а courses ничего не знает про доступню юзеру иерархию тенантов или групп или еще чего-то
+но в итоге, пользователь видит только то, что ему доступно по данной иерархии
 
 ## 4. AuthZ на read-операции RG — нужен?
 
