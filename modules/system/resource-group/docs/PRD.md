@@ -188,7 +188,7 @@ Creating a type with existing code **MUST** return `TypeAlreadyExists`.
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-types`
 
-The module **MUST** support deterministic type seeding to initialize/update type definitions at startup/bootstrapping time.
+The module **MUST** support deterministic type seeding to initialize/update type definitions as a pre-deployment step.
 
 #### Delete Type Only If Unused
 
@@ -619,78 +619,174 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ## 8. Use Cases
 
-### Scenario: Create Type
+### 8.1 Types
 
-- **GIVEN** valid code `DEPARTMENT` and parents `["ORGANIZATION", "DIVISION"]`
+#### Scenario: Create Type
+
+- **GIVEN** valid code `branch` and parents `["tenant", "department"]`
 - **WHEN** caller creates type
 - **THEN** type is persisted with owner metadata
 
-### Scenario: Reject Duplicate Type
+#### Scenario: Reject Duplicate Type
 
-- **GIVEN** type `DEPARTMENT` already exists
+- **GIVEN** type `branch` already exists
 - **WHEN** caller creates same code
 - **THEN** `TypeAlreadyExists`
 
-### Scenario: Reject Invalid Type Code
+#### Scenario: Reject Invalid Type Code
 
 - **GIVEN** code with whitespace or length > 63
 - **WHEN** caller creates type
 - **THEN** validation error
 
-### Scenario: Create Entity with Parent
+#### Scenario: Update Type Parents (Compatible)
 
-- **GIVEN** parent entity of type `ORGANIZATION`
-- **AND** child type `DEPARTMENT` allows `ORGANIZATION`
-- **WHEN** caller creates child with `parent_id`
-- **THEN** entity and closure rows are created
+- **GIVEN** type `branch` exists with parents `["tenant"]`
+- **AND** no existing `branch` groups have a parent of type `department`
+- **WHEN** caller updates parents to `["tenant", "department"]` (adds new allowed parent)
+- **THEN** type definition is updated
+- **AND** existing groups remain valid
 
-### Scenario: Reject Invalid Parent Type
+#### Scenario: Reject Update Type Parents When Existing Groups Violate New Rules
 
-- **GIVEN** parent type not allowed by child type definition
-- **WHEN** caller creates/moves entity
+- **GIVEN** type `branch` exists with parents `["tenant", "department"]`
+- **AND** group `B1` (type `branch`) has parent `D1` (type `department`)
+- **WHEN** caller updates `branch` parents to `["tenant"]` (removes `department`)
+- **THEN** update is rejected with `conflict` — existing group `B1` would violate new parent type rules
+
+#### Scenario: Delete Unused Type
+
+- **GIVEN** type `team` exists
+- **AND** no groups of type `team` exist in the database
+- **WHEN** caller deletes type `team`
+- **THEN** type is removed
+
+#### Scenario: Reject Delete Type With Existing Groups
+
+- **GIVEN** type `branch` exists
+- **AND** at least one group of type `branch` exists
+- **WHEN** caller deletes type `branch`
+- **THEN** deletion is rejected with `conflict` — type is in use
+
+#### Scenario: Seed Types (Pre-Deployment Step)
+
+- **GIVEN** deployment configuration defines types `["tenant", "department", "branch"]`
+- **WHEN** operator runs the seeding step before deployment (pre-deployment migration)
+- **THEN** missing types are created, existing types are updated to match seed definitions
+- **AND** seeding is idempotent — repeated runs produce the same result
+
+### 8.2 Groups
+
+#### Scenario: Create Root Entity
+
+- **GIVEN** type `tenant` exists with empty parents list (root type)
+- **WHEN** caller creates group with type `tenant`, name `"Acme Corp"`, no `parent_id`
+- **THEN** root entity is created with self-referencing closure row (depth 0)
+
+#### Scenario: Create Entity with Parent
+
+- **GIVEN** parent entity `D1` of type `department`
+- **AND** child type `branch` allows `department` as parent
+- **WHEN** caller creates child with `parent_id = D1`
+- **THEN** entity and closure rows are created (self at depth 0, parent at depth 1, transitive ancestors at depth N)
+
+#### Scenario: Reject Create Entity with Nonexistent Parent
+
+- **GIVEN** `parent_id` references a UUID that does not exist in `resource_group` table
+- **WHEN** caller creates entity with that `parent_id`
+- **THEN** `not_found` — parent group does not exist
+
+#### Scenario: Reject Invalid Parent Type
+
+- **GIVEN** type `team` allows parents `["branch"]` only
+- **AND** parent entity `D1` has type `department`
+- **WHEN** caller creates group of type `team` with `parent_id = D1`
+- **THEN** `InvalidParentType` — `department` is not in allowed parents for `team`
+
+#### Scenario: Move Subtree to Valid Parent
+
+- **GIVEN** group `B1` (type `branch`) with descendants `[T1, T2]`
+- **AND** new parent `D2` (type `department`) is in a different subtree, same tenant
+- **AND** `branch` allows `department` as parent
+- **WHEN** caller moves `B1` to `parent_id = D2`
+- **THEN** closure rows are rebuilt for `B1`, `T1`, `T2` transactionally
+- **AND** all ancestor paths now go through `D2`
+
+#### Scenario: Reject Move — Cycle Detection
+
+- **GIVEN** hierarchy: `D1 → B1 → T1`
+- **WHEN** caller attempts to move `D1` under `T1` (`parent_id = T1`)
+- **THEN** `CycleDetected` — `T1` is a descendant of `D1`, so making `T1` the parent of `D1` creates a cycle
+
+#### Scenario: Reject Move — Self-Parent
+
+- **GIVEN** group `B1` exists
+- **WHEN** caller attempts to move `B1` under itself (`parent_id = B1`)
+- **THEN** `CycleDetected` — a node cannot be its own parent
+
+#### Scenario: Reject Move — Incompatible Parent Type at New Location
+
+- **GIVEN** group `B1` (type `branch`) currently under `D1` (type `department`)
+- **AND** new target parent `T1` has type `team`
+- **AND** `branch` does not allow `team` as parent
+- **WHEN** caller moves `B1` to `parent_id = T1`
 - **THEN** `InvalidParentType`
 
-### Scenario: Move Subtree
+#### Scenario: Reject Create Entity — Cross-Tenant Parent (Unrelated Tenants)
 
-- **GIVEN** entity with descendants and valid new parent
-- **WHEN** caller moves subtree
-- **THEN** closure rows are rebuilt for affected paths transactionally
+- **GIVEN** parent entity `D1` belongs to tenant `A`
+- **AND** caller creates child entity in tenant `B`
+- **AND** tenants `A` and `B` are not related in configured tenant hierarchy
+- **WHEN** caller creates entity with `parent_id = D1`
+- **THEN** operation is rejected — tenant-incompatible parent-child link
 
-### Scenario: Reject Cycle Creation
+#### Scenario: Update Entity Mutable Fields
 
-- **GIVEN** target parent is inside entity subtree
-- **WHEN** caller attempts move
-- **THEN** `CycleDetected`
+- **GIVEN** group `B1` exists with name `"Engineering"` and no `external_id`
+- **WHEN** caller updates `B1` with name `"Platform Engineering"` and `external_id = "ENG-001"`
+- **THEN** mutable fields are updated, `id`, `group_type`, `parent_id`, `tenant_id` remain unchanged
 
-### Scenario: Add Membership (Tenant-Compatible)
+#### Scenario: Delete Leaf Entity
 
-- **GIVEN** group `G1` and resource `(User, R1)` tenant scopes are compatible under configured tenant hierarchy rules
-- **WHEN** caller invokes `add_membership` with caller `SecurityContext`, `resource_type = "User"`, `resource_id = "R1"`
-- **THEN** membership link `(G1, User, R1)` is created
-- **AND** operation remains policy-agnostic (no AuthZ decision payload)
+- **GIVEN** group `T1` has no children and no active memberships
+- **WHEN** caller deletes `T1`
+- **THEN** entity and its closure rows are removed
 
-### Scenario: Reject Tenant-Incompatible Membership Add
+#### Scenario: Reject Delete Entity With Children
 
-- **GIVEN** group `G1` tenant scope is outside caller effective tenant scope (resolved from `subject_tenant_id`)
-- **WHEN** tenant-scoped caller invokes `add_membership`
-- **THEN** operation is rejected with deterministic validation/conflict category
+- **GIVEN** group `B1` has children `[T1, T2]`
+- **AND** `force` parameter is not set
+- **WHEN** caller deletes `B1`
+- **THEN** deletion is rejected — active child references exist
 
-### Scenario: Remove Membership
+#### Scenario: Reject Delete Entity With Active Memberships
 
-- **GIVEN** membership link `(G1, User, R1)` exists
-- **WHEN** caller invokes `remove_membership` with caller `SecurityContext`, `resource_type = "User"`, `resource_id = "R1"`
-- **THEN** the link is removed
-- **AND** tenant-incompatible attempts are rejected under ownership-graph tenant rules
+- **GIVEN** group `T1` has no children but has membership links `[(T1, User, R1), (T1, User, R2)]`
+- **AND** `force` parameter is not set
+- **WHEN** caller deletes `T1`
+- **THEN** deletion is rejected — active membership references exist
 
-### Scenario: Platform Admin Provisions Hierarchy Without Caller Tenant Scope
+#### Scenario: Reject Create Entity — Max Depth Exceeded
 
-- **GIVEN** caller has privileged platform-admin capability for RG provisioning
-- **AND** caller request is not tenant-scoped by `subject_tenant_id`
-- **WHEN** caller creates or moves tenant hierarchy nodes via `ResourceGroupClient`
-- **THEN** operation is allowed for the explicit target tenant scope
-- **AND** parent-child and membership links must still satisfy tenant hierarchy compatibility invariants
+- **GIVEN** query profile `max_depth = 3`
+- **AND** hierarchy already has depth 3: `L0 → L1 → L2 → L3`
+- **WHEN** caller creates entity with `parent_id = L3` (would produce depth 4)
+- **THEN** `limit_violation` — `max_depth` exceeded
 
-### Scenario: Reduced Query Profile Without Migration
+#### Scenario: Seed Groups (Pre-Deployment Step)
+
+- **GIVEN** deployment configuration defines group hierarchy:
+  ```
+  T1 (type=tenant, name="Root Tenant")
+  ├── T3 (type=tenant, name="Child Tenant A", parent=T1)
+  └── T7 (type=tenant, name="Child Tenant B", parent=T1)
+  ```
+- **WHEN** operator runs the seeding step before deployment (pre-deployment migration)
+- **THEN** missing groups are created with closure rows, existing groups are updated to match seed definitions
+- **AND** parent-child links and type compatibility are validated during seeding
+- **AND** seeding is idempotent — repeated runs produce the same result
+
+#### Scenario: Reduced Query Profile Without Migration
 
 - **GIVEN** stored tree exceeds newly tightened enabled limits
 - **AND** no data migration was run
@@ -699,22 +795,117 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **AND WHEN** violating write is attempted
 - **THEN** write is rejected with `limit_violation`
 
-### Scenario: AuthZ Consumer Reads Ownership Graph
+### 8.3 Membership
 
-- **GIVEN** AuthZ plugin needs hierarchy context
-- **WHEN** plugin calls `ResourceGroupReadHierarchy` with caller `SecurityContext`
-- **THEN** RG returns hierarchy/membership data only
-- **AND** policy decision + constraint generation remain in AuthZ plugin
-- **AND** SQL compilation remains in PEP layer
+#### Scenario: Add Membership (Tenant-Compatible)
 
-### Scenario: AuthZ Consumer Validates Tenant Scope from Read Rows
+- **GIVEN** group `G1` (tenant `A`) and resource `(User, R1)`
+- **AND** caller `SecurityContext.subject_tenant_id` is compatible with tenant `A`
+- **WHEN** caller invokes `add_membership` with `group_id = G1`, `resource_type = "User"`, `resource_id = "R1"`
+- **THEN** membership link `(G1, User, R1)` is created
+- **AND** operation remains policy-agnostic (no AuthZ decision payload)
 
-- **GIVEN** plugin calls `list_group_depth` for candidate groups and `list_memberships` for their members
-- **WHEN** RG returns hierarchy rows with `tenant_id` per group (via `ResourceGroupWithDepth`) and membership rows without `tenant_id` (via `ResourceGroupMembership`)
-- **THEN** plugin validates each group `tenant_id` against caller effective tenant scope
-- **AND** plugin maps `group_id → tenant_id` from hierarchy data to derive membership tenant scope
-- **AND** plugin excludes/rejects out-of-tenant groups before generating AuthZ constraints
-- **AND** RG still returns no policy decision fields
+#### Scenario: Add Membership — Multiple Resource Types in Same Group
+
+- **GIVEN** group `G1` exists
+- **WHEN** caller adds `(G1, User, U1)` then `(G1, Document, DOC1)`
+- **THEN** both membership links are created — a group can have members of different resource types
+
+#### Scenario: Reject Duplicate Membership
+
+- **GIVEN** membership link `(G1, User, R1)` already exists
+- **WHEN** caller invokes `add_membership` with same `(G1, User, R1)`
+- **THEN** operation is rejected with `conflict` — membership already exists
+
+#### Scenario: Reject Membership Add — Group Does Not Exist
+
+- **GIVEN** `group_id` references a UUID that does not exist
+- **WHEN** caller invokes `add_membership`
+- **THEN** `not_found` — target group does not exist
+
+#### Scenario: Reject Tenant-Incompatible Membership Add
+
+- **GIVEN** group `G1` belongs to tenant `A`
+- **AND** caller `SecurityContext.subject_tenant_id` resolves to tenant `B`
+- **AND** tenants `A` and `B` are not related in configured tenant hierarchy
+- **WHEN** caller invokes `add_membership` for group `G1`
+- **THEN** operation is rejected with deterministic validation/conflict category
+
+#### Scenario: Reject Membership Add — Resource Already Linked in Incompatible Tenant
+
+- **GIVEN** resource `(User, R1)` has existing membership in group `G1` (tenant `A`)
+- **AND** caller attempts to add `(User, R1)` to group `G2` (tenant `B`)
+- **AND** tenants `A` and `B` are not related in configured tenant hierarchy
+- **WHEN** caller invokes `add_membership` for `(G2, User, R1)`
+- **THEN** operation is rejected — resource membership would span incompatible tenant scopes
+
+#### Scenario: Remove Membership
+
+- **GIVEN** membership link `(G1, User, R1)` exists
+- **WHEN** caller invokes `remove_membership` with `group_id = G1`, `resource_type = "User"`, `resource_id = "R1"`
+- **THEN** the link is removed
+
+#### Scenario: Remove Nonexistent Membership
+
+- **GIVEN** no membership link `(G1, User, R99)` exists
+- **WHEN** caller invokes `remove_membership` for `(G1, User, R99)`
+- **THEN** `not_found` — membership does not exist
+
+#### Scenario: Query Memberships by Group
+
+- **GIVEN** group `G1` has memberships `[(G1, User, U1), (G1, User, U2), (G1, Document, D1)]`
+- **WHEN** caller queries memberships with `$filter=group_id eq 'G1'`
+- **THEN** all three membership links are returned
+
+#### Scenario: Query Memberships by Resource
+
+- **GIVEN** resource `(User, U1)` is a member of groups `G1`, `G2`, `G3`
+- **WHEN** caller queries memberships with `$filter=resource_type eq 'User' and resource_id eq 'U1'`
+- **THEN** three membership links are returned: `(G1, User, U1)`, `(G2, User, U1)`, `(G3, User, U1)`
+
+#### Scenario: Seed Memberships (Pre-Deployment Step)
+
+- **GIVEN** deployment configuration defines membership links:
+  - `(G1, User, admin-user-1)`
+  - `(G1, ServiceAccount, svc-monitoring)`
+  - `(G2, User, admin-user-1)`
+- **WHEN** operator runs the seeding step before deployment (pre-deployment migration)
+- **THEN** missing membership links are created, existing links are preserved
+- **AND** group existence and tenant compatibility are validated during seeding
+- **AND** seeding is idempotent — repeated runs produce the same result
+
+### 8.4 Group Hierarchy (MTLS AuthZ)
+
+#### Scenario: AuthZ Plugin Resolves Tenant Hierarchy Downward
+
+- **GIVEN** stored hierarchy (all groups of type `tenant` or `group`):
+  ```
+  T1 (tenant, tenant_id=T1)
+  ├── T3 (tenant, tenant_id=T3)
+  │   └── G10 (group, tenant_id=T3)
+  └── T7 (tenant, tenant_id=T7)
+      ├── G20 (group, tenant_id=T7)
+      └── G21 (group, tenant_id=T7)
+  ```
+- **AND** AuthZ plugin needs to resolve which tenants/groups are visible to a user whose `subject_tenant_id = T1`
+- **WHEN** plugin calls `list_group_depth(ctx, T1, filter="depth ge 0 and group_type in ('tenant','group')")` via MTLS
+- **THEN** RG returns:
+  | group_id | group_type | tenant_id | depth |
+  |----------|------------|-----------|-------|
+  | T1       | tenant     | T1        | 0     |
+  | T3       | tenant     | T3        | 1     |
+  | T7       | tenant     | T7        | 1     |
+  | G10      | group      | T3        | 2     |
+  | G20      | group      | T7        | 2     |
+  | G21      | group      | T7        | 2     |
+- **AND** plugin uses `tenant_id` from each row to build tenant-scoped AuthZ constraints
+- **AND** RG returns no policy decisions — only data rows
+
+#### Scenario: MTLS Request to Non-Hierarchy Endpoint
+
+- **GIVEN** caller authenticates via MTLS client certificate
+- **WHEN** caller sends request to `POST /api/resource-group/v1/groups` (non-hierarchy endpoint)
+- **THEN** `403 Forbidden` — MTLS mode only allows `GET /groups/{group_id}/depth`
 
 ## 9. Acceptance Criteria
 

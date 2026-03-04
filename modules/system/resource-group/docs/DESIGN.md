@@ -47,7 +47,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `code_ci` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                           |
-| `cpt-cf-resource-group-fr-seed-types`                         | Deterministic bootstrap seeding path upserts type definitions with stable normalization rules.                                        |
+| `cpt-cf-resource-group-fr-seed-types`                         | Deterministic pre-deployment seeding path upserts type definitions with stable normalization rules.                                   |
 | `cpt-cf-resource-group-fr-delete-type-only-if-empty`          | Type deletion flow checks for existing entities and rejects delete when references remain.                                            |
 | `cpt-cf-resource-group-fr-manage-entities`                    | Entity service with create/get/update/move/delete operations.                                                                         |
 | `cpt-cf-resource-group-fr-enforce-forest-hierarchy`           | Domain invariants + cycle checks before writes.                                                                                       |
@@ -991,14 +991,14 @@ Phase 1 (SystemCapability):
 Phase 2 (ready):
   3. RG Module starts accepting REST/gRPC traffic
      → write operations call PolicyEnforcer → AuthZResolverClient (available since step 2)
-     → seed operations run with system SecurityContext (bypass AuthZ)
+     → seed operations run as pre-deployment step with system SecurityContext (bypass AuthZ)
 
   4. AuthZ plugin on first evaluate() call
      → lazy-discovers RG plugin via types-registry
      → calls ResourceGroupReadHierarchy (available since step 1)
 ```
 
-There is no deadlock: RG registers its read clients before AuthZ initializes, and AuthZ registers its client before RG starts accepting write traffic. Seed operations use a system-level `SecurityContext` and bypass the AuthZ evaluation path.
+There is no deadlock: RG registers its read clients before AuthZ initializes, and AuthZ registers its client before RG starts accepting write traffic. Seed operations run as a pre-deployment step with a system-level `SecurityContext` and bypass the AuthZ evaluation path.
 
 #### End-to-End Authorization Flow (Example)
 
