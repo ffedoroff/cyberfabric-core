@@ -43,7 +43,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `cpt-cf-resource-group-fr-rest-api`                           | REST API layer with OperationBuilder and OData query support.                                                                         |
 | `cpt-cf-resource-group-fr-odata-query`                        | OData `$filter`, `$top`, `$skip` on all list endpoints.                                                                               |
-| `cpt-cf-resource-group-fr-list-groups-depth`                  | Group list includes depth from closure table with depth-based filtering.                                                              |
+| `cpt-cf-resource-group-fr-list-groups-depth`                  | Dedicated depth endpoint (`/{group_id}/depth`) returns hierarchy with relative depth and depth-based filtering.                       |
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `code_ci` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                           |
@@ -388,11 +388,12 @@ Base path: `/api/resource-group/v1`
 | GET | `/types/{code}` | `getType` | Get type by code |
 | PUT | `/types/{code}` | `updateType` | Update type |
 | DELETE | `/types/{code}` | `deleteType` | Delete type |
-| GET | `/groups` | `listGroups` | List groups with OData query (includes `depth`) |
+| GET | `/groups` | `listGroups` | List groups with OData query |
 | POST | `/groups` | `createGroup` | Create group (explicit `tenant_id` in body) |
 | GET | `/groups/{group_id}` | `getGroup` | Get group by ID |
 | PUT | `/groups/{group_id}` | `updateGroup` | Update group (including parent move) |
 | DELETE | `/groups/{group_id}` | `deleteGroup` | Delete group (optional `?force=true`) |
+| GET | `/groups/{group_id}/depth` | `listGroupDepth` | Traverse hierarchy from reference group with relative depth |
 | GET | `/memberships` | `listMemberships` | List memberships with OData query |
 | POST | `/memberships/{group_id}/{resource_type}/{resource_id}` | `addMembership` | Add membership |
 | DELETE | `/memberships/{group_id}/{resource_type}/{resource_id}` | `deleteMembership` | Remove membership |
@@ -403,9 +404,16 @@ OData query support on all list endpoints:
 - `$top` — page size (1..300, default 50)
 - `$skip` — offset (default 0)
 
-Group list `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in), `parent_id` (eq, ne, in), `group_id` (eq, ne, in), `name` (eq, ne, in, contains, startswith, endswith), `external_id` (eq, ne, in, contains, startswith, endswith).
+Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in), `group_id` (eq, ne, in), `name` (eq, ne, in, contains, startswith, endswith), `external_id` (eq, ne, in, contains, startswith, endswith).
+
+Group depth (`listGroupDepth`) `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in).
 
 Membership list `$filter` fields: `resource_id` (eq, ne, in, contains, startswith, endswith), `resource_type` (eq, ne, in), `group_id` (eq, ne, in).
+
+REST API field projection notes:
+
+- Group responses (`Group` schema) do not include `created`/`modified` timestamps. These fields exist in the database for audit purposes but are not exposed in API responses.
+- Membership list responses (`Membership` schema) do not include `tenant_id`. Memberships are always scoped to a single tenant; `tenant_id` is stored in the database for data integrity and integration read paths but is not returned in REST API list responses.
 
 Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
 

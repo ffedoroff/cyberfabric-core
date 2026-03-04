@@ -218,7 +218,7 @@ Entity fields:
 - `external_id` (optional, <=255)
 - `parent_id` (optional)
 - `tenant_id` (required)
-- timestamps (`created`, `modified`)
+- timestamps (`created`, `modified`) — stored in database for audit; not returned in REST API responses
 
 In `ownership-graph` profile, entity also carries tenant scope metadata for tenant compatibility validation.
 
@@ -268,9 +268,8 @@ Membership fields:
 - `group_id` (UUID, reference to group entity)
 - `resource_type` (string, caller-defined resource classification)
 - `resource_id` (string, caller-defined resource identifier)
-- `tenant_id` (UUID, tenant scope of the membership row)
 
-Membership persistence **MUST** store `tenant_id` for each link in `ownership-graph` profile.
+Membership does not store `tenant_id` directly — tenant scope is derived from the referenced group's `tenant_id` via `group_id`. Membership requests are always scoped to a single tenant.
 
 #### Query Membership Relations
 
@@ -376,7 +375,7 @@ List endpoints **MUST** support OData v4.01 query options:
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-list-groups-depth`
 
-Group list endpoint **MUST** include `depth` field (distance from hierarchy root) and support depth-based filtering (`eq`, `ne`, `gt`, `ge`, `lt`, `le`).
+A dedicated group depth endpoint (`/groups/{group_id}/depth`) **MUST** return groups with a computed `depth` field (relative distance from reference group) and support depth-based filtering (`eq`, `ne`, `gt`, `ge`, `lt`, `le`). Positive depth = descendants, negative depth = ancestors, `0` = reference group itself.
 
 #### Force Delete
 
@@ -691,7 +690,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - [ ] Platform-admin provisioning via RG API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
 - [ ] Membership operations use composite key `(group_id, resource_type, resource_id)`.
 - [ ] REST API endpoints available under `/api/resource-group/v1/` with OData query support.
-- [ ] Group list endpoint returns `depth` and supports depth-based filtering.
+- [ ] Dedicated group depth endpoint returns relative `depth` and supports depth-based filtering.
 
 ## 10. Dependencies
 
