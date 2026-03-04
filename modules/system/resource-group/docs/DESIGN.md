@@ -98,7 +98,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | SDK API Layer          | expose type/entity/membership + read contracts    | Rust SDK traits + ClientHub   |
 | Domain Layer           | validate type compatibility and forest invariants | domain services               |
 | Hierarchy Engine       | closure-table updates/queries and profile checks  | domain service + repositories |
-| Integration Read Layer | read-only hierarchy/membership projections        | `ResourceGroupReadClient`     |
+| Integration Read Layer | read-only hierarchy/membership queries            | `ResourceGroupReadClient`     |
 | Persistence Layer      | transactional storage and indexing                | SQL + SeaORM repositories     |
 
 
@@ -536,19 +536,18 @@ Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
 **Integration read API** (`ResourceGroupReadClient`, stable):
 
 
-| Method                                | Description                                                                                                                                                                 |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resolve_descendants(ctx, root_id)`   | descendant groups with full group fields + relative `depth`; matches REST `GroupWithDepth` schema             |
-| `resolve_ancestors(ctx, node_id)`     | ancestor groups with full group fields + relative `depth`; matches REST `GroupWithDepth` schema               |
-| `resolve_memberships(ctx, group_ids)` | membership rows matching REST `Membership` schema (`group_id`, `resource_type`, `resource_id`); tenant scope derived from group via `group_id` |
+| Method                                          | Description                                                                                                                                    |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_group_depth(ctx, group_id, query)`        | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/depth` — supports OData `$filter` (depth, group_type), `$top`, `$skip` |
+| `list_memberships(ctx, query)`                  | membership rows matching REST `GET /memberships` — supports OData `$filter` (group_id, resource_type, resource_id), `$top`, `$skip`             |
 
 
 Integration read models reuse the same SDK structs defined above:
 
-- `resolve_descendants` / `resolve_ancestors` return `Vec<ResourceGroupWithDepth>` (matches REST `GroupWithDepth`)
-- `resolve_memberships` returns `Vec<ResourceGroupMembership>` (matches REST `Membership` — no `tenant_id`; tenant scope is available from group data the caller already has via `resolve_descendants`/`resolve_ancestors`)
+- `list_group_depth` returns `Page<ResourceGroupWithDepth>` (matches REST `GroupWithDepthPage`)
+- `list_memberships` returns `Page<ResourceGroupMembership>` (matches REST `MembershipPage` — no `tenant_id`; tenant scope is available from group data the caller already has via `list_group_depth`)
 
-Target Rust trait signature (SDK contract, tenant-resolver-style pass-through):
+Target Rust trait signature (SDK contract, mirrors REST API):
 
 ```rust
 use async_trait::async_trait;
@@ -557,23 +556,20 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait ResourceGroupReadClient: Send + Sync {
-    async fn resolve_descendants(
+    /// Matches REST `GET /groups/{group_id}/depth` with OData query.
+    async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
-        root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
+        group_id: Uuid,
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
 
-    async fn resolve_ancestors(
+    /// Matches REST `GET /memberships` with OData query.
+    async fn list_memberships(
         &self,
         ctx: &SecurityContext,
-        node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
-
-    async fn resolve_memberships(
-        &self,
-        ctx: &SecurityContext,
-        group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -586,23 +582,18 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait ResourceGroupReadPluginClient: Send + Sync {
-    async fn resolve_descendants(
+    async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
-        root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
+        group_id: Uuid,
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
 
-    async fn resolve_ancestors(
+    async fn list_memberships(
         &self,
         ctx: &SecurityContext,
-        node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
-
-    async fn resolve_memberships(
-        &self,
-        ctx: &SecurityContext,
-        group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -619,8 +610,8 @@ Returned models are generic graph/membership objects. They do not encode AuthZ d
 
 Tenant projection rule for integration reads:
 
-- hierarchy reads (`resolve_descendants`, `resolve_ancestors`) return `ResourceGroupWithDepth` which includes `tenant_id` per group — callers use this to validate tenant scope
-- membership reads (`resolve_memberships`) return `ResourceGroupMembership` without `tenant_id` — callers derive tenant scope from group data already obtained via hierarchy reads
+- hierarchy reads (`list_group_depth`) return `ResourceGroupWithDepth` which includes `tenant_id` per group — callers use this to validate tenant scope
+- membership reads (`list_memberships`) return `ResourceGroupMembership` without `tenant_id` — callers derive tenant scope from group data already obtained via hierarchy reads
 - rows from hierarchy reads can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
 - this keeps RG policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
 
@@ -634,9 +625,9 @@ Caller identity propagation rule (aligned with Tenant Resolver pattern):
 
 #### Integration Read Schemas (AuthZ-facing)
 
-The integration read contract returns **data rows only** (no policy/decision fields). Schemas match REST API models.
+The integration read contract returns **data rows only** (no policy/decision fields). Schemas match REST API models exactly.
 
-`resolve_descendants(ctx, root_id)` and `resolve_ancestors(ctx, node_id)` return `ResourceGroupWithDepth` (matches REST `GroupWithDepth`):
+`list_group_depth(ctx, group_id, query)` returns `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth` → `GroupWithDepthPage`):
 
 
 | Field         | Type        | Required | Description                                                                  |
@@ -647,19 +638,22 @@ The integration read contract returns **data rows only** (no policy/decision fie
 | `name`        | string      | Yes      | Display name                                                                 |
 | `tenant_id`   | UUID        | Yes      | Tenant scope (can differ per row under tenant hierarchy scope)               |
 | `external_id` | string / null | No     | Optional external ID                                                         |
-| `depth`       | INT         | Yes      | Relative distance from input node (`0` = self, positive = descendants, negative = ancestors) |
+| `depth`       | INT         | Yes      | Relative distance from reference group (`0` = self, positive = descendants, negative = ancestors) |
 
+OData filters for `list_group_depth`: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in). Pagination: `$top`, `$skip`.
 
-`resolve_memberships(ctx, group_ids)` returns `ResourceGroupMembership` (matches REST `Membership`):
+`list_memberships(ctx, query)` returns `Page<ResourceGroupMembership>` (matches REST `GET /memberships` → `MembershipPage`):
 
 
 | Field           | Type   | Required | Description                           |
 | --------------- | ------ | -------- | ------------------------------------- |
-| `group_id`      | UUID   | Yes      | Group identifier from request set     |
+| `group_id`      | UUID   | Yes      | Group identifier                      |
 | `resource_type` | string | Yes      | Resource type classification          |
 | `resource_id`   | string | Yes      | Resource identifier                   |
 
-Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `resolve_descendants`/`resolve_ancestors`.
+OData filters for `list_memberships`: `group_id` (eq, ne, in), `resource_type` (eq, ne, in), `resource_id` (eq, ne, in, contains, startswith, endswith). Pagination: `$top`, `$skip`.
+
+Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `list_group_depth`.
 
 Tenant consistency behavior for integration reads:
 
@@ -705,124 +699,132 @@ let authz_ctx = SecurityContext::builder()
     .build()?;
 ```
 
-`resolve_descendants(root_id)`
+`list_group_depth` — descendants (matches REST `GET /groups/{D2}/depth?$filter=depth ge 0`)
 
 ```rust
-let rows = rg_read
-    .resolve_descendants(
+let page = rg_read
+    .list_group_depth(
         &authz_ctx,
         Uuid::parse_str("22222222-2222-2222-2222-222222222222")?,
+        ListQuery::new().filter("depth ge 0"),
     )
     .await?;
 ```
 
 ```json
-[
-  {
-    "group_id": "22222222-2222-2222-2222-222222222222",
-    "parent_id": "11111111-1111-1111-1111-111111111111",
-    "group_type": "department",
-    "name": "D2",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "external_id": "D2",
-    "depth": 0
-  },
-  {
-    "group_id": "33333333-3333-3333-3333-333333333333",
-    "parent_id": "22222222-2222-2222-2222-222222222222",
-    "group_type": "branch",
-    "name": "B3",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "external_id": "B3",
-    "depth": 1
-  }
-]
+{
+  "items": [
+    {
+      "group_id": "22222222-2222-2222-2222-222222222222",
+      "parent_id": "11111111-1111-1111-1111-111111111111",
+      "group_type": "department",
+      "name": "D2",
+      "tenant_id": "11111111-1111-1111-1111-111111111111",
+      "external_id": "D2",
+      "depth": 0
+    },
+    {
+      "group_id": "33333333-3333-3333-3333-333333333333",
+      "parent_id": "22222222-2222-2222-2222-222222222222",
+      "group_type": "branch",
+      "name": "B3",
+      "tenant_id": "11111111-1111-1111-1111-111111111111",
+      "external_id": "B3",
+      "depth": 1
+    }
+  ],
+  "page_info": { "top": 50, "skip": 0 }
+}
 ```
 
-`resolve_ancestors(node_id)`
+`list_group_depth` — ancestors (matches REST `GET /groups/{B3}/depth?$filter=depth ge -10 and depth le 0`)
 
 ```rust
-let rows = rg_read
-    .resolve_ancestors(
+let page = rg_read
+    .list_group_depth(
         &authz_ctx,
         Uuid::parse_str("33333333-3333-3333-3333-333333333333")?,
+        ListQuery::new().filter("depth ge -10 and depth le 0"),
     )
     .await?;
 ```
 
-Returns ancestry chain for the requested node (`B3 -> D2 -> T1`).
-In this example, tenant root is also returned as an ancestor row.
+Returns ancestry chain for the requested node (`T1 → D2 → B3`).
 
 ```json
-[
-  {
-    "group_id": "11111111-1111-1111-1111-111111111111",
-    "parent_id": null,
-    "group_type": "tenant",
-    "name": "T1",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "external_id": "T1",
-    "depth": -2
-  },
-  {
-    "group_id": "22222222-2222-2222-2222-222222222222",
-    "parent_id": "11111111-1111-1111-1111-111111111111",
-    "group_type": "department",
-    "name": "D2",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "external_id": "D2",
-    "depth": -1
-  },
-  {
-    "group_id": "33333333-3333-3333-3333-333333333333",
-    "parent_id": "22222222-2222-2222-2222-222222222222",
-    "group_type": "branch",
-    "name": "B3",
-    "tenant_id": "11111111-1111-1111-1111-111111111111",
-    "external_id": "B3",
-    "depth": 0
-  }
-]
+{
+  "items": [
+    {
+      "group_id": "11111111-1111-1111-1111-111111111111",
+      "parent_id": null,
+      "group_type": "tenant",
+      "name": "T1",
+      "tenant_id": "11111111-1111-1111-1111-111111111111",
+      "external_id": "T1",
+      "depth": -2
+    },
+    {
+      "group_id": "22222222-2222-2222-2222-222222222222",
+      "parent_id": "11111111-1111-1111-1111-111111111111",
+      "group_type": "department",
+      "name": "D2",
+      "tenant_id": "11111111-1111-1111-1111-111111111111",
+      "external_id": "D2",
+      "depth": -1
+    },
+    {
+      "group_id": "33333333-3333-3333-3333-333333333333",
+      "parent_id": "22222222-2222-2222-2222-222222222222",
+      "group_type": "branch",
+      "name": "B3",
+      "tenant_id": "11111111-1111-1111-1111-111111111111",
+      "external_id": "B3",
+      "depth": 0
+    }
+  ],
+  "page_info": { "top": 50, "skip": 0 }
+}
 ```
 
-`resolve_memberships(group_ids)`
+`list_memberships` — by group_ids (matches REST `GET /memberships?$filter=group_id in (...)`)
 
 ```rust
-let rows = rg_read
-    .resolve_memberships(
+let page = rg_read
+    .list_memberships(
         &authz_ctx,
-        vec![
-            Uuid::parse_str("11111111-1111-1111-1111-111111111111")?,
-            Uuid::parse_str("33333333-3333-3333-3333-333333333333")?,
-            Uuid::parse_str("77777777-7777-7777-7777-777777777777")?,
-        ],
+        ListQuery::new().filter(
+            "group_id in ('11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','77777777-7777-7777-7777-777777777777')"
+        ),
     )
     .await?;
 ```
 
 ```json
-[
-  {
-    "group_id": "11111111-1111-1111-1111-111111111111",
-    "resource_type": "User",
-    "resource_id": "R4"
-  },
-  {
-    "group_id": "11111111-1111-1111-1111-111111111111",
-    "resource_type": "User",
-    "resource_id": "R6"
-  },
-  {
-    "group_id": "33333333-3333-3333-3333-333333333333",
-    "resource_type": "User",
-    "resource_id": "R4"
-  },
-  {
-    "group_id": "77777777-7777-7777-7777-777777777777",
-    "resource_type": "User",
-    "resource_id": "R8"
-  }
-]
+{
+  "items": [
+    {
+      "group_id": "11111111-1111-1111-1111-111111111111",
+      "resource_type": "User",
+      "resource_id": "R4"
+    },
+    {
+      "group_id": "11111111-1111-1111-1111-111111111111",
+      "resource_type": "User",
+      "resource_id": "R6"
+    },
+    {
+      "group_id": "33333333-3333-3333-3333-333333333333",
+      "resource_type": "User",
+      "resource_id": "R4"
+    },
+    {
+      "group_id": "77777777-7777-7777-7777-777777777777",
+      "resource_type": "User",
+      "resource_id": "R8"
+    }
+  ],
+  "page_info": { "top": 50, "skip": 0 }
+}
 ```
 
 ### 3.4 Internal Dependencies

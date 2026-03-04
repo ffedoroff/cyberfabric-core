@@ -4,6 +4,11 @@
 
 Сейчас в DESIGN есть `ResourceGroupReadClient` (resolve_descendants, resolve_ancestors, resolve_memberships). RG Access API — это он и есть, или нужен отдельный trait/crate с другим контрактом (например, без `SecurityContext`, раз клиент — только AuthZ через MTLS)?
 
+> RG Access API - "private REST+GRPC+SDK" и "MTLS" имеет доступ ко всем данным RG в рамках одного запрашиваемого тенанта, 
+> самый частый и возможно, единственный запрос к RG Access API - верни мне доступню иерархию тенантов по tenant_id
+> по факту это очень похоже  `ResourceGroupReadClient` (resolve_descendants, resolve_ancestors) без resolve_memberships
+> предлагаю объявить новый ResourceGroupReadHierarchy в котором 
+
 ## 2. RG Access API — transport?
 
 Написано "private REST+GRPC+SDK" и "MTLS". Сейчас authz-resolver работает in-process через ClientHub. RG Access API будет:
@@ -18,6 +23,11 @@ AuthZ зависит от RG Access API SDK, RG Management API зависит о
 - Потом RG Management API начинает принимать запросы (находит AuthZ)?
 
 Или RG Management и RG Access — это один модуль с двумя фазами init?
+
+Ответ:
+Пользователь заходит на страницу со списком курсов. Ему доступны курсы своего и дочерних тенантов.
+Как это работает:
+
 
 ## 4. AuthZ на read-операции RG — нужен?
 

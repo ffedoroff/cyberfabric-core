@@ -400,8 +400,8 @@ The same public read contract must remain stable across provider strategies:
 
 In `ownership-graph` profile, integration read responses match REST API schemas:
 
-- hierarchy reads (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) return `ResourceGroupWithDepth` (matches REST `GroupWithDepth`) — includes `tenant_id` per group
-- membership reads (`resolve_memberships(ctx, ..)`) return `ResourceGroupMembership` (matches REST `Membership`) — no `tenant_id`; callers derive tenant scope from group data obtained via hierarchy reads
+- hierarchy reads (`list_group_depth(ctx, group_id, query)`) return `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth`) — includes `tenant_id` per group
+- membership reads (`list_memberships(ctx, query)`) return `Page<ResourceGroupMembership>` (matches REST `GET /memberships`) — no `tenant_id`; callers derive tenant scope from group data obtained via hierarchy reads
 - integration read methods accept caller `SecurityContext`; RG passes it through to selected provider path (for plugin path, pass-through is unchanged)
 - in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory and used to resolve effective tenant scope for tenant-scoped reads and compiled SQL predicates
 - when effective tenant scope contains multiple related tenants, hierarchy read responses may contain rows with different `tenant_id` values
@@ -483,31 +483,28 @@ Entity/membership changes and derived closure updates **MUST** be transactionall
 
 Integration read models reuse REST-aligned SDK structs (see DESIGN.md for full definitions):
 
-- `resolve_descendants` / `resolve_ancestors` return `Vec<ResourceGroupWithDepth>` (matches REST `GroupWithDepth`)
-- `resolve_memberships` returns `Vec<ResourceGroupMembership>` (matches REST `Membership` — no `tenant_id`; tenant scope derived from group data via hierarchy reads)
+- `list_group_depth` returns `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth`)
+- `list_memberships` returns `Page<ResourceGroupMembership>` (matches REST `GET /memberships` — no `tenant_id`; tenant scope derived from group data via hierarchy reads)
 
-Target trait shape (aligned with tenant-resolver pass-through `SecurityContext` pattern):
+Target trait shape (mirrors REST API, aligned with `ResourceGroupClient` signatures):
 
 ```rust
 #[async_trait]
 pub trait ResourceGroupReadClient: Send + Sync {
-    async fn resolve_descendants(
+    /// Matches REST `GET /groups/{group_id}/depth` with OData query.
+    async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
-        root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
+        group_id: Uuid,
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
 
-    async fn resolve_ancestors(
+    /// Matches REST `GET /memberships` with OData query.
+    async fn list_memberships(
         &self,
         ctx: &SecurityContext,
-        node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
-
-    async fn resolve_memberships(
-        &self,
-        ctx: &SecurityContext,
-        group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -516,23 +513,18 @@ Companion plugin trait shape (gateway-internal delegation target):
 ```rust
 #[async_trait]
 pub trait ResourceGroupReadPluginClient: Send + Sync {
-    async fn resolve_descendants(
+    async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
-        root_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
+        group_id: Uuid,
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
 
-    async fn resolve_ancestors(
+    async fn list_memberships(
         &self,
         ctx: &SecurityContext,
-        node_id: Uuid,
-    ) -> Result<Vec<ResourceGroupWithDepth>, ResourceGroupError>;
-
-    async fn resolve_memberships(
-        &self,
-        ctx: &SecurityContext,
-        group_ids: Vec<Uuid>,
-    ) -> Result<Vec<ResourceGroupMembership>, ResourceGroupError>;
+        query: ListQuery,
+    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
 }
 ```
 
@@ -546,7 +538,7 @@ Gateway behavior:
 
 For AuthZ-facing usage, `ResourceGroupReadClient` returns data-only rows. Schemas match REST API models.
 
-Hierarchy read rows (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) — `ResourceGroupWithDepth` (matches REST `GroupWithDepth`):
+Hierarchy read rows (`list_group_depth(ctx, group_id, query)`) — `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth`):
 
 | Field | Type | Required | Description |
 |------|------|----------|-------------|
@@ -558,7 +550,7 @@ Hierarchy read rows (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)
 | `external_id` | string / null | No | Optional external ID |
 | `depth` | INT | Yes | Relative distance from input node (`0` = self) |
 
-Membership read rows (`resolve_memberships(ctx, ..)`) — `ResourceGroupMembership` (matches REST `Membership`):
+Membership read rows (`list_memberships(ctx, query)`) — `Page<ResourceGroupMembership>` (matches REST `GET /memberships`):
 
 | Field | Type | Required | Description |
 |------|------|----------|-------------|
@@ -566,7 +558,7 @@ Membership read rows (`resolve_memberships(ctx, ..)`) — `ResourceGroupMembersh
 | `resource_type` | string | Yes | Resource type classification |
 | `resource_id` | string | Yes | Resource identifier |
 
-Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `resolve_descendants`/`resolve_ancestors`.
+Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `list_group_depth`.
 
 Example calls:
 
@@ -578,10 +570,19 @@ let authz_ctx = SecurityContext::builder()
     .subject_tenant_id(caller_tenant_id)
     .build()?;
 
-let descendants = rg_read.resolve_descendants(&authz_ctx, root_group_id).await?;
-let ancestors = rg_read.resolve_ancestors(&authz_ctx, group_id).await?;
+// descendants of root_group_id
+let descendants = rg_read
+    .list_group_depth(&authz_ctx, root_group_id, ListQuery::new().filter("depth ge 0"))
+    .await?;
+
+// ancestors of group_id
+let ancestors = rg_read
+    .list_group_depth(&authz_ctx, group_id, ListQuery::new().filter("depth le 0"))
+    .await?;
+
+// memberships for specific groups
 let memberships = rg_read
-    .resolve_memberships(&authz_ctx, vec![group_a, group_b])
+    .list_memberships(&authz_ctx, ListQuery::new().filter("group_id in ('...',  '...')"))
     .await?;
 ```
 
@@ -679,7 +680,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ### Scenario: AuthZ Consumer Validates Tenant Scope from Read Rows
 
-- **GIVEN** plugin calls `resolve_descendants` for candidate groups and `resolve_memberships` for their members
+- **GIVEN** plugin calls `list_group_depth` for candidate groups and `list_memberships` for their members
 - **WHEN** RG returns hierarchy rows with `tenant_id` per group (via `ResourceGroupWithDepth`) and membership rows without `tenant_id` (via `ResourceGroupMembership`)
 - **THEN** plugin validates each group `tenant_id` against caller effective tenant scope
 - **AND** plugin maps `group_id → tenant_id` from hierarchy data to derive membership tenant scope
