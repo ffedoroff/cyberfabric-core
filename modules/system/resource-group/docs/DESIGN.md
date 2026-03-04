@@ -235,7 +235,7 @@ Responsibilities:
 Responsibilities:
 
 - create/get/update/move/delete entities
-- validate parent type compatibility
+- validate parent type compatibility (on create, move, and group_type change)
 - orchestrate subtree operations
 
 #### Hierarchy Service

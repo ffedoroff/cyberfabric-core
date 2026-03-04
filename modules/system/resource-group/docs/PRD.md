@@ -206,7 +206,7 @@ The module **MUST** provide API operations for:
 
 - create entity
 - retrieve entity by ID
-- update mutable fields (`name`, `external_id`)
+- update mutable fields (`name`, `external_id`, `group_type`)
 - move entity to new parent (subtree move)
 - delete entity
 
