@@ -150,6 +150,12 @@ RG cannot return allow/deny decisions.
 
 RG cannot generate SQL fragments or access-scope objects.
 
+#### Database-Agnostic Persistence
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-db-agnostic`
+
+RG persistence layer uses SeaORM abstractions and standard SQL. The module **MUST NOT** depend on vendor-specific SQL extensions or features of a particular RDBMS. Any SQL-compatible database supported by SeaORM can be used as the storage backend.
+
 #### Profile Change Safety
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
@@ -1353,7 +1359,51 @@ Ownership-graph tenant enforcement:
 - AuthZ extensibility is implemented through plugin behavior that consumes RG read contracts.
 - RG provider is swappable by configuration (built-in module or vendor-specific provider) without changing consumer contracts.
 - SQL conversion remains in existing PEP flow (`PolicyEnforcer` + compiler), consistent with approved architecture.
-- Production projections estimate ~455M membership rows (~117 GB with indexes). Partitioning strategy (e.g. by `group_id` range or by derived tenant via group FK) is a candidate optimization for production scale.
+
+### 4.1 Database Size Analysis & Production Projections
+
+#### Test Environment Baseline
+
+Benchmark environment used PostgreSQL 17 (Docker). PostgreSQL is not a required dependency — any SQL-compatible database supported by SeaORM can be used (see `cpt-cf-resource-group-constraint-db-agnostic`). Row sizes and storage projections are representative for typical RDBMS engines.
+
+Test dataset: 100K groups, 200K memberships, 306K closure rows:
+
+| Table | Rows | Data | Indexes+TOAST | Total | Avg Row |
+|---|---|---|---|---|---|
+| `resource_group` | 100,000 | 12 MB | 15 MB | **27 MB** | 125 B |
+| `resource_group_closure` | 306,175 | 20 MB | 16 MB | **36 MB** | 68 B |
+| `resource_group_membership` | 200,000 | 17 MB | 32 MB | **49 MB** | 91 B |
+| `resource_group_type` | 20 | 8 KB | 40 KB | **48 KB** | 409 B |
+| **Total** | — | **49 MB** | **63 MB** | **112 MB** | — |
+
+#### Column Widths (avg bytes, measured via pg_stats in test environment)
+
+**resource_group** (125 B/row): `id` 16 B (UUID), `parent_id` 16 B (UUID nullable), `group_type` 8 B (TEXT), `name` 15 B (TEXT), `tenant_id` 16 B (UUID), `external_id` 13 B (TEXT), `created`/`modified` 8 B each, row overhead ~25 B.
+
+**resource_group_closure** (68 B/row): `ancestor_id` 16 B, `descendant_id` 16 B, `depth` 4 B, row overhead ~32 B.
+
+**resource_group_membership** (91 B/row): `group_id` 16 B, `resource_type` 5 B, `resource_id` 13 B, `tenant_id` 16 B, `created` 8 B, row overhead ~33 B.
+
+#### Production Extrapolation
+
+Assumptions: **1.5M tenants**, **303.5M users** (1–2 memberships each → ~455M), **~5M total groups**, average hierarchy depth ~3 → ~15.4M closure rows.
+
+| Table | Rows | Data | Indexes | Total | % |
+|---|---|---|---|---|---|
+| `resource_group_membership` | 455M | 41.4 GB | 76.1 GB | **117.5 GB** | 97% |
+| `resource_group_closure` | 15.4M | 1.05 GB | 0.85 GB | **1.9 GB** | 1.6% |
+| `resource_group` | 5M | 625 MB | 800 MB | **1.4 GB** | 1.2% |
+| `resource_group_type` | ~50 | ~8 KB | ~32 KB | **~40 KB** | ~0% |
+| **Total** | — | **~43 GB** | **~78 GB** | **~121 GB** | — |
+
+Index-to-data ratio: **1.81x** (reasonable for btree-only with UUID keys).
+
+#### Key Observations
+
+1. **Membership table dominates** — 455M rows, ~117 GB (97% of total). Any optimization here has the biggest impact.
+2. **Closure table is manageable** — 1.9 GB total. Indexes turned 50–121 ms queries into <0.5 ms.
+3. **Memory requirements** — minimum 24 GB RAM (shared_buffers 6 GB), recommended 48 GB RAM (shared_buffers 12 GB) to keep hot indexes (especially membership UQ index at 33.7 GB) in memory.
+4. **Partitioning candidate** — `resource_group_membership` by `tenant_id`: 1.5M tenants x ~300 memberships each. Hash partitioning (128 partitions) → ~920 MB per partition. Enables partition pruning for tenant-scoped queries, reduces per-partition index sizes.
 
 ## 5. Traceability
 

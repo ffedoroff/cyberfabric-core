@@ -478,6 +478,31 @@ Entity/membership changes and derived closure updates **MUST** be transactionall
 
 100% of failure paths **MUST** map to documented error categories.
 
+### 6.5 Expected Production Scale
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-nfr-production-scale`
+
+The module **MUST** be designed and validated for the following projected production volumes:
+
+| Dimension | Projected Value |
+|-----------|-----------------|
+| Tenants (each a `resource_group` row) | ~1.5M |
+| Total groups (tenants + org subgroups) | ~5M |
+| Average hierarchy depth | ~3 |
+| Closure rows (self-links + ancestry) | ~15.4M |
+| Users (each with 1–2 memberships) | ~303.5M |
+| Membership rows | ~455M |
+| Projected total storage (data + indexes) | ~121 GB |
+
+The membership table dominates storage at ~97% of total (~117 GB data + indexes). Index-to-data ratio is ~1.81× (reasonable for btree-only indexes with UUID keys).
+
+Memory recommendations:
+
+- Minimum: 24 GB RAM (shared_buffers = 6 GB)
+- Recommended: 48 GB RAM (shared_buffers = 12 GB) to keep hot indexes in memory
+
+Partitioning of `resource_group_membership` by tenant scope is a candidate optimization for production scale (see Open Questions).
+
 ## 7. Public Library Interfaces
 
 ### 7.1 Public API Surface
@@ -939,7 +964,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 | Dependency | Description | Criticality |
 |------------|-------------|-------------|
-| SQL persistence layer | durable storage for types/entities/membership/closure | p1 |
+| SQL persistence layer (database-agnostic) | durable storage for types/entities/membership/closure; no vendor-specific SQL extensions | p1 |
 | modkit/client_hub | typed inter-module client registration/discovery | p1 |
 | AuthZ Resolver module | consumer of read contract via plugin path (optional consumer) | p1 |
 | Vendor-specific RG provider (optional) | alternative backend behind same read contracts | p2 |
