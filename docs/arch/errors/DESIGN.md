@@ -16,26 +16,21 @@ The `CanonicalError` enum has one variant per category. Every variant carries fo
 Canonical errors construction examples:
 
 ```rust
-// 1. Direct canonical error (no resource type)
+// 1. Direct canonical error
 let auth_err = CanonicalError::unauthenticated(ErrorInfo {
     reason: "TOKEN_EXPIRED".to_string(),
     domain: "auth.cyberfabric.io".to_string(),
     metadata: HashMap::new(),
 });
 
-// 2. Service-level error (no resource type)
-let unavailable_err = CanonicalError::service_unavailable(RetryInfo {
-    retry_after_seconds: 30,
-});
-
-// 3. Library error propagation via ?
+// 2. Library error propagation via ?
 async fn process_data() -> Result<Data, CanonicalError> {
     let file = tokio::fs::read("data.json").await?;  // io::Error → Internal
     let data: Data = serde_json::from_slice(&file)?; // serde_json::Error → InvalidArgument
     Ok(data)
 }
 
-// 4. Resource-scoped error construction
+// 3. Resource-scoped error construction
 #[resource_error("gts.cf.core.users.user.v1~")]
 struct UserResourceError;
 
@@ -45,7 +40,7 @@ async fn get_user(id: &str) -> Result<User, CanonicalError> {
         .ok_or_else(|| UserResourceError::not_found(id))
 }
 
-// 5. Validation error with multiple field violations
+// 4. Validation error with multiple field violations
 let validation_err = CanonicalError::invalid_argument(Validation {
     field_violations: vec![
         FieldViolation {
