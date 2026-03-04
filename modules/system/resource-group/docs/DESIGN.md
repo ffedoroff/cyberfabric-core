@@ -94,31 +94,31 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 
 #### Policy-Agnostic Core
 
-- `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
 
 Resource Group handles graph/membership data only.
 
 #### Strict Forest Integrity
 
-- `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
 
 Hierarchy guarantees single parent and cycle prevention for all writes.
 
 #### Dynamic Type Governance
 
-- `p1` - **ID**: `cpt-cf-resource-group-principle-dynamic-types`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-dynamic-types`
 
 Type rules are runtime-configurable through API/seed data with deterministic validation.
 
 #### Query Profile as Guardrail
 
-- `p1` - **ID**: `cpt-cf-resource-group-principle-query-profile-guardrail`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-query-profile-guardrail`
 
 `(max_depth, max_width)` is a service profile controlling write admissibility and SLO classification.
 
 #### Tenant Scope for Ownership Graph
 
-- `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
 In ownership-graph usage, groups are tenant-scoped and links must be tenant-hierarchy-compatible (same-tenant or allowed related-tenant link per tenant hierarchy rules).
 
@@ -126,19 +126,19 @@ In ownership-graph usage, groups are tenant-scoped and links must be tenant-hier
 
 #### No AuthZ Decision Logic
 
-- `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
 
 Resource Group cannot return allow/deny decisions.
 
 #### No SQL/ORM Filter Generation
 
-- `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
 Resource Group cannot generate SQL fragments or access-scope objects.
 
 #### Profile Change Safety
 
-- `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
 
 Reducing enabled `max_depth`/`max_width` cannot rewrite existing rows. Writes that worsen violation are rejected until external migration runs. Limits may also be disabled.
 
@@ -188,7 +188,7 @@ graph TD
 
 #### Resource Group Module
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-module`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-module`
 
 Responsibilities:
 
@@ -204,7 +204,7 @@ Boundaries:
 
 #### Type Service
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-type-service`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-type-service`
 
 Responsibilities:
 
@@ -214,7 +214,7 @@ Responsibilities:
 
 #### Entity Service
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-entity-service`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-entity-service`
 
 Responsibilities:
 
@@ -224,7 +224,7 @@ Responsibilities:
 
 #### Hierarchy Service
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-hierarchy-service`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-hierarchy-service`
 
 Responsibilities:
 
@@ -234,7 +234,7 @@ Responsibilities:
 
 #### Membership Service
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-membership-service`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-membership-service`
 
 Responsibilities:
 
@@ -243,7 +243,7 @@ Responsibilities:
 
 #### Integration Read Service
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-integration-read-service`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-integration-read-service`
 
 Responsibilities:
 
@@ -252,7 +252,7 @@ Responsibilities:
 
 #### Persistence Adapter
 
-- `p1` - **ID**: `cpt-cf-resource-group-component-persistence-adapter`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-persistence-adapter`
 
 Responsibilities:
 
