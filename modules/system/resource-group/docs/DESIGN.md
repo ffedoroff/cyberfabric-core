@@ -78,7 +78,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-nfr-membership-query-latency`  | low-latency membership reads    | membership service + indexes                | direct lookup by group/resource keys           | benchmark suite   |
 | `cpt-cf-resource-group-nfr-transactional-consistency` | transactional write consistency | transaction boundary in persistence adapter | canonical + closure updates commit together    | integration tests |
 | `cpt-cf-resource-group-nfr-deterministic-errors`      | stable failures                 | unified error mapper                        | all domain/infra failures mapped to SDK errors | unit tests        |
-| `cpt-cf-resource-group-nfr-production-scale`          | projected production volumes    | schema design + index strategy              | composite indexes, partitioning candidate for membership table (~455M rows, ~121 GB) | capacity planning |
+| `cpt-cf-resource-group-nfr-production-scale`          | projected production volumes    | schema design + index strategy              | composite indexes, partitioning candidate for membership table (~455M rows, ~110 GB) | capacity planning |
 
 
 #### Key Compatibility Anchors
@@ -1382,9 +1382,9 @@ Test dataset: 100K groups, 200K memberships, 306K closure rows:
 |---|---|---|---|---|---|
 | `resource_group` | 100,000 | 12 MB | 15 MB | **27 MB** | 125 B |
 | `resource_group_closure` | 306,175 | 20 MB | 16 MB | **36 MB** | 68 B |
-| `resource_group_membership` | 200,000 | 17 MB | 32 MB | **49 MB** | 91 B |
+| `resource_group_membership` | 200,000 | 15 MB | 32 MB | **47 MB** | 75 B |
 | `resource_group_type` | 20 | 8 KB | 40 KB | **48 KB** | 409 B |
-| **Total** | — | **49 MB** | **63 MB** | **112 MB** | — |
+| **Total** | — | **47 MB** | **63 MB** | **110 MB** | — |
 
 #### Column Widths (avg bytes, measured via pg_stats in test environment)
 
@@ -1392,7 +1392,7 @@ Test dataset: 100K groups, 200K memberships, 306K closure rows:
 
 **resource_group_closure** (68 B/row): `ancestor_id` 16 B, `descendant_id` 16 B, `depth` 4 B, row overhead ~32 B.
 
-**resource_group_membership** (91 B/row): `group_id` 16 B, `resource_type` 5 B, `resource_id` 13 B, `tenant_id` 16 B, `created` 8 B, row overhead ~33 B.
+**resource_group_membership** (75 B/row): `group_id` 16 B, `resource_type` 5 B, `resource_id` 13 B, `created` 8 B, row overhead ~33 B.
 
 #### Production Extrapolation
 
@@ -1400,20 +1400,20 @@ Assumptions: **1.5M tenants**, **303.5M users** (1–2 memberships each → ~455
 
 | Table | Rows | Data | Indexes | Total | % |
 |---|---|---|---|---|---|
-| `resource_group_membership` | 455M | 41.4 GB | 76.1 GB | **117.5 GB** | 97% |
+| `resource_group_membership` | 455M | 34.1 GB | 76.1 GB | **110.2 GB** | 97% |
 | `resource_group_closure` | 15.4M | 1.05 GB | 0.85 GB | **1.9 GB** | 1.6% |
 | `resource_group` | 5M | 625 MB | 800 MB | **1.4 GB** | 1.2% |
 | `resource_group_type` | ~50 | ~8 KB | ~32 KB | **~40 KB** | ~0% |
-| **Total** | — | **~43 GB** | **~78 GB** | **~121 GB** | — |
+| **Total** | — | **~36 GB** | **~78 GB** | **~114 GB** | — |
 
-Index-to-data ratio: **1.81x** (reasonable for btree-only with UUID keys).
+Index-to-data ratio: **2.17×** (reasonable for btree-only indexes with UUID keys; higher ratio reflects compact data rows relative to multi-column index entries).
 
 #### Key Observations
 
-1. **Membership table dominates** — 455M rows, ~117 GB (97% of total). Any optimization here has the biggest impact.
+1. **Membership table dominates** — 455M rows, ~110 GB (97% of total). Any optimization here has the biggest impact.
 2. **Closure table is manageable** — 1.9 GB total. Indexes turned 50–121 ms queries into <0.5 ms.
 3. **Memory requirements** — minimum 24 GB RAM (shared_buffers 6 GB), recommended 48 GB RAM (shared_buffers 12 GB) to keep hot indexes (especially membership UQ index at 33.7 GB) in memory.
-4. **Partitioning candidate** — `resource_group_membership` by `tenant_id`: 1.5M tenants x ~300 memberships each. Hash partitioning (128 partitions) → ~920 MB per partition. Enables partition pruning for tenant-scoped queries, reduces per-partition index sizes.
+4. **Partitioning candidate** — `resource_group_membership`: 455M rows, ~110 GB. Tenant scope is derived via `group_id` FK (not stored directly), so tenant-based partitioning would require adding a denormalized `tenant_id` column or using hash partitioning by `group_id`. Strategy needs evaluation (see PRD open questions).
 
 ## 5. Traceability
 

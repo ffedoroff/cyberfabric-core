@@ -492,9 +492,9 @@ The module **MUST** be designed and validated for the following projected produc
 | Closure rows (self-links + ancestry) | ~15.4M |
 | Users (each with 1–2 memberships) | ~303.5M |
 | Membership rows | ~455M |
-| Projected total storage (data + indexes) | ~121 GB |
+| Projected total storage (data + indexes) | ~114 GB |
 
-The membership table dominates storage at ~97% of total (~117 GB data + indexes). Index-to-data ratio is ~1.81× (reasonable for btree-only indexes with UUID keys).
+The membership table dominates storage at ~97% of total (~110 GB data + indexes). Index-to-data ratio is ~2.17× (reasonable for btree-only indexes with UUID keys; higher ratio reflects compact data rows relative to multi-column index entries).
 
 Memory recommendations:
 
@@ -997,7 +997,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 ## 13. Open Questions
 
 - Should delete behavior support both `leaf-only` and `subtree-cascade` modes in v1? (REST API defines `force` query parameter for cascade control.) **Owner**: platform team. **Target**: resolve before DECOMPOSITION.
-- Should `resource_group_membership` be partitioned for production scale (projected 455M rows, ~117 GB)? Partitioning strategy needs evaluation since tenant scope is derived via group FK, not stored directly. **Owner**: platform team. **Target**: resolve before production deployment.
+- Should `resource_group_membership` be partitioned for production scale (projected 455M rows, ~110 GB)? Partitioning strategy needs evaluation since tenant scope is derived via group FK, not stored directly. **Owner**: platform team. **Target**: resolve before production deployment.
 
 ## 14. Traceability
 
