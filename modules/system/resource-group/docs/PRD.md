@@ -164,7 +164,7 @@ The module **MUST** provide API operations to create, list, retrieve, update, an
 A type includes:
 
 - `code` (unique, case-insensitive)
-- `parents` (allowed parent type codes)
+- `parents` (allowed parent type codes, **minItems: 1**; `''` empty-string code means the type permits root placement — no `parent_id`; `parents: []` is invalid — at least one element is required)
 
 #### Validate Type Code Format
 
@@ -247,6 +247,12 @@ Invalid relation **MUST** return `InvalidParentType`.
 
 Entity deletion **MUST** be rejected if active references/memberships prevent safe removal according to configured deletion policy.
 
+#### Support Group Seeding
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-groups`
+
+The module **MUST** support deterministic group seeding to initialize/update group hierarchy as a pre-deployment step. Seeding **MUST** validate parent-child links and type compatibility. Repeated runs **MUST** be idempotent.
+
 #### Enforce Tenant Scope in Ownership-Graph Profile
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`
@@ -280,6 +286,12 @@ The module **MUST** support deterministic membership lookups:
 - by resource (`resource_type` + `resource_id`)
 - by group (`group_id`)
 - by group and resource type (`group_id` + `resource_type`)
+
+#### Support Membership Seeding
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-memberships`
+
+The module **MUST** support deterministic membership seeding to initialize membership links as a pre-deployment step. Seeding **MUST** validate group existence and tenant compatibility. Repeated runs **MUST** be idempotent.
 
 ### 5.4 Hierarchy Operations (Closure Table)
 
@@ -699,7 +711,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 #### Scenario: Create Root Entity
 
-- **GIVEN** type `tenant` exists with empty parents list (root type)
+- **GIVEN** type `tenant` exists with `parents: ['']` (empty-string code permits root placement)
 - **WHEN** caller creates group with type `tenant`, name `"Acme Corp"`, no `parent_id`
 - **THEN** root entity is created with self-referencing closure row (depth 0)
 

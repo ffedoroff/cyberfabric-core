@@ -899,6 +899,8 @@ components:
           type: array
           items:
             type: string
+          minItems: 1
+          description: "Allowed parent type codes (min 1 element). Empty string '' permits root placement (no parent_id). Empty array [] is invalid."
           example: [tenant]
 
     TypePage:
@@ -934,6 +936,7 @@ components:
           type: array
           items:
             type: string
+          minItems: 1
           example: [tenant]
 
     UpdateTypeRequest:
@@ -944,6 +947,7 @@ components:
           type: array
           items:
             type: string
+          minItems: 1
           example: [tenant]
 
     Group:
