@@ -1,25 +1,27 @@
-# PRD - Resource Group
+# PRD - Resource Group (RG)
+
+> **Abbreviation**: Resource Group = **RG**. Used throughout this document.
 
 ## 1. Overview
 
 ### 1.1 Purpose
 
-The Resource Group module provides a generic hierarchy and membership engine for organizing resources.
+The RG module provides a generic hierarchy and membership engine for organizing resources.
 
 The module supports two usage profiles with one API surface:
 
 - `catalog` profile: store and query arbitrary resource group structures and memberships.
 - `ownership-graph` profile: expose deterministic hierarchy/membership reads that can be consumed by external decision systems (for example AuthZ plugin logic).
 
-Cyber Fabric ships a ready-to-use Resource Group provider in `modules/system/resource-group`.
+Cyber Fabric ships a ready-to-use RG provider in `modules/system/resource-group`.
 Deployments can either:
 
 - use this built-in provider directly, or
-- use a vendor-specific Resource Group provider behind the same read contracts (resolver/plugin pattern), analogous to Tenant Resolver extensibility.
+- use a vendor-specific RG provider behind the same read contracts (resolver/plugin pattern), analogous to Tenant Resolver extensibility.
 
 For AuthZ-facing deployments, `ownership-graph` is the required profile. Provider strategy remains deployment-specific (built-in provider or vendor-specific provider).
 
-Resource Group is data infrastructure only. It does not evaluate authorization policies and does not build SQL filters.
+RG is data infrastructure only. It does not evaluate authorization policies and does not build SQL filters.
 
 ### 1.2 Background / Problem Statement
 
@@ -33,7 +35,7 @@ Authorization flows additionally need a stable source for ownership hierarchy an
 - Enforce strict forest invariants (single parent, no cycles).
 - Support dynamic type configuration through API and DB seeding.
 - Provide efficient hierarchy operations using closure table.
-- Allow AuthZ integration without coupling Resource Group to AuthZ semantics.
+- Allow AuthZ integration without coupling RG to AuthZ semantics.
 
 ### 1.4 Non-goals
 
@@ -46,8 +48,8 @@ Authorization flows additionally need a stable source for ownership hierarchy an
 
 | Term | Definition |
 |------|------------|
-| Resource Group Type | Type schema for group entities and allowed parent type set. |
-| Resource Group Entity | Concrete node in the hierarchy (stored in `resource_group` table). |
+| RG Type | Type schema for group entities and allowed parent type set. |
+| RG Entity | Concrete node in the hierarchy (stored in `resource_group` table). |
 | Resource Type | Caller-defined classification of a resource (e.g. `User`, `Document`). Part of membership composite key. |
 | Membership | Explicit many-to-many link between group entity and resource identifier, qualified by resource type. Composite key: `(group_id, resource_type, resource_id)`. |
 | Forest | Collection of trees with single parent per node and no cycles. |
@@ -84,19 +86,19 @@ Authorization flows additionally need a stable source for ownership hierarchy an
 
 **ID**: `cpt-cf-resource-group-actor-authz-plugin-consumer`
 
-- **Role**: reads hierarchy/membership context from Resource Group to build AuthZ constraints. AuthZ can operate without RG — RG is an optional data source for AuthZ plugin logic.
+- **Role**: reads hierarchy/membership context from RG to build AuthZ constraints. AuthZ can operate without RG — RG is an optional data source for AuthZ plugin logic.
 
 ## 3. Operational Concept & Environment
 
 ### 3.1 Core Boundary
 
-Resource Group:
+RG:
 
 - owns hierarchy and membership data contracts.
 - validates structural invariants and type compatibility.
 - provides read models for consumers.
 
-Resource Group does not:
+RG does not:
 
 - evaluate allow/deny decisions.
 - interpret AuthZ policies.
@@ -104,15 +106,15 @@ Resource Group does not:
 
 ### 3.2 AuthZ Integration Boundary (Fixed)
 
-The integration point between AuthZ and Resource Group is at AuthZ plugin/PDP logic, not inside Resource Group.
+The integration point between AuthZ and RG is at AuthZ plugin/PDP logic, not inside RG.
 
-- AuthZ plugin reads hierarchy/membership context from Resource Group.
+- AuthZ plugin reads hierarchy/membership context from RG.
 - AuthZ plugin returns constraints in AuthZ response format.
 - PEP (`PolicyEnforcer` + compiler) translates constraints to `AccessScope`/SQL.
 
-AuthZ can operate without Resource Group. RG is an optional data source — AuthZ plugin logic decides whether to consume RG data. When RG is not deployed or not configured, AuthZ flows proceed without group-based constraints.
+AuthZ can operate without RG. RG is an optional data source — AuthZ plugin logic decides whether to consume RG data. When RG is not deployed or not configured, AuthZ flows proceed without group-based constraints.
 
-This preserves approved AuthN/AuthZ architecture and keeps Resource Group AuthZ-agnostic.
+This preserves approved AuthN/AuthZ architecture and keeps RG AuthZ-agnostic.
 
 ### 3.3 Tenant Compatibility Rule for AuthZ Usage
 
@@ -128,7 +130,7 @@ Operational exception for platform provisioning:
 - privileged platform admin calls through `ResourceGroupClient` may run without caller tenant scoping when creating/managing tenant hierarchies across tenants
 - this exception does not relax data invariants: every parent-child edge and membership link must still pass tenant hierarchy compatibility checks
 
-This aligns Resource Group behavior with `docs/arch/authorization/RESOURCE_GROUP_MODEL.md`.
+This aligns RG behavior with `docs/arch/authorization/RESOURCE_GROUP_MODEL.md`.
 
 ## 4. Scope
 
@@ -151,7 +153,7 @@ This aligns Resource Group behavior with `docs/arch/authorization/RESOURCE_GROUP
 
 ## 5. Functional Requirements
 
-### 5.1 Resource Group Type Management
+### 5.1 RG Type Management
 
 #### Create, List, Get, Update, Delete Type
 
@@ -194,7 +196,7 @@ The module **MUST** support deterministic type seeding to initialize/update type
 
 Type deletion **MUST** be rejected if at least one entity of that type exists.
 
-### 5.2 Resource Group Entity Management
+### 5.2 RG Entity Management
 
 #### Create, Get, Update, Move, Delete Entity
 
@@ -384,7 +386,7 @@ Group delete endpoint **MUST** support optional `force` query parameter to contr
 
 ### 5.7 AuthZ Integration Contract (Without Coupling)
 
-> Note: AuthZ can operate without Resource Group. RG is an optional PIP data source for AuthZ plugin logic.
+> Note: AuthZ can operate without RG. RG is an optional PIP data source for AuthZ plugin logic.
 
 #### Provide Generic Read Port for External Consumers
 
@@ -394,24 +396,24 @@ The module **MUST** expose stable read contracts for hierarchy/membership retrie
 
 The same public read contract must remain stable across provider strategies:
 
-- built-in Resource Group provider
+- built-in RG provider
 - vendor-specific provider selected via resolver/plugin path
 
 In `ownership-graph` profile, integration read responses **MUST** include `tenant_id` for each returned row:
 
 - hierarchy reads (`resolve_descendants(ctx, ..)`, `resolve_ancestors(ctx, ..)`) return group row + tenant scope
 - membership reads (`resolve_memberships(ctx, ..)`) return membership row + tenant scope
-- integration read methods accept caller `SecurityContext`; Resource Group passes it through to selected provider path (for plugin path, pass-through is unchanged)
+- integration read methods accept caller `SecurityContext`; RG passes it through to selected provider path (for plugin path, pass-through is unchanged)
 - in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory and used to resolve effective tenant scope for tenant-scoped reads and compiled SQL predicates
 - when effective tenant scope contains multiple related tenants, read responses may contain rows with different `tenant_id` values
 
 The read contract **MUST NOT** contain AuthZ decision semantics.
 
-#### Keep Policy and SQL Semantics Outside Resource Group
+#### Keep Policy and SQL Semantics Outside RG
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
 
-Resource Group **MUST NOT**:
+RG **MUST NOT**:
 
 - return allow/deny policy decisions
 - return AuthZ constraint objects
@@ -533,7 +535,7 @@ pub trait ResourceGroupReadPluginClient: Send + Sync {
 Gateway behavior:
 
 - public callers use `ResourceGroupReadClient` from ClientHub
-- module gateway resolves configured provider and either serves from built-in Resource Group data path or delegates to vendor-selected scoped plugin via `ResourceGroupReadPluginClient`
+- module gateway resolves configured provider and either serves from built-in RG data path or delegates to vendor-selected scoped plugin via `ResourceGroupReadPluginClient`
 - `SecurityContext` is passed through unchanged when plugin path is selected
 
 ### 7.2 Integration Read Schemas (Ownership-Graph)
@@ -643,7 +645,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 ### Scenario: Platform Admin Provisions Hierarchy Without Caller Tenant Scope
 
-- **GIVEN** caller has privileged platform-admin capability for Resource Group provisioning
+- **GIVEN** caller has privileged platform-admin capability for RG provisioning
 - **AND** caller request is not tenant-scoped by `subject_tenant_id`
 - **WHEN** caller creates or moves tenant hierarchy nodes via `ResourceGroupClient`
 - **THEN** operation is allowed for the explicit target tenant scope
@@ -662,17 +664,17 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 - **GIVEN** AuthZ plugin needs hierarchy context
 - **WHEN** plugin calls `ResourceGroupReadClient` with caller `SecurityContext`
-- **THEN** Resource Group returns hierarchy/membership data only
+- **THEN** RG returns hierarchy/membership data only
 - **AND** policy decision + constraint generation remain in AuthZ plugin
 - **AND** SQL compilation remains in PEP layer
 
 ### Scenario: AuthZ Consumer Validates Tenant Scope from Read Rows
 
 - **GIVEN** plugin calls `resolve_descendants` and `resolve_memberships` for candidate groups
-- **WHEN** Resource Group returns rows with `tenant_id` for each entry
+- **WHEN** RG returns rows with `tenant_id` for each entry
 - **THEN** plugin validates each row `tenant_id` against caller effective tenant scope
 - **AND** plugin excludes/rejects out-of-tenant groups before generating AuthZ constraints
-- **AND** Resource Group still returns no policy decision fields
+- **AND** RG still returns no policy decision fields
 
 ## 9. Acceptance Criteria
 
@@ -681,12 +683,12 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - [ ] Closure-table ancestor/descendant queries are available and ordered by depth.
 - [ ] Subtree move/delete are supported with transactional closure updates.
 - [ ] Query profile (`max_depth`, `max_width`) behavior matches specified reduced-constraint rules, including disabled-limit (unlimited) mode.
-- [ ] Resource Group remains AuthZ-agnostic while exposing integration read contracts.
+- [ ] RG remains AuthZ-agnostic while exposing integration read contracts.
 - [ ] No changes are required in existing AuthN/AuthZ resolver contracts.
 - [ ] Tenant-scoped constraints for AuthZ usage are enforced and tenant-incompatible links are rejected.
 - [ ] Integration read rows include `tenant_id` in `ownership-graph` profile for deterministic caller-side tenant validation in AuthZ flows.
 - [ ] `resource_group_membership` stores `tenant_id`, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
-- [ ] Platform-admin provisioning via Resource Group API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
+- [ ] Platform-admin provisioning via RG API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
 - [ ] Membership operations use composite key `(group_id, resource_type, resource_id)`.
 - [ ] REST API endpoints available under `/api/resource-group/v1/` with OData query support.
 - [ ] Group list endpoint returns `depth` and supports depth-based filtering.
@@ -703,7 +705,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 ## 11. Assumptions
 
 - AuthN/AuthZ module contracts remain unchanged and are extended only via plugins/adapters.
-- Resource Group consumers depend on stable contracts (`ResourceGroupClient`, `ResourceGroupReadClient`), not on a specific provider implementation.
+- RG consumers depend on stable contracts (`ResourceGroupClient`, `ResourceGroupReadClient`), not on a specific provider implementation.
 - Resource identifiers used in memberships are stable for consumer domain.
 - Operators can run explicit migration scripts when tightening enabled query profile limits.
 
@@ -713,7 +715,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 |------|--------|------------|
 | Very deep/wide trees | degraded write performance on closure maintenance | depth/width validation, indexes, benchmark gates |
 | Ambiguous ownership semantics between domains | inconsistent integration behavior | explicit type parent rules + integration contract tests |
-| Misuse of Resource Group as policy engine | boundary drift and coupling | hard boundary in contracts, architecture review checks |
+| Misuse of RG as policy engine | boundary drift and coupling | hard boundary in contracts, architecture review checks |
 
 ## 13. Open Questions
 
@@ -724,4 +726,4 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 - **Design**: [DESIGN.md](./DESIGN.md)
 - **AuthN/AuthZ Architecture**: [docs/arch/authorization/DESIGN.md](../../../../docs/arch/authorization/DESIGN.md)
-- **Resource Group Model**: [docs/arch/authorization/RESOURCE_GROUP_MODEL.md](../../../../docs/arch/authorization/RESOURCE_GROUP_MODEL.md)
+- **RG Model**: [docs/arch/authorization/RESOURCE_GROUP_MODEL.md](../../../../docs/arch/authorization/RESOURCE_GROUP_MODEL.md)

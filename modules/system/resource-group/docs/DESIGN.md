@@ -1,10 +1,12 @@
-# Technical Design - Resource Group
+# Technical Design - Resource Group (RG)
+
+> **Abbreviation**: Resource Group = **RG**. Used throughout this document.
 
 ## 1. Architecture Overview
 
 ### 1.1 Architectural Vision
 
-Resource Group is a generic hierarchy and membership module.
+RG is a generic hierarchy and membership module.
 
 It provides:
 
@@ -14,7 +16,7 @@ It provides:
 - membership links between groups and resources
 - read interfaces consumable by external modules/plugins
 
-Resource Group is intentionally policy-agnostic:
+RG is intentionally policy-agnostic:
 
 - no AuthZ policy evaluation
 - no decision semantics
@@ -28,7 +30,7 @@ The architecture consists of:
 
 Deployments use either: (RG Plugin + RG Service) or (Vendor RG Plugin + Vendor RG Service) — both behind the same SDK contracts.
 
-AuthZ can operate without Resource Group. RG is an optional PIP data source for AuthZ plugin logic.
+AuthZ can operate without RG. RG is an optional PIP data source for AuthZ plugin logic.
 
 For AuthZ-facing deployments aligned with current platform architecture, `ownership-graph` is the required profile; provider selection (built-in provider or vendor-specific backend) is deployment-specific.
 
@@ -108,7 +110,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
 
-Resource Group handles graph/membership data only.
+RG handles graph/membership data only.
 
 #### Strict Forest Integrity
 
@@ -140,13 +142,13 @@ In ownership-graph usage, groups are tenant-scoped and links must be tenant-hier
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
 
-Resource Group cannot return allow/deny decisions.
+RG cannot return allow/deny decisions.
 
 #### No SQL/ORM Filter Generation
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
-Resource Group cannot generate SQL fragments or access-scope objects.
+RG cannot generate SQL fragments or access-scope objects.
 
 #### Profile Change Safety
 
@@ -184,7 +186,7 @@ Reducing enabled `max_depth`/`max_width` cannot rewrite existing rows. Writes th
 graph TD
     A[Domain Client] --> B[ResourceGroupClient]
     X[External Consumer / AuthZ Plugin] --> C[ResourceGroupReadClient]
-    B --> D[Resource Group Module]
+    B --> D[RG Module]
     C --> D
     D --> E[Type Service]
     D --> F[Entity Service]
@@ -199,7 +201,7 @@ graph TD
 
 
 
-#### Resource Group Module (Gateway)
+#### RG Module (Gateway)
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-component-module`
 
@@ -367,7 +369,7 @@ Membership write semantics for AuthZ-facing profile:
 - in `ownership-graph` mode, add/remove validates tenant scope via caller `SecurityContext` effective scope and target group tenant
 - membership row stores explicit `tenant_id` and must match target group tenant
 - tenant-incompatible membership writes fail deterministically (`Validation`/`Conflict` mapping)
-- no policy decision fields are produced by Resource Group for these operations
+- no policy decision fields are produced by RG for these operations
 
 Platform-admin provisioning exception:
 
@@ -506,12 +508,12 @@ Tenant projection rule for integration reads:
 - in `ownership-graph` profile, `tenant_id` is required in every returned row from `ResourceGroupReadClient`
 - for membership reads, `tenant_id` is read from `resource_group_membership.tenant_id` (must match `resource_group.tenant_id`)
 - rows can legitimately contain different `tenant_id` values when caller effective scope spans tenant hierarchy levels
-- this keeps Resource Group policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
+- this keeps RG policy-agnostic while allowing external PDP logic to validate tenant ownership before producing group-based constraints
 
 Caller identity propagation rule (aligned with Tenant Resolver pattern):
 
 - integration read methods accept caller `SecurityContext` (`ctx`) as the first argument
-- Resource Group gateway preserves `ctx` across provider routing (for plugin path, `ctx` is passed through to selected plugin unchanged) without converting it into policy decisions
+- RG gateway preserves `ctx` across provider routing (for plugin path, `ctx` is passed through to selected plugin unchanged) without converting it into policy decisions
 - plugin implementations decide how/if `ctx` affects read access semantics (for example tenant-scoped visibility or auditing)
 - this keeps RG data-only while preserving caller identity required by AuthZ plugin/PDP flows
 - for AuthZ query path, reads are tenant-scoped by effective scope derived from caller `SecurityContext.subject_tenant_id`; non-tenant-scoped provisioning exception does not apply
@@ -930,9 +932,9 @@ Ownership-graph tenant enforcement:
 ## 4. Additional Context
 
 - AuthN/AuthZ module contracts remain unchanged.
-- AuthZ can operate without Resource Group — RG is an optional data source.
+- AuthZ can operate without RG — RG is an optional data source.
 - AuthZ extensibility is implemented through plugin behavior that consumes RG read contracts.
-- Resource Group provider is swappable by configuration (built-in module or vendor-specific provider) without changing consumer contracts.
+- RG provider is swappable by configuration (built-in module or vendor-specific provider) without changing consumer contracts.
 - SQL conversion remains in existing PEP flow (`PolicyEnforcer` + compiler), consistent with approved architecture.
 - Production projections estimate ~455M membership rows (~117 GB with indexes). `resource_group_membership` partitioning by `tenant_id` is a candidate optimization for production scale.
 
@@ -940,4 +942,4 @@ Ownership-graph tenant enforcement:
 
 - **PRD**: [PRD.md](./PRD.md)
 - **Auth Architecture Context**: [docs/arch/authorization/DESIGN.md](../../../../docs/arch/authorization/DESIGN.md)
-- **Resource Group Model Context**: [docs/arch/authorization/RESOURCE_GROUP_MODEL.md](../../../../docs/arch/authorization/RESOURCE_GROUP_MODEL.md)
+- **RG Model Context**: [docs/arch/authorization/RESOURCE_GROUP_MODEL.md](../../../../docs/arch/authorization/RESOURCE_GROUP_MODEL.md)
