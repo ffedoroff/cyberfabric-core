@@ -406,7 +406,7 @@ paths:
         OData support:
         - `$filter`:
           - `depth`: eq, ne, gt, ge, lt, le — e.g. `depth ge -10 and depth le 5`
-          - `group_type`: eq, ne, in — e.g. `group_type eq 'department'`
+          - `group_type`: eq, ne, in — e.g. `group_type in ('department','branch')`
         - `$top`:
           - Page size (1..300), default `50`
         - `$skip`:
