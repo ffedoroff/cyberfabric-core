@@ -793,6 +793,25 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **WHEN** caller creates entity with `parent_id = L3` (would produce depth 4)
 - **THEN** `limit_violation` — `max_depth` exceeded
 
+#### Scenario: List Groups — Tenant Admin Sees Only Tenant-Scoped Subtree
+
+- **GIVEN** stored hierarchy:
+  ```
+  T1 (tenant, tenant_id=T1)
+  ├── D1 (department, tenant_id=T1)
+  └── T7 (tenant, tenant_id=T7)
+      ├── D2 (department, tenant_id=T7)
+      └── D3 (department, tenant_id=T7)
+  T9 (tenant, tenant_id=T9)
+  └── D4 (department, tenant_id=T9)
+  ```
+- **AND** Tenant Administrator authenticates with `SecurityContext.subject_tenant_id = T7`
+- **WHEN** Tenant Admin calls `GET /api/resource-group/v1/groups` without any `$filter`
+- **THEN** AuthZ evaluates the request via `PolicyEnforcer` and produces `AccessScope {tenant_id IN (T7)}`
+- **AND** SecureORM appends `WHERE tenant_id IN ('T7')` to the query
+- **AND** response contains only groups visible to tenant `T7`: `[T7, D2, D3]`
+- **AND** groups from other tenants (`T1`, `D1`, `T9`, `D4`) are not returned
+
 #### Scenario: Seed Groups (Pre-Deployment Step)
 
 - **GIVEN** deployment configuration defines group hierarchy:

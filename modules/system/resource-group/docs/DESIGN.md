@@ -864,23 +864,25 @@ let page = rg
 
 ### 3.6 Interactions & Sequences
 
-#### Create Entity With Parent
+#### Create Resource Group With Parent
 
 **ID**: `cpt-cf-resource-group-seq-create-entity-with-parent`
 
+Tenant Administrator creates a child resource group (e.g. department, branch) under an existing parent group via REST API `POST /groups`. Other callers — Instance Administrator (REST API) and Apps (`ResourceGroupClient` SDK) — follow the same internal flow.
+
 ```mermaid
 sequenceDiagram
-    participant CL as Client
+    participant TA as Tenant Admin (REST API)
     participant ES as Entity Service
     participant HS as Hierarchy Service
     participant DB as Persistence
 
-    CL->>ES: create_entity(type, parent)
+    TA->>ES: create_entity(type, parent)
     ES->>DB: begin tx (SERIALIZABLE)
     ES->>HS: load current hierarchy snapshot in tx
     ES->>ES: validate type + parent compatibility in tx
     ES->>HS: validate cycle/depth/width in tx
-    ES->>DB: insert entity row
+    ES->>DB: insert resource_group row
     HS->>DB: insert closure self row
     HS->>DB: insert ancestor-descendant rows
     DB-->>ES: commit
@@ -888,23 +890,25 @@ sequenceDiagram
         ES->>DB: rollback
         ES->>ES: retry create_entity (bounded retry policy)
     end
-    ES-->>CL: entity created
+    ES-->>TA: resource group created
 ```
 
 
 
-#### Move Subtree
+#### Move Resource Group Subtree
 
 **ID**: `cpt-cf-resource-group-seq-move-subtree`
 
+Tenant Administrator moves a resource group (and its entire subtree) to a new parent within the same tenant via REST API `PUT /groups/{group_id}`. Other callers — Instance Administrator (REST API) and Apps (`ResourceGroupClient` SDK) — follow the same internal flow.
+
 ```mermaid
 sequenceDiagram
-    participant CL as Client
+    participant TA as Tenant Admin (REST API)
     participant ES as Entity Service
     participant HS as Hierarchy Service
     participant DB as Persistence
 
-    CL->>ES: move_entity(node, new_parent)
+    TA->>ES: move_entity(node, new_parent)
     ES->>DB: begin tx (SERIALIZABLE)
     ES->>HS: load current hierarchy snapshot in tx
     ES->>HS: validate not-in-subtree (cycle check) in tx
@@ -916,7 +920,7 @@ sequenceDiagram
         ES->>DB: rollback
         ES->>ES: retry move_entity (bounded retry policy)
     end
-    ES-->>CL: success
+    ES-->>TA: success
 ```
 
 
@@ -1088,20 +1092,25 @@ MTLS requests **bypass AuthZ evaluation entirely** — no `PolicyEnforcer` call,
 
 ##### Authentication Decision Flow
 
+RG Gateway receives requests from two types of callers and routes them through different authentication paths:
+
+- **JWT path** — Admin (Instance/Tenant) or App sends a request with a bearer token. RG Gateway delegates authentication to AuthN Resolver, then runs AuthZ evaluation via `PolicyEnforcer` before executing the query.
+- **MTLS path** — AuthZ Plugin (in microservice deployment) sends a request with a client certificate. RG Gateway verifies the certificate against a trusted CA bundle, checks the endpoint allowlist, and executes directly without AuthZ evaluation.
+
 ```mermaid
 flowchart TD
-    REQ[Incoming request] --> AUTH_CHECK{Authentication<br/>method?}
+    REQ["Incoming request to RG REST API<br/>(from Admin, App, or AuthZ Plugin)"] --> AUTH_CHECK{RG Gateway:<br/>authentication method?}
 
-    AUTH_CHECK -->|JWT bearer token| JWT_PATH[AuthN Resolver validates JWT]
-    JWT_PATH --> SEC_CTX[SecurityContext from token]
-    SEC_CTX --> AUTHZ[PolicyEnforcer.access_scope]
-    AUTHZ --> CONSTRAINTS[Apply AccessScope to query]
-    CONSTRAINTS --> EXEC[Execute with SQL predicates]
+    AUTH_CHECK -->|"JWT bearer token<br/>(Admin / App)"| JWT_PATH[AuthN Resolver validates JWT]
+    JWT_PATH --> SEC_CTX[SecurityContext extracted from token]
+    SEC_CTX --> AUTHZ["RG Gateway calls<br/>PolicyEnforcer.access_scope()"]
+    AUTHZ --> CONSTRAINTS[RG Gateway applies<br/>AccessScope to query]
+    CONSTRAINTS --> EXEC["RG Service executes<br/>query with SQL predicates"]
 
-    AUTH_CHECK -->|MTLS client cert| MTLS_PATH[Verify client certificate]
-    MTLS_PATH --> ENDPOINT_CHECK{Endpoint in<br/>MTLS allowlist?}
-    ENDPOINT_CHECK -->|Yes: /groups/id/depth| SYSTEM_CTX[System SecurityContext]
-    SYSTEM_CTX --> EXEC_DIRECT[Execute directly — no AuthZ]
+    AUTH_CHECK -->|"MTLS client cert<br/>(AuthZ Plugin)"| MTLS_PATH["RG Gateway verifies client cert<br/>against trusted CA bundle"]
+    MTLS_PATH --> ENDPOINT_CHECK{RG Gateway:<br/>endpoint in MTLS allowlist?}
+    ENDPOINT_CHECK -->|"Yes: /groups/{id}/depth"| SYSTEM_CTX["RG Gateway creates<br/>System SecurityContext"]
+    SYSTEM_CTX --> EXEC_DIRECT["RG Hierarchy Service executes<br/>directly — no AuthZ evaluation"]
     ENDPOINT_CHECK -->|No: any other endpoint| REJECT[403 Forbidden]
 
     style REJECT fill:#f66,color:#fff
@@ -1127,7 +1136,7 @@ sequenceDiagram
     Note over RG_GW: MTLS mode: skip AuthZ evaluation
 
     RG_GW->>RG_SVC: list_group_depth(system_ctx, T1, query)
-    RG_SVC->>DB: SELECT from closure + groups WHERE ancestor_id = T1
+    RG_SVC->>DB: SELECT rg.*, c.depth FROM resource_group_closure c JOIN resource_group rg ON c.descendant_id = rg.id WHERE c.ancestor_id = T1
     DB-->>RG_SVC: [{T1, depth:0}, {T7, depth:1}]
     RG_SVC-->>RG_GW: Page<ResourceGroupWithDepth>
     RG_GW-->>AZ: 200 OK [{T1, depth:0}, {T7, depth:1}]
@@ -1164,7 +1173,7 @@ sequenceDiagram
     PE-->>RG_GW: AccessScope {owner_tenant_id IN (T1, T7)}
 
     RG_GW->>RG_SVC: list_groups(ctx, query, access_scope)
-    RG_SVC->>DB: SELECT * FROM resource_group WHERE owner_tenant_id IN (T1, T7) AND ...
+    RG_SVC->>DB: SELECT * FROM resource_group WHERE tenant_id IN (T1, T7) AND ...
     DB-->>RG_SVC: groups
     RG_SVC-->>RG_GW: Page<ResourceGroup>
     RG_GW-->>U: 200 OK
@@ -1173,26 +1182,40 @@ sequenceDiagram
 Note: when a user calls RG REST API with JWT, the AuthZ flow is **identical** to any other domain service (courses, users, etc.):
 1. API Gateway authenticates JWT → `SecurityContext`
 2. RG gateway calls `PolicyEnforcer.access_scope()` → AuthZ evaluates → constraints returned
-3. RG applies `AccessScope` to its own query via SecureORM
+3. RG applies `AccessScope` to its own query via SecureORM (SecureORM maps AuthZ property `owner_tenant_id` to actual column `tenant_id` in `resource_group` table)
 4. AuthZ plugin internally reads hierarchy via `ResourceGroupReadHierarchy` (MTLS or in-process ClientHub) — this internal read bypasses AuthZ
 
 The key insight: RG is simultaneously a **consumer** of AuthZ (for its own JWT-authenticated endpoints) and a **data provider** for AuthZ (via MTLS/ClientHub hierarchy reads). The MTLS bypass prevents the circular call.
 
-##### MTLS Allowlist Configuration
+##### MTLS Configuration and Certificate Verification
 
-The MTLS endpoint allowlist is configured at the RG gateway level:
+MTLS authentication is configured at the RG gateway level and includes two parts: certificate trust and endpoint allowlist.
+
+**Certificate verification process** (performed by RG Gateway on every MTLS request):
+
+1. RG Gateway extracts the client certificate from the TLS handshake.
+2. Certificate is validated against the trusted CA bundle (`ca_cert`): signature chain, expiration, revocation status.
+3. Client identity (certificate `CN` / `SAN`) is matched against `allowed_clients` list. If the client is not in the list, the request is rejected with `403 Forbidden`.
+4. Only after identity verification, the endpoint is checked against `allowed_endpoints`. If the endpoint is not in the allowlist, `403 Forbidden` is returned.
 
 ```yaml
 modules:
   resource_group:
     mtls:
       enabled: true
+      # Trusted CA bundle for verifying client certificates.
+      # In production: internal PKI CA that issues service certificates.
+      ca_cert: /etc/ssl/certs/internal-ca.pem
+      # Clients allowed to connect via MTLS (matched by certificate CN).
+      allowed_clients:
+        - cn: authz-resolver-plugin
+      # Endpoints reachable via MTLS. All other endpoints return 403.
       allowed_endpoints:
         - method: GET
           path: /api/resource-group/v1/groups/{group_id}/depth
 ```
 
-Only explicitly listed method+path combinations are reachable via MTLS. Any request to an unlisted endpoint returns `403 Forbidden` regardless of certificate validity.
+Only explicitly listed method+path combinations are reachable via MTLS. Any request to an unlisted endpoint returns `403 Forbidden` regardless of certificate validity. Similarly, a valid certificate from a client not in `allowed_clients` is rejected.
 
 ##### In-Process vs Out-of-Process
 
