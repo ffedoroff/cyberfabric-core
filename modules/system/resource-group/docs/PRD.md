@@ -188,7 +188,7 @@ Creating a type with existing code **MUST** return `TypeAlreadyExists`.
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-types`
 
-The module **MUST** support deterministic type seeding to initialize/update type definitions as a pre-deployment step.
+The plugin **MUST** support deterministic type seeding to initialize/update type definitions as a pre-deployment step.
 
 #### Delete Type Only If Unused
 
@@ -251,7 +251,7 @@ Entity deletion **MUST** be rejected if active references/memberships prevent sa
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-groups`
 
-The module **MUST** support deterministic group seeding to initialize/update group hierarchy as a pre-deployment step. Seeding **MUST** validate parent-child links and type compatibility. Repeated runs **MUST** be idempotent.
+The plugin **MUST** support deterministic group seeding to initialize/update group hierarchy as a pre-deployment step. Seeding **MUST** validate parent-child links and type compatibility. Repeated runs **MUST** be idempotent.
 
 #### Enforce Tenant Scope in Ownership-Graph Profile
 
@@ -291,7 +291,7 @@ The module **MUST** support deterministic membership lookups:
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-memberships`
 
-The module **MUST** support deterministic membership seeding to initialize membership links as a pre-deployment step. Seeding **MUST** validate group existence and tenant compatibility. Repeated runs **MUST** be idempotent.
+The plugin **MUST** support deterministic membership seeding to initialize membership links as a pre-deployment step. Seeding **MUST** validate group existence and tenant compatibility. Repeated runs **MUST** be idempotent.
 
 ### 5.4 Hierarchy Operations (Closure Table)
 
@@ -307,8 +307,8 @@ Closure table **MUST** keep:
 - `descendant_id` (any descendant on the path from `ancestor_id`, at arbitrary depth)
 - `depth` (0 for self)
 
-Note: `parent_id/child_id` correspond specifically to the `depth == 1` case.
-For authz-compatibility projections, `ancestor_id/descendant_id` are exported directly and `depth` is included as metadata so consumers can derive direct parent/child relationships (`depth == 1`) when needed.
+Note: `parent_id` in the `resource_group` table corresponds to the `depth == 1` case (`ancestor_id` = `parent_id`, `descendant_id` = group itself).
+For authz-compatibility projections, `ancestor_id/descendant_id` are exported directly and `depth` is included as metadata so consumers can derive direct parent relationships (`depth == 1`) when needed.
 
 #### Ancestor and Descendant Queries
 
