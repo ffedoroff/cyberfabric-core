@@ -36,6 +36,7 @@ Addresses:
 - **Design**: [DESIGN.md](../DESIGN.md)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) — `cpt-cf-resource-group-feature-integration-read`
 - **OpenAPI**: [openapi.yaml](../openapi.yaml) — `GET /groups/{group_id}/depth` (MTLS-reachable)
+- **Migration**: [migration.sql](../migration.sql) — `resource_group`, `resource_group_closure` tables (read path for depth queries)
 - **Design Components**: `cpt-cf-resource-group-component-integration-read-service`
 - **Design Sequences**: `cpt-cf-resource-group-seq-authz-rg-sql-split`, `cpt-cf-resource-group-seq-e2e-authz-flow`, `cpt-cf-resource-group-seq-auth-modes`, `cpt-cf-resource-group-seq-mtls-authz-read`, `cpt-cf-resource-group-seq-jwt-rg-request`
 - **Dependencies**: `cpt-cf-resource-group-feature-entity-hierarchy` (hierarchy data must be available for reads)
