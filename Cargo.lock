@@ -1717,6 +1717,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-resource-group"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "cf-authz-resolver-sdk",
+ "cf-modkit",
+ "cf-modkit-db",
+ "cf-modkit-db-macros",
+ "cf-modkit-macros",
+ "cf-modkit-odata",
+ "cf-modkit-security",
+ "cf-resource-group-sdk",
+ "http",
+ "inventory",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-resource-group-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cf-modkit-security",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "cf-rustracing"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3782,6 +3821,7 @@ dependencies = [
  "cf-module-orchestrator",
  "cf-nodes-registry",
  "cf-oagw",
+ "cf-resource-group",
  "cf-simple-user-settings",
  "cf-single-tenant-tr-plugin",
  "cf-static-authn-plugin",
