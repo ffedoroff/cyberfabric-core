@@ -47,9 +47,9 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `code_ci` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                           |
-| `cpt-cf-resource-group-fr-seed-types`                         | Deterministic pre-deployment seeding path upserts type definitions with stable normalization rules.                                   |
-| `cpt-cf-resource-group-fr-seed-groups`                        | Deterministic pre-deployment seeding path creates/updates group hierarchy with parent-child and type validation.                      |
-| `cpt-cf-resource-group-fr-seed-memberships`                   | Deterministic pre-deployment seeding path creates membership links with group existence and tenant compatibility validation.          |
+| `cpt-cf-resource-group-fr-seed-types`                         | Plugin-level deterministic pre-deployment seeding path upserts type definitions with stable normalization rules.                      |
+| `cpt-cf-resource-group-fr-seed-groups`                        | Plugin-level deterministic pre-deployment seeding path creates/updates group hierarchy with parent-child and type validation.         |
+| `cpt-cf-resource-group-fr-seed-memberships`                   | Plugin-level deterministic pre-deployment seeding path creates membership links with group existence and tenant compatibility validation. |
 | `cpt-cf-resource-group-fr-delete-type-only-if-empty`          | Type deletion flow checks for existing entities and rejects delete when references remain.                                            |
 | `cpt-cf-resource-group-fr-manage-entities`                    | Entity service with create/get/update/move/delete operations.                                                                         |
 | `cpt-cf-resource-group-fr-enforce-forest-hierarchy`           | Domain invariants + cycle checks before writes.                                                                                       |
