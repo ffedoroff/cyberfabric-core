@@ -1,0 +1,57 @@
+[package]
+name = "cf-resource-group"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Resource Group module: hierarchical group management with closure-table topology"
+
+[lib]
+name = "resource_group"
+
+[lints]
+workspace = true
+
+[dependencies]
+# SDK
+resource-group-sdk = { package = "cf-resource-group-sdk", path = "../resource-group-sdk" }
+
+# AuthZ resolver for authorization (PEP flow)
+authz-resolver-sdk = { package = "cf-authz-resolver-sdk", path = "../../authz-resolver/authz-resolver-sdk" }
+
+# Core
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+inventory = { workspace = true }
+
+# Serde and JSON
+serde = { workspace = true }
+serde_json = { workspace = true }
+utoipa = { workspace = true, features = ["time"] }
+
+# HTTP and REST
+axum = { workspace = true, features = ["macros"] }
+http = { workspace = true }
+
+# Time
+time = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Database
+sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# ModKit
+modkit = { workspace = true }
+modkit-db = { workspace = true, features = ["sqlite", "pg"] }
+modkit-db-macros = { workspace = true }
+modkit-security = { workspace = true }
+modkit-macros = { workspace = true }
+modkit-odata = { workspace = true, features = ["with-utoipa"] }
