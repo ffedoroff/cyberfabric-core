@@ -379,7 +379,7 @@ The module **MUST** expose REST API endpoints under `/api/resource-group/v1/` fo
 
 List endpoints **MUST** support OData v4.01 query options:
 
-- `$filter` with field-specific operators (eq, ne, in, contains, startswith, endswith where applicable)
+- `$filter` with field-specific operators (eq, ne, in)
 - `$top` (page size, 1..300, default 50)
 - `$skip` (offset, default 0)
 
