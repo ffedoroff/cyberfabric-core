@@ -529,22 +529,22 @@ Base path: `/api/resource-group/v1`
 
 OData query support on all list endpoints:
 
-- `$filter` — field-specific operators (eq, ne, in, contains, startswith, endswith where applicable)
+- `$filter` — field-specific operators (eq, ne, in)
 - `$top` — page size (1..300, default 50)
 - `$skip` — offset (default 0)
 
-Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in), `group_id` (eq, ne, in), `name` (eq, ne, in, contains, startswith, endswith), `external_id` (eq, ne, in, contains, startswith, endswith).
+Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in), `group_id` (eq, ne, in), `name` (eq, ne, in), `external_id` (eq, ne, in).
 
 Group depth (`listGroupDepth`) `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in).
 
-Membership list `$filter` fields: `resource_id` (eq, ne, in, contains, startswith, endswith), `resource_type` (eq, ne, in), `group_id` (eq, ne, in).
+Membership list `$filter` fields: `resource_id` (eq, ne, in), `resource_type` (eq, ne, in), `group_id` (eq, ne, in).
 
 REST API field projection notes:
 
 - Group responses (`Group` schema) do not include `created`/`modified` timestamps. These fields exist in the database for audit purposes but are not exposed in API responses.
 - Membership list responses (`Membership` schema) do not include `tenant_id`. Memberships are always scoped to a single tenant; tenant scope is derived from the group's `tenant_id` via `group_id` JOIN and is not stored on the membership row itself.
 
-Type list `$filter` fields: `code` (eq, ne, in, contains, startswith, endswith).
+Type list `$filter` fields: `code` (eq, ne, in).
 
 **Integration read API** (stable, two-tier trait hierarchy):
 
@@ -666,7 +666,7 @@ OData filters for `list_group_depth`: `depth` (eq, ne, gt, ge, lt, le), `group_t
 | `resource_type` | string | Yes      | Resource type classification          |
 | `resource_id`   | string | Yes      | Resource identifier                   |
 
-OData filters for `list_memberships`: `group_id` (eq, ne, in), `resource_type` (eq, ne, in), `resource_id` (eq, ne, in, contains, startswith, endswith). Pagination: `$top`, `$skip`.
+OData filters for `list_memberships`: `group_id` (eq, ne, in), `resource_type` (eq, ne, in), `resource_id` (eq, ne, in). Pagination: `$top`, `$skip`.
 
 Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `list_group_depth`.
 
