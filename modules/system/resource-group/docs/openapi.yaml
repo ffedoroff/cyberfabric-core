@@ -64,14 +64,14 @@ paths:
         The sort order is deterministic and stable across requests for consistent pagination.
 
         - `$filter`:
-          - `code`: eq, ne, in, contains, startswith, endswith
+          - `code`: eq, ne, in
         - `$top`:
           - Page size (1..300), default `50`
         - `$skip`:
           - Offset from the beginning of the result set, default `0`
       x-odata-filter:
         supported_fields:
-          code: [eq, ne, in, contains, startswith, endswith]
+          code: [eq, ne, in]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataTop'
@@ -191,8 +191,8 @@ paths:
           - `group_type`: eq, ne, in
           - `parent_id`: eq, ne, in
           - `group_id`: eq, ne, in
-          - `name`: eq, ne, in, contains, startswith, endswith
-          - `external_id`: eq, ne, in, contains, startswith, endswith
+          - `name`: eq, ne, in
+          - `external_id`: eq, ne, in
         - `$top`:
           - Page size (1..300), default `50`
         - `$skip`:
@@ -202,8 +202,8 @@ paths:
           group_type: [eq, ne, in]
           parent_id: [eq, ne, in]
           group_id: [eq, ne, in]
-          name: [eq, ne, in, contains, startswith, endswith]
-          external_id: [eq, ne, in, contains, startswith, endswith]
+          name: [eq, ne, in]
+          external_id: [eq, ne, in]
       parameters:
         - $ref: '#/components/parameters/ODataFilter'
         - $ref: '#/components/parameters/ODataTop'
@@ -700,7 +700,7 @@ paths:
 
         OData support:
         - `$filter`:
-          - `resource_id`: eq, ne, in, contains, startswith, endswith
+          - `resource_id`: eq, ne, in
           - `resource_type`: eq, ne, in
           - `group_id`: eq, ne, in
         - `$top`:
@@ -709,7 +709,7 @@ paths:
           - Offset from the beginning of the result set, default `0`
       x-odata-filter:
         supported_fields:
-          resource_id: [eq, ne, in, contains, startswith, endswith]
+          resource_id: [eq, ne, in]
           resource_type: [eq, ne, in]
           group_id: [eq, ne, in]
       parameters:
