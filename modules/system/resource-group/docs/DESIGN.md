@@ -43,7 +43,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `cpt-cf-resource-group-fr-rest-api`                           | REST API layer with OperationBuilder and OData query support.                                                                         |
 | `cpt-cf-resource-group-fr-odata-query`                        | OData `$filter`, `$top`, `$skip` on all list endpoints.                                                                               |
-| `cpt-cf-resource-group-fr-list-groups-depth`                  | Dedicated depth endpoint (`/{group_id}/depth`) returns hierarchy with relative depth and depth-based filtering.                       |
+| `cpt-cf-resource-group-fr-list-groups-depth`                  | Dedicated depth endpoint (`/{group_id}/hierarchy`) returns hierarchy with relative depth and depth-based filtering.                       |
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `code_ci` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                           |
@@ -522,7 +522,7 @@ Base path: `/api/resource-group/v1`
 | GET | `/groups/{group_id}` | `getGroup` | Get group by ID |
 | PUT | `/groups/{group_id}` | `updateGroup` | Update group (including parent move) |
 | DELETE | `/groups/{group_id}` | `deleteGroup` | Delete group (optional `?force=true`) |
-| GET | `/groups/{group_id}/depth` | `listGroupDepth` | Traverse hierarchy from reference group with relative depth |
+| GET | `/groups/{group_id}/hierarchy` | `listGroupHierarchy` | Traverse hierarchy from reference group with relative depth |
 | GET | `/memberships` | `listMemberships` | List memberships with OData query |
 | POST | `/memberships/{group_id}/{resource_type}/{resource_id}` | `addMembership` | Add membership |
 | DELETE | `/memberships/{group_id}/{resource_type}/{resource_id}` | `deleteMembership` | Remove membership |
@@ -533,9 +533,9 @@ OData query support on all list endpoints:
 - `$top` — page size (1..300, default 50)
 - `$skip` — offset (default 0)
 
-Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in — filters by direct parent, depth=1 only; for ancestor traversal use `listGroupDepth`), `group_id` (eq, ne, in), `name` (eq, ne, in), `external_id` (eq, ne, in).
+Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in — filters by direct parent, depth=1 only; for ancestor traversal use `listGroupHierarchy`), `group_id` (eq, ne, in), `name` (eq, ne, in), `external_id` (eq, ne, in).
 
-Group depth (`listGroupDepth`) `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in).
+Group depth (`listGroupHierarchy`) `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in).
 
 Membership list `$filter` fields: `resource_id` (eq, ne, in), `resource_type` (eq, ne, in), `group_id` (eq, ne, in).
 
@@ -552,7 +552,7 @@ Type list `$filter` fields: `code` (eq, ne, in).
 
 | Trait | Method | Description |
 | ----- | ------ | ----------- |
-| `ResourceGroupReadHierarchy` | `list_group_depth(ctx, group_id, query)` | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/depth` — supports OData `$filter` (depth, group_type), `$top`, `$skip` |
+| `ResourceGroupReadHierarchy` | `list_group_depth(ctx, group_id, query)` | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/hierarchy` — supports OData `$filter` (depth, group_type), `$top`, `$skip` |
 
 Integration read models reuse the same SDK structs defined above:
 
@@ -570,7 +570,7 @@ use uuid::Uuid;
 /// Used by AuthZ plugin — provides only hierarchy traversal, no memberships.
 #[async_trait]
 pub trait ResourceGroupReadHierarchy: Send + Sync {
-    /// Matches REST `GET /groups/{group_id}/depth` with OData query.
+    /// Matches REST `GET /groups/{group_id}/hierarchy` with OData query.
     async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
@@ -642,7 +642,7 @@ Caller identity propagation rule (aligned with Tenant Resolver pattern):
 
 The integration read contract returns **data rows only** (no policy/decision fields). Schemas match REST API models exactly.
 
-`list_group_depth(ctx, group_id, query)` returns `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth` → `GroupWithDepthPage`):
+`list_group_depth(ctx, group_id, query)` returns `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/hierarchy` → `GroupWithDepthPage`):
 
 
 | Field         | Type        | Required | Description                                                                  |
@@ -718,7 +718,7 @@ let authz_ctx = SecurityContext::builder()
     .build()?;
 ```
 
-`list_group_depth` — descendants (matches REST `GET /groups/{D2}/depth?$filter=depth ge 0`)
+`list_group_depth` — descendants (matches REST `GET /groups/{D2}/hierarchy?$filter=depth ge 0`)
 
 ```rust
 let page = rg
@@ -756,7 +756,7 @@ let page = rg
 }
 ```
 
-`list_group_depth` — ancestors (matches REST `GET /groups/{B3}/depth?$filter=depth ge -10 and depth le 0`)
+`list_group_depth` — ancestors (matches REST `GET /groups/{B3}/hierarchy?$filter=depth ge -10 and depth le 0`)
 
 ```rust
 let page = rg
@@ -1078,7 +1078,7 @@ Applies to:
 - `POST/PUT/DELETE /api/resource-group/v1/types/{code}` — type lifecycle
 - `GET /api/resource-group/v1/groups` — list/get groups
 - `POST/PUT/DELETE /api/resource-group/v1/groups/{group_id}` — group lifecycle
-- `GET /api/resource-group/v1/groups/{group_id}/depth` — hierarchy traversal
+- `GET /api/resource-group/v1/groups/{group_id}/hierarchy` — hierarchy traversal
 - `GET /api/resource-group/v1/memberships` — list memberships
 - `POST/DELETE /api/resource-group/v1/memberships/{...}` — membership lifecycle
 
@@ -1086,7 +1086,7 @@ Applies to:
 
 Service-to-service requests authenticated via mutual TLS client certificate. Used exclusively by AuthZ plugin to read tenant hierarchy. **Only one endpoint** is available in MTLS mode:
 
-- `GET /api/resource-group/v1/groups/{group_id}/depth` — hierarchy traversal
+- `GET /api/resource-group/v1/groups/{group_id}/hierarchy` — hierarchy traversal
 
 All other endpoints return `403 Forbidden` in MTLS mode. This is enforced by RG gateway-level allowlist, not by AuthZ evaluation.
 
@@ -1114,7 +1114,7 @@ flowchart TD
 
     AUTH_CHECK -->|"MTLS client cert<br/>(AuthZ Plugin)"| MTLS_PATH["RG Gateway verifies client cert<br/>against trusted CA bundle"]
     MTLS_PATH --> ENDPOINT_CHECK{RG Gateway:<br/>endpoint in MTLS allowlist?}
-    ENDPOINT_CHECK -->|"Yes: /groups/{id}/depth"| SYSTEM_CTX["RG Gateway creates<br/>System SecurityContext"]
+    ENDPOINT_CHECK -->|"Yes: /groups/{id}/hierarchy"| SYSTEM_CTX["RG Gateway creates<br/>System SecurityContext"]
     SYSTEM_CTX --> EXEC_DIRECT["RG Hierarchy Service executes<br/>directly — no AuthZ evaluation"]
     ENDPOINT_CHECK -->|No: any other endpoint| REJECT[403 Forbidden]
 
@@ -1134,9 +1134,9 @@ sequenceDiagram
     participant RG_SVC as RG Hierarchy Service
     participant DB as RG Database
 
-    AZ->>RG_GW: GET /groups/{T1}/depth (MTLS cert)
+    AZ->>RG_GW: GET /groups/{T1}/hierarchy (MTLS cert)
     RG_GW->>RG_GW: verify client certificate
-    RG_GW->>RG_GW: check endpoint allowlist → ✓ /groups/{id}/depth
+    RG_GW->>RG_GW: check endpoint allowlist → ✓ /groups/{id}/hierarchy
 
     Note over RG_GW: MTLS mode: skip AuthZ evaluation
 
@@ -1217,7 +1217,7 @@ modules:
       # Endpoints reachable via MTLS. All other endpoints return 403.
       allowed_endpoints:
         - method: GET
-          path: /api/resource-group/v1/groups/{group_id}/depth
+          path: /api/resource-group/v1/groups/{group_id}/hierarchy
 ```
 
 Only explicitly listed method+path combinations are reachable via MTLS. Any request to an unlisted endpoint returns `403 Forbidden` regardless of certificate validity. Similarly, a valid certificate from a client not in `allowed_clients` is rejected.
@@ -1227,7 +1227,7 @@ Only explicitly listed method+path combinations are reachable via MTLS. Any requ
 | Deployment | AuthZ → RG hierarchy read | Auth mechanism |
 | ---------- | ------------------------- | -------------- |
 | Monolith (single process) | `hub.get::<dyn ResourceGroupReadHierarchy>()` — direct in-process call via ClientHub | No network auth needed — trusted in-process call, system `SecurityContext` |
-| Microservices (separate processes) | gRPC/REST call to RG service | MTLS client certificate — only `/groups/{id}/depth` endpoint allowed |
+| Microservices (separate processes) | gRPC/REST call to RG service | MTLS client certificate — only `/groups/{id}/hierarchy` endpoint allowed |
 
 In both cases, the AuthZ plugin uses `ResourceGroupReadHierarchy` trait. The trait implementation is either a direct local call (monolith) or an MTLS-authenticated remote call (microservices). The RG gateway applies the same allowlist logic in both cases — but in monolith mode, the in-process ClientHub path skips the gateway entirely (no HTTP, no MTLS, no allowlist check needed — the type system enforces that only `list_group_depth` is callable via `dyn ResourceGroupReadHierarchy`).
 
