@@ -184,11 +184,23 @@ Invalid input **MUST** return validation error with field-specific details.
 
 Creating a type with existing code **MUST** return `TypeAlreadyExists`.
 
-#### Support Type Seeding
+#### Schema Migration and Type Data Seeding
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-types`
 
-The plugin **MUST** support deterministic type seeding to initialize/update type definitions as a pre-deployment step.
+Any RG plugin **MUST** perform schema migration (create/update required database schema) as part of its deployment lifecycle.
+
+Type data seeding (populating type definitions) is **optional** and deployment-specific. It can be performed via:
+
+- plugin data migration (built-in or custom)
+- manual database administration
+- RG API calls
+
+AuthZ deployment determines which types are needed:
+
+- **AuthZ does not use RG** — no type seeding required.
+- **Flat tenants** — create type `tenant` with `parents: {''}` (root placement only, no nesting).
+- **Hierarchical tenants** — create type `tenant` with for example `parents: {'', 'tenant'}` (root placement or nested under another tenant).
 
 #### Delete Type Only If Unused
 
@@ -247,11 +259,11 @@ Invalid relation **MUST** return `InvalidParentType`.
 
 Entity deletion **MUST** be rejected if active references/memberships prevent safe removal according to configured deletion policy.
 
-#### Support Group Seeding
+#### Group Data Seeding
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-groups`
 
-The plugin **MUST** support deterministic group seeding to initialize/update group hierarchy as a pre-deployment step. Seeding **MUST** validate parent-child links and type compatibility. Repeated runs **MUST** be idempotent.
+Group data seeding (populating group hierarchy) is **optional** and deployment-specific. It can be performed via plugin data migration, manual database administration, or RG API calls. When performed, seeding **MUST** validate parent-child links and type compatibility. Repeated runs **MUST** be idempotent.
 
 #### Enforce Tenant Scope in Ownership-Graph Profile
 
@@ -287,11 +299,11 @@ The module **MUST** support deterministic membership lookups:
 - by group (`group_id`)
 - by group and resource type (`group_id` + `resource_type`)
 
-#### Support Membership Seeding
+#### Membership Data Seeding
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-seed-memberships`
 
-The plugin **MUST** support deterministic membership seeding to initialize membership links as a pre-deployment step. Seeding **MUST** validate group existence and tenant compatibility. Repeated runs **MUST** be idempotent.
+Membership data seeding (populating membership links) is **optional** and deployment-specific. It can be performed via plugin data migration, manual database administration, or RG API calls. When performed, seeding **MUST** validate group existence and tenant compatibility. Repeated runs **MUST** be idempotent.
 
 ### 5.4 Hierarchy Operations (Closure Table)
 
