@@ -1,3 +1,6 @@
+-- Created:  2026-03-06 by Constructor Tech
+-- Updated:  2026-03-06 by Constructor Tech
+
 CREATE TABLE resource_group_type (
     code TEXT PRIMARY KEY,
     parents TEXT[] NOT NULL CHECK (cardinality(parents) >= 1),
