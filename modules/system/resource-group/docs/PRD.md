@@ -399,7 +399,7 @@ List endpoints **MUST** support OData v4.01 query options:
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-list-groups-depth`
 
-A dedicated group depth endpoint (`/groups/{group_id}/depth`) **MUST** return groups with a computed `depth` field (relative distance from reference group) and support depth-based filtering (`eq`, `ne`, `gt`, `ge`, `lt`, `le`). Positive depth = descendants, negative depth = ancestors, `0` = reference group itself.
+A dedicated group depth endpoint (`/groups/{group_id}/hierarchy`) **MUST** return groups with a computed `depth` field (relative distance from reference group) and support depth-based filtering (`eq`, `ne`, `gt`, `ge`, `lt`, `le`). Positive depth = descendants, negative depth = ancestors, `0` = reference group itself.
 
 #### Force Delete
 
@@ -424,7 +424,7 @@ The same public read contract must remain stable across provider strategies:
 
 In `ownership-graph` profile, integration read responses match REST API schemas:
 
-- hierarchy reads (`list_group_depth(ctx, group_id, query)`) return `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth`) — includes `tenant_id` per group
+- hierarchy reads (`list_group_depth(ctx, group_id, query)`) return `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/hierarchy`) — includes `tenant_id` per group
 - membership reads (`list_memberships(ctx, query)`) return `Page<ResourceGroupMembership>` (matches REST `GET /memberships`) — no `tenant_id`; callers derive tenant scope from group data obtained via hierarchy reads
 - integration read methods accept caller `SecurityContext`; RG passes it through to selected provider path (for plugin path, pass-through is unchanged)
 - in AuthZ query path, caller `SecurityContext.subject_tenant_id` is mandatory and used to resolve effective tenant scope for tenant-scoped reads and compiled SQL predicates
@@ -463,7 +463,7 @@ RG REST API supports two authentication modes:
 
 **JWT (public, all endpoints)**: standard user/service requests via bearer token. All endpoints available. Every request goes through AuthZ evaluation via `PolicyEnforcer` — identical flow to any other domain service (courses, users, etc.).
 
-**MTLS (private, hierarchy endpoint only)**: service-to-service requests via mutual TLS client certificate. Used by AuthZ plugin to read tenant hierarchy. Only `GET /groups/{group_id}/depth` is allowed — all other endpoints return `403 Forbidden`. MTLS requests **bypass AuthZ evaluation entirely** because:
+**MTLS (private, hierarchy endpoint only)**: service-to-service requests via mutual TLS client certificate. Used by AuthZ plugin to read tenant hierarchy. Only `GET /groups/{group_id}/hierarchy` is allowed — all other endpoints return `403 Forbidden`. MTLS requests **bypass AuthZ evaluation entirely** because:
 - AuthZ plugin is the caller and cannot evaluate itself (circular dependency)
 - MTLS certificate identity is a trusted system principal
 - Single read-only endpoint — minimal attack surface
@@ -556,7 +556,7 @@ Partitioning of `resource_group_membership` by tenant scope is a candidate optim
 
 Integration read models reuse REST-aligned SDK structs (see DESIGN.md for full definitions):
 
-- `list_group_depth` returns `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth`)
+- `list_group_depth` returns `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/hierarchy`)
 - `list_memberships` returns `Page<ResourceGroupMembership>` (matches REST `GET /memberships` — no `tenant_id`; tenant scope derived from group data via hierarchy reads)
 
 Target trait shape:
@@ -565,7 +565,7 @@ Target trait shape:
 /// Narrow hierarchy-only read contract. Used by AuthZ plugin.
 #[async_trait]
 pub trait ResourceGroupReadHierarchy: Send + Sync {
-    /// Matches REST `GET /groups/{group_id}/depth` with OData query.
+    /// Matches REST `GET /groups/{group_id}/hierarchy` with OData query.
     async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
@@ -607,7 +607,7 @@ See `cpt-cf-resource-group-fr-dual-auth-modes` in section 5.9 for the full authe
 
 For AuthZ-facing usage, `ResourceGroupReadHierarchy` returns data-only rows. Schemas match REST API models.
 
-Hierarchy read rows (`list_group_depth(ctx, group_id, query)`) — `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/depth`):
+Hierarchy read rows (`list_group_depth(ctx, group_id, query)`) — `Page<ResourceGroupWithDepth>` (matches REST `GET /groups/{group_id}/hierarchy`):
 
 | Field | Type | Required | Description |
 |------|------|----------|-------------|
@@ -975,7 +975,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 - **GIVEN** caller authenticates via MTLS client certificate
 - **WHEN** caller sends request to `POST /api/resource-group/v1/groups` (non-hierarchy endpoint)
-- **THEN** `403 Forbidden` — MTLS mode only allows `GET /groups/{group_id}/depth`
+- **THEN** `403 Forbidden` — MTLS mode only allows `GET /groups/{group_id}/hierarchy`
 
 ## 9. Acceptance Criteria
 
