@@ -1,7 +1,7 @@
 # Feature: Domain Foundation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-domain-foundation`
-- [ ] `p1` - `cpt-cf-resource-group-feature-domain-foundation`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-domain-foundation`
+- [x] `p1` - `cpt-cf-resource-group-feature-domain-foundation`
 
 ## 1. Feature Context
 
@@ -33,7 +33,8 @@ Addresses:
 
 - **PRD**: [PRD.md](../PRD.md)
 - **Design**: [DESIGN.md](../DESIGN.md)
-- **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) — `cpt-cf-resource-group-feature-domain-foundation`
+- **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md)
+  - [x] `p1` - `cpt-cf-resource-group-feature-domain-foundation`
 - **OpenAPI**: [openapi.yaml](../openapi.yaml) — base path `/api/resource-group/v1/`
 - **Migration**: [migration.sql](../migration.sql) — four tables with indexes and constraints
 - **Design Components**: `cpt-cf-resource-group-component-module`, `cpt-cf-resource-group-component-persistence-adapter`
@@ -44,7 +45,7 @@ Addresses:
 
 ### Module Bootstrap Flow
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-module-bootstrap`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-module-bootstrap`
 
 **Actor**: `cpt-cf-resource-group-actor-instance-administrator`
 
@@ -58,22 +59,22 @@ Addresses:
 - ClientHub registration fails — module startup aborts with logged error
 
 **Steps**:
-1. [ ] - `p1` - Instance Administrator triggers deployment (migration + module start) - `inst-bootstrap-1`
-2. [ ] - `p1` - DB: RUN migration.sql — CREATE TABLE `resource_group_type`, `resource_group`, `resource_group_closure`, `resource_group_membership` with indexes and constraints - `inst-bootstrap-2`
-3. [ ] - `p1` - **IF** migration succeeds - `inst-bootstrap-3`
-   1. [ ] - `p1` - Module enters Phase 1 (SystemCapability) initialization - `inst-bootstrap-3a`
-   2. [ ] - `p1` - Module wires domain services and persistence repositories - `inst-bootstrap-3b`
-   3. [ ] - `p1` - Module registers `ResourceGroupClient` in ClientHub - `inst-bootstrap-3c`
-   4. [ ] - `p1` - Module registers `ResourceGroupReadHierarchy` in ClientHub - `inst-bootstrap-3d`
-   5. [ ] - `p1` - Module loads query profile config (`max_depth`, `max_width`) - `inst-bootstrap-3e`
-4. [ ] - `p1` - **ELSE** - `inst-bootstrap-4`
-   1. [ ] - `p1` - **RETURN** migration failure — deployment halts - `inst-bootstrap-4a`
-5. [ ] - `p1` - Module enters Phase 2 (ready) — REST endpoints start accepting traffic - `inst-bootstrap-5`
-6. [ ] - `p1` - **RETURN** module operational — SDK clients available via ClientHub, REST API accepting requests on `/api/resource-group/v1/` - `inst-bootstrap-6`
+1. [x] - `p1` - Instance Administrator triggers deployment (migration + module start) - `inst-bootstrap-1`
+2. [x] - `p1` - DB: RUN migration.sql — CREATE TABLE `resource_group_type`, `resource_group`, `resource_group_closure`, `resource_group_membership` with indexes and constraints - `inst-bootstrap-2`
+3. [x] - `p1` - **IF** migration succeeds - `inst-bootstrap-3`
+   1. [x] - `p1` - Module enters Phase 1 (SystemCapability) initialization - `inst-bootstrap-3a`
+   2. [x] - `p1` - Module wires domain services and persistence repositories - `inst-bootstrap-3b`
+   3. [x] - `p1` - Module registers `ResourceGroupClient` in ClientHub - `inst-bootstrap-3c`
+   4. [x] - `p1` - Module registers `ResourceGroupReadHierarchy` in ClientHub - `inst-bootstrap-3d`
+   5. [x] - `p1` - Module loads query profile config (`max_depth`, `max_width`) - `inst-bootstrap-3e`
+4. [x] - `p1` - **ELSE** - `inst-bootstrap-4`
+   1. [x] - `p1` - **RETURN** migration failure — deployment halts - `inst-bootstrap-4a`
+5. [x] - `p1` - Module enters Phase 2 (ready) — REST endpoints start accepting traffic - `inst-bootstrap-5`
+6. [x] - `p1` - **RETURN** module operational — SDK clients available via ClientHub, REST API accepting requests on `/api/resource-group/v1/` - `inst-bootstrap-6`
 
 ### SDK Client Resolution Flow
 
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-flow-sdk-client-resolution`
+- [x] `p2` - **ID**: `cpt-cf-resource-group-flow-sdk-client-resolution`
 
 **Actor**: `cpt-cf-resource-group-actor-apps`
 
@@ -85,66 +86,66 @@ Addresses:
 - ClientHub resolution fails because RG module has not completed Phase 1 — deterministic `ClientNotFound` error
 
 **Steps**:
-1. [ ] - `p2` - App calls `hub.get::<dyn ResourceGroupClient>()` - `inst-resolve-1`
-2. [ ] - `p2` - **IF** RG module has completed Phase 1 registration - `inst-resolve-2`
-   1. [ ] - `p2` - ClientHub returns `Arc<dyn ResourceGroupClient>` backed by `RgService` - `inst-resolve-2a`
-   2. [ ] - `p2` - **RETURN** client reference — app can invoke type/group/membership/hierarchy operations - `inst-resolve-2b`
-3. [ ] - `p2` - **ELSE** - `inst-resolve-3`
-   1. [ ] - `p2` - **RETURN** `ClientNotFound` error — RG module not yet initialized - `inst-resolve-3a`
+1. [x] - `p2` - App calls `hub.get::<dyn ResourceGroupClient>()` - `inst-resolve-1`
+2. [x] - `p2` - **IF** RG module has completed Phase 1 registration - `inst-resolve-2`
+   1. [x] - `p2` - ClientHub returns `Arc<dyn ResourceGroupClient>` backed by `RgService` - `inst-resolve-2a`
+   2. [x] - `p2` - **RETURN** client reference — app can invoke type/group/membership/hierarchy operations - `inst-resolve-2b`
+3. [x] - `p2` - **ELSE** - `inst-resolve-3`
+   1. [x] - `p2` - **RETURN** `ClientNotFound` error — RG module not yet initialized - `inst-resolve-3a`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### Error Mapping Process
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-error-mapping`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-error-mapping`
 
 **Input**: Domain or infrastructure failure from any RG service or repository
 
 **Output**: `ResourceGroupError` variant — stable public error category
 
 **Steps**:
-1. [ ] - `p1` - Receive domain/infra failure from service or repository layer - `inst-errmap-1`
-2. [ ] - `p1` - **IF** failure is invalid input (format, length, missing required field) - `inst-errmap-2`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::Validation` with field-level detail - `inst-errmap-2a`
-3. [ ] - `p1` - **IF** failure is missing type or entity (lookup returned no rows) - `inst-errmap-3`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::NotFound` with entity kind and identifier - `inst-errmap-3a`
-4. [ ] - `p1` - **IF** failure is duplicate type code (unique constraint violation on `code_ci`) - `inst-errmap-4`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::TypeAlreadyExists` with conflicting code - `inst-errmap-4a`
-5. [ ] - `p1` - **IF** failure is invalid parent type (parent-child compatibility violation) - `inst-errmap-5`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::InvalidParentType` with type codes involved - `inst-errmap-5a`
-6. [ ] - `p1` - **IF** failure is cycle detection (closure table cycle check) - `inst-errmap-6`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::CycleDetected` with node identifiers - `inst-errmap-6a`
-7. [ ] - `p1` - **IF** failure is active references on delete (children or memberships exist) - `inst-errmap-7`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::ConflictActiveReferences` with reference count - `inst-errmap-7a`
-8. [ ] - `p1` - **IF** failure is depth or width limit violation (query profile exceeded) - `inst-errmap-8`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::LimitViolation` with limit name and values - `inst-errmap-8a`
-9. [ ] - `p1` - **IF** failure is tenant-incompatible write (parent/child/membership tenant mismatch) - `inst-errmap-9`
-   1. [ ] - `p1` - **RETURN** `ResourceGroupError::TenantIncompatibility` with tenant context - `inst-errmap-9a`
-10. [ ] - `p1` - **IF** failure is infrastructure timeout or service unavailability - `inst-errmap-10`
-    1. [ ] - `p1` - **RETURN** `ResourceGroupError::ServiceUnavailable` without internal details - `inst-errmap-10a`
-11. [ ] - `p1` - **ELSE** (unexpected/unclassified failure) - `inst-errmap-11`
-    1. [ ] - `p1` - **RETURN** `ResourceGroupError::Internal` without leaking internal details - `inst-errmap-11a`
+1. [x] - `p1` - Receive domain/infra failure from service or repository layer - `inst-errmap-1`
+2. [x] - `p1` - **IF** failure is invalid input (format, length, missing required field) - `inst-errmap-2`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::Validation` with field-level detail - `inst-errmap-2a`
+3. [x] - `p1` - **IF** failure is missing type or entity (lookup returned no rows) - `inst-errmap-3`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::NotFound` with entity kind and identifier - `inst-errmap-3a`
+4. [x] - `p1` - **IF** failure is duplicate type code (unique constraint violation on `code_ci`) - `inst-errmap-4`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::TypeAlreadyExists` with conflicting code - `inst-errmap-4a`
+5. [x] - `p1` - **IF** failure is invalid parent type (parent-child compatibility violation) - `inst-errmap-5`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::InvalidParentType` with type codes involved - `inst-errmap-5a`
+6. [x] - `p1` - **IF** failure is cycle detection (closure table cycle check) - `inst-errmap-6`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::CycleDetected` with node identifiers - `inst-errmap-6a`
+7. [x] - `p1` - **IF** failure is active references on delete (children or memberships exist) - `inst-errmap-7`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::ConflictActiveReferences` with reference count - `inst-errmap-7a`
+8. [x] - `p1` - **IF** failure is depth or width limit violation (query profile exceeded) - `inst-errmap-8`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::LimitViolation` with limit name and values - `inst-errmap-8a`
+9. [x] - `p1` - **IF** failure is tenant-incompatible write (parent/child/membership tenant mismatch) - `inst-errmap-9`
+   1. [x] - `p1` - **RETURN** `ResourceGroupError::TenantIncompatibility` with tenant context - `inst-errmap-9a`
+10. [x] - `p1` - **IF** failure is infrastructure timeout or service unavailability - `inst-errmap-10`
+    1. [x] - `p1` - **RETURN** `ResourceGroupError::ServiceUnavailable` without internal details - `inst-errmap-10a`
+11. [x] - `p1` - **ELSE** (unexpected/unclassified failure) - `inst-errmap-11`
+    1. [x] - `p1` - **RETURN** `ResourceGroupError::Internal` without leaking internal details - `inst-errmap-11a`
 
 ### Module Phased Initialization Process
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-phased-init`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-phased-init`
 
 **Input**: Module registration request from hyperspot-server module orchestrator
 
 **Output**: Module fully initialized with SDK clients in ClientHub and REST endpoints accepting traffic
 
 **Steps**:
-1. [ ] - `p1` - Module orchestrator calls `RgModule::init()` during Phase 1 (SystemCapability) - `inst-init-1`
-2. [ ] - `p1` - Instantiate persistence repositories (SeaORM entity access, connection pool) - `inst-init-2`
-3. [ ] - `p1` - Instantiate domain services (type, entity, hierarchy, membership) with repository dependencies - `inst-init-3`
-4. [ ] - `p1` - Instantiate `RgService` (unified service facade implementing `ResourceGroupClient` and `ResourceGroupReadHierarchy`) - `inst-init-4`
-5. [ ] - `p1` - Register `Arc<dyn ResourceGroupClient>` in ClientHub (`hub.register::<dyn ResourceGroupClient>(svc.clone())`) - `inst-init-5`
-6. [ ] - `p1` - Register `Arc<dyn ResourceGroupReadHierarchy>` in ClientHub (`hub.register::<dyn ResourceGroupReadHierarchy>(svc.clone())`) - `inst-init-6`
-7. [ ] - `p1` - **RETURN** Phase 1 complete — SDK clients available, REST endpoints NOT yet accepting traffic - `inst-init-7`
-8. [ ] - `p1` - Module orchestrator signals Phase 2 (ready) — AuthZ Resolver has completed init (step 2 in `cpt-cf-resource-group-seq-init-order`) - `inst-init-8`
-9. [ ] - `p1` - Configure REST routes via OperationBuilder (base path `/api/resource-group/v1/`, OData parameters, handlers) - `inst-init-9`
-10. [ ] - `p1` - REST endpoints start accepting traffic — write operations now route through PolicyEnforcer → AuthZResolverClient - `inst-init-10`
-11. [ ] - `p1` - **RETURN** Phase 2 complete — module fully operational - `inst-init-11`
+1. [x] - `p1` - Module orchestrator calls `RgModule::init()` during Phase 1 (SystemCapability) - `inst-init-1`
+2. [x] - `p1` - Instantiate persistence repositories (SeaORM entity access, connection pool) - `inst-init-2`
+3. [x] - `p1` - Instantiate domain services (type, entity, hierarchy, membership) with repository dependencies - `inst-init-3`
+4. [x] - `p1` - Instantiate `RgService` (unified service facade implementing `ResourceGroupClient` and `ResourceGroupReadHierarchy`) - `inst-init-4`
+5. [x] - `p1` - Register `Arc<dyn ResourceGroupClient>` in ClientHub (`hub.register::<dyn ResourceGroupClient>(svc.clone())`) - `inst-init-5`
+6. [x] - `p1` - Register `Arc<dyn ResourceGroupReadHierarchy>` in ClientHub (`hub.register::<dyn ResourceGroupReadHierarchy>(svc.clone())`) - `inst-init-6`
+7. [x] - `p1` - **RETURN** Phase 1 complete — SDK clients available, REST endpoints NOT yet accepting traffic - `inst-init-7`
+8. [x] - `p1` - Module orchestrator signals Phase 2 (ready) — AuthZ Resolver has completed init (step 2 in `cpt-cf-resource-group-seq-init-order`) - `inst-init-8`
+9. [x] - `p1` - Configure REST routes via OperationBuilder (base path `/api/resource-group/v1/`, OData parameters, handlers) - `inst-init-9`
+10. [x] - `p1` - REST endpoints start accepting traffic — write operations now route through PolicyEnforcer → AuthZResolverClient - `inst-init-10`
+11. [x] - `p1` - **RETURN** Phase 2 complete — module fully operational - `inst-init-11`
 
 ## 4. States (CDSL)
 
@@ -154,7 +155,7 @@ Not applicable. Domain Foundation establishes infrastructure only. Entity lifecy
 
 ### SDK Crate Structure
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-crate`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-crate`
 
 The system **MUST** provide an SDK crate (`resource-group-sdk`) with three modules: `models.rs` defining all SDK models and DTOs (`ResourceGroupType`, `ResourceGroup`, `ResourceGroupWithDepth`, `ResourceGroupMembership`, `CreateTypeRequest`, `UpdateTypeRequest`, `CreateGroupRequest`, `UpdateGroupRequest`, `AddMembershipRequest`, `RemoveMembershipRequest`, `Page<T>`, `PageInfo`); `api.rs` defining the `ResourceGroupClient` and `ResourceGroupReadHierarchy` trait contracts with `async_trait` and `SecurityContext`; `error.rs` defining the `ResourceGroupError` enum with all ten public error variants (`Validation`, `NotFound`, `TypeAlreadyExists`, `InvalidParentType`, `CycleDetected`, `ConflictActiveReferences`, `LimitViolation`, `TenantIncompatibility`, `ServiceUnavailable`, `Internal`).
 
@@ -167,7 +168,7 @@ The system **MUST** provide an SDK crate (`resource-group-sdk`) with three modul
 
 ### Module Lifecycle and ClientHub Registration
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-module-lifecycle`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-module-lifecycle`
 
 The system **MUST** implement the `#[modkit::module]` macro and `Module` trait for the RG module. The module **MUST** register `Arc<dyn ResourceGroupClient>` and `Arc<dyn ResourceGroupReadHierarchy>` in ClientHub during Phase 1 (SystemCapability). Both registrations **MUST** be backed by a single `RgService` instance. The module **MUST** follow the phased initialization order defined in `cpt-cf-resource-group-seq-init-order` to resolve the circular dependency with AuthZ.
 
@@ -180,7 +181,7 @@ The system **MUST** implement the `#[modkit::module]` macro and `Module` trait f
 
 ### REST API Shell
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-rest-api-shell`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-rest-api-shell`
 
 The system **MUST** configure REST endpoint routes via OperationBuilder under base path `/api/resource-group/v1/`. The shell **MUST** wire all 14 REST endpoints defined in the OpenAPI contract (`listTypes`, `createType`, `getType`, `updateType`, `deleteType`, `listGroups`, `createGroup`, `getGroup`, `updateGroup`, `deleteGroup`, `listGroupHierarchy`, `listMemberships`, `addMembership`, `deleteMembership`). Each handler **MUST** accept OData query parameters (`$filter`, `$top`, `$skip`) on list endpoints. Handler implementations at this stage return stub responses or delegate to domain services wired in Phase 1. OData field-to-column mapping infrastructure **MUST** be configured for all filterable fields per OpenAPI `x-odata-filter` definitions.
 
@@ -192,7 +193,7 @@ The system **MUST** configure REST endpoint routes via OperationBuilder under ba
 
 ### Database Migration
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-db-migration`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-db-migration`
 
 The system **MUST** provide a database migration that creates four tables: `resource_group_type` (TEXT PK `code`, TEXT[] `parents`, timestamps), `resource_group` (UUID PK `id`, FK to `resource_group_type.code`, FK to self `parent_id`, `tenant_id`, `external_id`, timestamps), `resource_group_closure` (composite PK `ancestor_id`/`descendant_id`, `depth`, FKs to `resource_group`), `resource_group_membership` (composite unique `group_id`/`resource_type`/`resource_id`, FK to `resource_group`, timestamp). The migration **MUST** create all indexes defined in `migration.sql`: case-insensitive unique index on `resource_group_type.code`, parent/name/external_id/group_type indexes on `resource_group`, descendant and ancestor+depth indexes on `resource_group_closure`, resource_type+resource_id index on `resource_group_membership`. All foreign keys **MUST** use `ON UPDATE CASCADE` / `ON DELETE RESTRICT`. The migration **MUST NOT** use vendor-specific SQL extensions per `cpt-cf-resource-group-constraint-db-agnostic`.
 
@@ -204,7 +205,7 @@ The system **MUST** provide a database migration that creates four tables: `reso
 
 ### SeaORM Entities and Repository Interfaces
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-seaorm-entities`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-seaorm-entities`
 
 The system **MUST** define SeaORM entity structs for all four tables matching the migration schema. The system **MUST** define repository trait interfaces for type, group, closure, and membership persistence operations. Repository traits **MUST** accept transaction-scoped connections (`SecureTx` / `DBRunner`) to support transactional consistency per `cpt-cf-resource-group-nfr-transactional-consistency`. Repository implementations **MUST** use parameterized queries for all operations.
 
@@ -217,7 +218,7 @@ The system **MUST** define SeaORM entity structs for all four tables matching th
 
 ### Unified Error Mapper
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-error-mapper`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-error-mapper`
 
 The system **MUST** implement a unified error mapper that translates all domain and infrastructure failures into stable `ResourceGroupError` public categories per the error mapping table in DESIGN section 3.9. The mapper **MUST** cover all ten failure-to-error mappings: invalid input → `Validation`, missing type/entity → `NotFound`, duplicate type → `TypeAlreadyExists`, invalid parent type → `InvalidParentType`, cycle attempt → `CycleDetected`, active references on delete → `ConflictActiveReferences`, depth/width violation → `LimitViolation`, tenant-incompatible write → `TenantIncompatibility`, infra timeout → `ServiceUnavailable`, unexpected failure → `Internal`. Error responses **MUST** map to RFC 9457 Problem format for REST API responses. Internal details **MUST NOT** leak in `ServiceUnavailable` or `Internal` error responses.
 
@@ -229,7 +230,7 @@ The system **MUST** implement a unified error mapper that translates all domain 
 
 ### Module Initialization Order
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-init-order`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-init-order`
 
 The system **MUST** implement phased module initialization per `cpt-cf-resource-group-seq-init-order`. Phase 1 (SystemCapability): RG Module registers `ResourceGroupClient` and `ResourceGroupReadHierarchy` in ClientHub; REST endpoints are NOT yet accepting traffic. Phase 2 (ready): RG Module starts accepting REST traffic after AuthZ Resolver has completed its init and registered `AuthZResolverClient`. There **MUST** be no deadlock: RG registers read clients before AuthZ initializes, and AuthZ registers its client before RG starts accepting write traffic.
 
@@ -241,23 +242,23 @@ The system **MUST** implement phased module initialization per `cpt-cf-resource-
 
 ## 6. Acceptance Criteria
 
-- [ ] SDK crate compiles with `models.rs`, `api.rs`, `error.rs` exposing all defined types, traits, and error variants
-- [ ] `ResourceGroupClient` trait defines all 14 methods matching the OpenAPI contract
-- [ ] `ResourceGroupReadHierarchy` trait defines `list_group_depth` method
-- [ ] `ResourceGroupError` enum has exactly ten variants matching DESIGN section 3.9 error mapping
-- [ ] DB migration applies cleanly on a fresh database creating all four tables with correct schemas, constraints, and indexes
-- [ ] DB migration is idempotent — re-running does not produce errors or duplicate objects
-- [ ] SeaORM entities compile and map to all four tables with correct column types
-- [ ] Repository traits define CRUD operations for all four tables accepting transaction-scoped connections
-- [ ] Module initializes in Phase 1, registers both SDK clients in ClientHub
-- [ ] `hub.get::<dyn ResourceGroupClient>()` succeeds after Phase 1 init
-- [ ] `hub.get::<dyn ResourceGroupReadHierarchy>()` succeeds after Phase 1 init
-- [ ] REST API shell responds on base path `/api/resource-group/v1/` after Phase 2
-- [ ] OData query parameters (`$filter`, `$top`, `$skip`) are accepted on all list endpoints
-- [ ] Error mapper converts each of the ten failure categories to correct `ResourceGroupError` variant
-- [ ] RFC 9457 Problem responses do not leak internal stack traces or infrastructure details
-- [ ] No vendor-specific SQL in migration (`cpt-cf-resource-group-constraint-db-agnostic`)
-- [ ] Module does not implement AuthZ decision logic or SQL filter generation (`cpt-cf-resource-group-constraint-no-authz-decision`, `cpt-cf-resource-group-constraint-no-sql-filter-generation`)
+- [x] SDK crate compiles with `models.rs`, `api.rs`, `error.rs` exposing all defined types, traits, and error variants
+- [x] `ResourceGroupClient` trait defines all 14 methods matching the OpenAPI contract
+- [x] `ResourceGroupReadHierarchy` trait defines `list_group_depth` method
+- [x] `ResourceGroupError` enum has exactly ten variants matching DESIGN section 3.9 error mapping
+- [x] DB migration applies cleanly on a fresh database creating all four tables with correct schemas, constraints, and indexes
+- [x] DB migration is idempotent — re-running does not produce errors or duplicate objects
+- [x] SeaORM entities compile and map to all four tables with correct column types
+- [x] Repository traits define CRUD operations for all four tables accepting transaction-scoped connections
+- [x] Module initializes in Phase 1, registers both SDK clients in ClientHub
+- [x] `hub.get::<dyn ResourceGroupClient>()` succeeds after Phase 1 init
+- [x] `hub.get::<dyn ResourceGroupReadHierarchy>()` succeeds after Phase 1 init
+- [x] REST API shell responds on base path `/api/resource-group/v1/` after Phase 2
+- [x] OData query parameters (`$filter`, `$top`, `$skip`) are accepted on all list endpoints
+- [x] Error mapper converts each of the ten failure categories to correct `ResourceGroupError` variant
+- [x] RFC 9457 Problem responses do not leak internal stack traces or infrastructure details
+- [x] No vendor-specific SQL in migration (`cpt-cf-resource-group-constraint-db-agnostic`)
+- [x] Module does not implement AuthZ decision logic or SQL filter generation (`cpt-cf-resource-group-constraint-no-authz-decision`, `cpt-cf-resource-group-constraint-no-sql-filter-generation`)
 
 ## 7. Non-Applicable Domains
 

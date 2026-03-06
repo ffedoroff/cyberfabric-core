@@ -1,3 +1,8 @@
+// @cpt-req:cpt-cf-resource-group-dod-module-lifecycle:p1
+// @cpt-req:cpt-cf-resource-group-dod-init-order:p1
+// @cpt-flow:cpt-cf-resource-group-flow-module-bootstrap:p1
+// @cpt-algo:cpt-cf-resource-group-algo-phased-init:p1
+
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -39,31 +44,49 @@ impl Default for ResourceGroupModule {
 #[async_trait]
 impl Module for ResourceGroupModule {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
+        // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-1
         info!("Initializing {} module", Self::MODULE_NAME);
 
+        // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3e
         let cfg: ResourceGroupConfig = ctx.config()?;
 
         self.url_prefix
             .set(cfg.url_prefix)
             .map_err(|_| anyhow::anyhow!("{} url_prefix already set", Self::MODULE_NAME))?;
+        // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3e
 
+        // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-2
         let db = Arc::new(ctx.db_required()?);
+        // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-2
 
-        // Create unified service facade
+        // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
+        // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
+        // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
         let svc = Arc::new(RgService::new(db));
+        // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
+        // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
+        // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
 
-        // Phase 1: Register SDK clients in ClientHub
+        // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-5
+        // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3c
         let client: Arc<dyn ResourceGroupClient> = svc.clone();
         ctx.client_hub().register::<dyn ResourceGroupClient>(client);
+        // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3c
+        // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-5
 
+        // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-6
+        // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3d
         let read_hierarchy: Arc<dyn ResourceGroupReadHierarchy> = svc.clone();
         ctx.client_hub()
             .register::<dyn ResourceGroupReadHierarchy>(read_hierarchy);
+        // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3d
+        // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-6
 
         self.service
             .set(svc)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
+        // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-1
         info!(
             "{} module initialized \u{2014} SDK clients registered in ClientHub",
             Self::MODULE_NAME
@@ -81,6 +104,8 @@ impl DatabaseCapability for ResourceGroupModule {
 }
 
 impl RestApiCapability for ResourceGroupModule {
+    // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-9
+    // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-5
     fn register_rest(
         &self,
         _ctx: &ModuleCtx,
@@ -102,4 +127,6 @@ impl RestApiCapability for ResourceGroupModule {
         info!("Resource-group REST routes registered");
         Ok(router)
     }
+    // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-5
+    // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-9
 }

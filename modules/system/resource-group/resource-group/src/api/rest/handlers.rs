@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::{Extension, Json};
 use http::StatusCode;
 use modkit::api::problem::Problem;
@@ -9,6 +9,7 @@ use resource_group_sdk::{
     AddMembershipRequest, CreateGroupRequest, CreateTypeRequest, ListQuery,
     RemoveMembershipRequest, ResourceGroupClient, UpdateGroupRequest, UpdateTypeRequest,
 };
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::dto::{
@@ -20,14 +21,36 @@ use crate::domain::service::RgService;
 
 type ApiResult<T> = Result<T, Problem>;
 
+/// Query parameters for list endpoints supporting OData-style filtering and pagination.
+#[derive(Debug, Default, Deserialize)]
+pub struct ListQueryParams {
+    #[serde(rename = "$filter")]
+    pub filter: Option<String>,
+    #[serde(rename = "$top")]
+    pub top: Option<i32>,
+    #[serde(rename = "$skip")]
+    pub skip: Option<i32>,
+}
+
+impl From<ListQueryParams> for ListQuery {
+    fn from(params: ListQueryParams) -> Self {
+        ListQuery {
+            filter: params.filter,
+            top: params.top,
+            skip: params.skip,
+        }
+    }
+}
+
 // ── Type handlers ───────────────────────────────────────────────────────
 
 pub async fn list_types(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<RgService>>,
+    Query(params): Query<ListQueryParams>,
 ) -> ApiResult<Json<PageResponse<TypeResponse>>> {
     let page = svc
-        .list_types(&ctx, ListQuery::default())
+        .list_types(&ctx, params.into())
         .await
         .map_err(|e| Problem::from(DomainError::from_sdk_err(e)))?;
     Ok(Json(to_page_response(page, TypeResponse::from)))

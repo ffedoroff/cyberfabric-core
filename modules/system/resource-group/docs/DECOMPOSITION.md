@@ -22,7 +22,7 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 ### 1. Domain Foundation - HIGH
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-domain-foundation`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-domain-foundation`
 
 - **Purpose**: Establish the module skeleton — SDK crate (models, traits, errors), module lifecycle and ClientHub registration, persistence adapter with DB migration, and the unified error mapper. This feature produces the foundational infrastructure that all other features build upon.
 
@@ -42,20 +42,20 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - Integration read routing and MTLS endpoint allowlist — covered by Feature 5
 
 - **Requirements Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-fr-rest-api`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-odata-query`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-deterministic-errors`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-deterministic-errors`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-production-scale`
+  - [x] `p1` - `cpt-cf-resource-group-fr-rest-api`
+  - [x] `p1` - `cpt-cf-resource-group-fr-odata-query`
+  - [x] `p1` - `cpt-cf-resource-group-fr-deterministic-errors`
+  - [x] `p1` - `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-deterministic-errors`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-production-scale`
 
 - **Design Principles Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
+  - [x] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
 
 - **Design Constraints Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-db-agnostic`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-db-agnostic`
 
 - **Domain Model Entities**:
   - `ResourceGroupType`
@@ -65,8 +65,8 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - `ResourceGroupError`
 
 - **Design Components**:
-  - [ ] `p1` - `cpt-cf-resource-group-component-module`
-  - [ ] `p1` - `cpt-cf-resource-group-component-persistence-adapter`
+  - [x] `p1` - `cpt-cf-resource-group-component-module`
+  - [x] `p1` - `cpt-cf-resource-group-component-persistence-adapter`
 
 - **API**:
   - Base path `/api/resource-group/v1/` (OperationBuilder setup)

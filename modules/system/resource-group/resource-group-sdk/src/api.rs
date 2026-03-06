@@ -1,3 +1,6 @@
+// @cpt-req:cpt-cf-resource-group-dod-sdk-crate:p1
+// @cpt-flow:cpt-cf-resource-group-flow-sdk-client-resolution:p2
+
 use async_trait::async_trait;
 use modkit_security::SecurityContext;
 use uuid::Uuid;

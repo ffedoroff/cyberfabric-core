@@ -1,3 +1,6 @@
+// @cpt-req:cpt-cf-resource-group-dod-sdk-crate:p1
+// @cpt-algo:cpt-cf-resource-group-algo-error-mapping:p1
+
 use uuid::Uuid;
 
 /// Deterministic public error taxonomy for Resource Group operations.
