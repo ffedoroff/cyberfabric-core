@@ -189,7 +189,7 @@ paths:
         OData support:
         - `$filter`:
           - `group_type`: eq, ne, in
-          - `parent_id`: eq, ne, in
+          - `parent_id`: eq, ne, in (direct parent only, depth=1; for ancestor traversal use `listGroupDepth`)
           - `group_id`: eq, ne, in
           - `name`: eq, ne, in
           - `external_id`: eq, ne, in

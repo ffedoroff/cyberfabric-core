@@ -47,9 +47,9 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `code_ci` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                           |
-| `cpt-cf-resource-group-fr-seed-types`                         | Plugin-level deterministic pre-deployment seeding path upserts type definitions with stable normalization rules.                      |
-| `cpt-cf-resource-group-fr-seed-groups`                        | Plugin-level deterministic pre-deployment seeding path creates/updates group hierarchy with parent-child and type validation.         |
-| `cpt-cf-resource-group-fr-seed-memberships`                   | Plugin-level deterministic pre-deployment seeding path creates membership links with group existence and tenant compatibility validation. |
+| `cpt-cf-resource-group-fr-seed-types`                         | Any RG plugin MUST perform schema migration. Type data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). AuthZ config determines required types. |
+| `cpt-cf-resource-group-fr-seed-groups`                        | Group data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates parent-child links and type compatibility when performed. |
+| `cpt-cf-resource-group-fr-seed-memberships`                   | Membership data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates group existence and tenant compatibility when performed. |
 | `cpt-cf-resource-group-fr-delete-type-only-if-empty`          | Type deletion flow checks for existing entities and rejects delete when references remain.                                            |
 | `cpt-cf-resource-group-fr-manage-entities`                    | Entity service with create/get/update/move/delete operations.                                                                         |
 | `cpt-cf-resource-group-fr-enforce-forest-hierarchy`           | Domain invariants + cycle checks before writes.                                                                                       |
@@ -533,7 +533,7 @@ OData query support on all list endpoints:
 - `$top` — page size (1..300, default 50)
 - `$skip` — offset (default 0)
 
-Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in), `group_id` (eq, ne, in), `name` (eq, ne, in), `external_id` (eq, ne, in).
+Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in — filters by direct parent, depth=1 only; for ancestor traversal use `listGroupDepth`), `group_id` (eq, ne, in), `name` (eq, ne, in), `external_id` (eq, ne, in).
 
 Group depth (`listGroupDepth`) `$filter` fields: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in).
 
