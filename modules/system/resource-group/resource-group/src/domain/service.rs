@@ -10,24 +10,30 @@ use resource_group_sdk::{
 };
 use uuid::Uuid;
 
+use crate::domain::type_service::TypeService;
+use crate::infra::db::repo::group_repo::GroupRepositoryImpl;
+use crate::infra::db::repo::type_repo::TypeRepositoryImpl;
+
 /// Unified service facade implementing both SDK traits.
 /// Backed by domain services and repositories.
-/// Domain logic (type validation, hierarchy invariants, membership rules)
-/// will be implemented in Features 2-5.
 pub struct RgService {
+    type_service: TypeService<TypeRepositoryImpl, GroupRepositoryImpl>,
     _db: Arc<modkit_db::DBProvider<modkit_db::DbError>>,
 }
 
 impl RgService {
     #[must_use]
     pub fn new(db: Arc<modkit_db::DBProvider<modkit_db::DbError>>) -> Self {
-        Self { _db: db }
+        let type_service =
+            TypeService::new(TypeRepositoryImpl, GroupRepositoryImpl, Arc::clone(&db));
+        Self {
+            type_service,
+            _db: db,
+        }
     }
 }
 
-// Stub implementations — domain logic is out of scope for Feature 0001.
-// Each method returns a placeholder error indicating the feature is not yet implemented.
-
+// Stub for non-type methods — domain logic is out of scope for Feature 0002.
 fn not_implemented() -> ResourceGroupError {
     ResourceGroupError::Internal
 }
@@ -37,42 +43,54 @@ impl ResourceGroupClient for RgService {
     async fn create_type(
         &self,
         _ctx: &SecurityContext,
-        _request: CreateTypeRequest,
+        request: CreateTypeRequest,
     ) -> Result<ResourceGroupType, ResourceGroupError> {
-        Err(not_implemented())
+        self.type_service
+            .create_type(request)
+            .await
+            .map_err(Into::into)
     }
 
     async fn get_type(
         &self,
         _ctx: &SecurityContext,
-        _code: &str,
+        code: &str,
     ) -> Result<ResourceGroupType, ResourceGroupError> {
-        Err(not_implemented())
+        self.type_service.get_type(code).await.map_err(Into::into)
     }
 
     async fn list_types(
         &self,
         _ctx: &SecurityContext,
-        _query: ListQuery,
+        query: ListQuery,
     ) -> Result<Page<ResourceGroupType>, ResourceGroupError> {
-        Err(not_implemented())
+        self.type_service
+            .list_types(query)
+            .await
+            .map_err(Into::into)
     }
 
     async fn update_type(
         &self,
         _ctx: &SecurityContext,
-        _code: &str,
-        _request: UpdateTypeRequest,
+        code: &str,
+        request: UpdateTypeRequest,
     ) -> Result<ResourceGroupType, ResourceGroupError> {
-        Err(not_implemented())
+        self.type_service
+            .update_type(code, request)
+            .await
+            .map_err(Into::into)
     }
 
     async fn delete_type(
         &self,
         _ctx: &SecurityContext,
-        _code: &str,
+        code: &str,
     ) -> Result<(), ResourceGroupError> {
-        Err(not_implemented())
+        self.type_service
+            .delete_type(code)
+            .await
+            .map_err(Into::into)
     }
 
     async fn create_group(

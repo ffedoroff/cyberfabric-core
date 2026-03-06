@@ -1,3 +1,5 @@
+// @cpt-req:cpt-cf-resource-group-dod-db-migration:p1
+
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::ConnectionTrait;
 

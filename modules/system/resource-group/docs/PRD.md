@@ -380,7 +380,7 @@ Operator is responsible for separate data migration to restore compliance.
 
 #### REST API Endpoints
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-rest-api`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-fr-rest-api`
 
 The module **MUST** expose REST API endpoints under `/api/resource-group/v1/` for:
 
@@ -390,7 +390,7 @@ The module **MUST** expose REST API endpoints under `/api/resource-group/v1/` fo
 
 #### OData Query Support
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-odata-query`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-fr-odata-query`
 
 List endpoints **MUST** support OData v4.01 query options:
 
@@ -437,7 +437,7 @@ The read contract **MUST NOT** contain AuthZ decision semantics.
 
 #### Keep Policy and SQL Semantics Outside RG
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
 
 RG **MUST NOT**:
 
@@ -447,7 +447,7 @@ RG **MUST NOT**:
 
 ### 5.8 Deterministic Error Semantics
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-deterministic-errors`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-fr-deterministic-errors`
 
 The module **MUST** map all failures to deterministic categories:
 
@@ -501,13 +501,13 @@ Entity/membership changes and derived closure updates **MUST** be transactionall
 
 ### 6.4 Deterministic Error Coverage
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-nfr-deterministic-errors`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-nfr-deterministic-errors`
 
 100% of failure paths **MUST** map to documented error categories.
 
 ### 6.5 Expected Production Scale
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-nfr-production-scale`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-nfr-production-scale`
 
 The module **MUST** be designed and validated for the following projected production volumes:
 

@@ -116,7 +116,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 
 #### Policy-Agnostic Core
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
 
 RG handles graph/membership data only.
 
@@ -148,19 +148,19 @@ In ownership-graph usage, groups are tenant-scoped and links must be tenant-hier
 
 #### No AuthZ Decision Logic
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
 
 RG cannot return allow/deny decisions.
 
 #### No SQL/ORM Filter Generation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
 RG cannot generate SQL fragments or access-scope objects.
 
 #### Database-Agnostic Persistence
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-db-agnostic`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-db-agnostic`
 
 RG persistence layer uses SeaORM abstractions and standard SQL. The module **MUST NOT** depend on vendor-specific SQL extensions or features of a particular RDBMS. Any SQL-compatible database supported by SeaORM can be used as the storage backend.
 
@@ -219,7 +219,7 @@ AuthZ plugin depends only on the narrow `ResourceGroupReadHierarchy` trait (hier
 
 #### RG Module (Gateway)
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-module`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-module`
 
 Responsibilities:
 
@@ -284,7 +284,7 @@ Responsibilities:
 
 #### Persistence Adapter
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-persistence-adapter`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-persistence-adapter`
 
 Responsibilities:
 

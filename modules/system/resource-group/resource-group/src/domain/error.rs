@@ -1,3 +1,6 @@
+// @cpt-req:cpt-cf-resource-group-dod-error-mapper:p1
+// @cpt-algo:cpt-cf-resource-group-algo-error-mapping:p1
+
 use resource_group_sdk::ResourceGroupError;
 use uuid::Uuid;
 
@@ -76,10 +79,14 @@ impl DomainError {
     }
 }
 
+// @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-1
 impl From<DomainError> for ResourceGroupError {
     fn from(err: DomainError) -> Self {
         match err {
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-2
             DomainError::Validation { message } => ResourceGroupError::Validation { message },
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-2
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-3
             DomainError::TypeNotFound { code } => ResourceGroupError::not_found("Type", code),
             DomainError::GroupNotFound { id } => ResourceGroupError::group_not_found(id),
             DomainError::MembershipNotFound {
@@ -90,9 +97,13 @@ impl From<DomainError> for ResourceGroupError {
                 "Membership",
                 format!("{group_id}/{resource_type}/{resource_id}"),
             ),
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-3
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-4
             DomainError::TypeAlreadyExists { code } => {
                 ResourceGroupError::TypeAlreadyExists { code }
             }
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-4
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-5
             DomainError::InvalidParentType {
                 child_type,
                 parent_type,
@@ -100,6 +111,8 @@ impl From<DomainError> for ResourceGroupError {
                 child_type,
                 parent_type,
             },
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-5
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-6
             DomainError::CycleDetected {
                 ancestor_id,
                 descendant_id,
@@ -107,11 +120,15 @@ impl From<DomainError> for ResourceGroupError {
                 ancestor_id,
                 descendant_id,
             },
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-6
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-7
             DomainError::ActiveReferences { count } => {
                 ResourceGroupError::ConflictActiveReferences {
                     reference_count: count,
                 }
             }
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-7
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-8
             DomainError::LimitViolation {
                 limit_name,
                 current,
@@ -121,10 +138,16 @@ impl From<DomainError> for ResourceGroupError {
                 current_value: current,
                 max_value: max,
             },
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-8
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-9
             DomainError::TenantIncompatibility { message } => {
                 ResourceGroupError::TenantIncompatibility { message }
             }
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-9
+            // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-11
             DomainError::Database { .. } | DomainError::Forbidden => ResourceGroupError::Internal,
+            // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-11
         }
     }
 }
+// @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-1

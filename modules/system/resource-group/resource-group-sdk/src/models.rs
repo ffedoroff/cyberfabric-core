@@ -1,3 +1,5 @@
+// @cpt-req:cpt-cf-resource-group-dod-sdk-crate:p1
+
 use uuid::Uuid;
 
 // ── Type ────────────────────────────────────────────────────────────────

@@ -1,3 +1,6 @@
+// @cpt-req:cpt-cf-resource-group-dod-error-mapper:p1
+// @cpt-algo:cpt-cf-resource-group-algo-error-mapping:p1
+
 use http::StatusCode;
 use modkit::api::problem::Problem;
 
