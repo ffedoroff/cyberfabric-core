@@ -35,7 +35,7 @@ Addresses:
 - **PRD**: [PRD.md](../PRD.md)
 - **Design**: [DESIGN.md](../DESIGN.md)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) — `cpt-cf-resource-group-feature-integration-read`
-- **OpenAPI**: [openapi.yaml](../openapi.yaml) — `GET /groups/{group_id}/depth` (MTLS-reachable)
+- **OpenAPI**: [openapi.yaml](../openapi.yaml) — `GET /groups/{group_id}/hierarchy` (MTLS-reachable)
 - **Migration**: [migration.sql](../migration.sql) — `resource_group`, `resource_group_closure` tables (read path for depth queries)
 - **Design Components**: `cpt-cf-resource-group-component-integration-read-service`
 - **Design Sequences**: `cpt-cf-resource-group-seq-authz-rg-sql-split`, `cpt-cf-resource-group-seq-e2e-authz-flow`, `cpt-cf-resource-group-seq-auth-modes`, `cpt-cf-resource-group-seq-mtls-authz-read`, `cpt-cf-resource-group-seq-jwt-rg-request`
@@ -50,7 +50,7 @@ Addresses:
 **Actor**: `cpt-cf-resource-group-actor-authz-plugin-consumer`
 
 **Success Scenarios**:
-- AuthZ plugin reads tenant hierarchy via MTLS-authenticated REST call to `/groups/{group_id}/depth`
+- AuthZ plugin reads tenant hierarchy via MTLS-authenticated REST call to `/groups/{group_id}/hierarchy`
 - Groups returned with relative depth including `tenant_id` per row
 
 **Error Scenarios**:
@@ -59,7 +59,7 @@ Addresses:
 - Reference group not found — `NotFound`
 
 **Steps**:
-1. [ ] - `p1` - AuthZ plugin sends API: GET /api/resource-group/v1/groups/{group_id}/depth?$filter={expr} with MTLS client certificate - `inst-mtls-1`
+1. [ ] - `p1` - AuthZ plugin sends API: GET /api/resource-group/v1/groups/{group_id}/hierarchy?$filter={expr} with MTLS client certificate - `inst-mtls-1`
 2. [ ] - `p1` - Transport layer validates MTLS client certificate - `inst-mtls-2`
 3. [ ] - `p1` - **IF** certificate validation fails - `inst-mtls-3`
    1. [ ] - `p1` - **RETURN** connection rejected (TLS handshake failure) - `inst-mtls-3a`
@@ -88,7 +88,7 @@ Addresses:
 - Reference group not found — `NotFound`
 
 **Steps**:
-1. [ ] - `p1` - Actor sends API: GET /api/resource-group/v1/groups/{group_id}/depth?$filter={expr} with JWT bearer token - `inst-jwt-1`
+1. [ ] - `p1` - Actor sends API: GET /api/resource-group/v1/groups/{group_id}/hierarchy?$filter={expr} with JWT bearer token - `inst-jwt-1`
 2. [ ] - `p1` - AuthN layer validates JWT, produces `SecurityContext` with subject_id, subject_tenant_id, token_scopes - `inst-jwt-2`
 3. [ ] - `p1` - **IF** JWT validation fails - `inst-jwt-3`
    1. [ ] - `p1` - **RETURN** `401 Unauthorized` - `inst-jwt-3a`
@@ -132,7 +132,7 @@ Addresses:
 **Output**: Allowed (proceed) or denied (403 Forbidden)
 
 **Steps**:
-1. [ ] - `p1` - Check request path against MTLS allowlist: only `GET /api/resource-group/v1/groups/{group_id}/depth` is permitted - `inst-allowlist-1`
+1. [ ] - `p1` - Check request path against MTLS allowlist: only `GET /api/resource-group/v1/groups/{group_id}/hierarchy` is permitted - `inst-allowlist-1`
 2. [ ] - `p1` - **IF** path matches allowlist entry - `inst-allowlist-2`
    1. [ ] - `p1` - **RETURN** allowed — proceed with request - `inst-allowlist-2a`
 3. [ ] - `p1` - **ELSE** - `inst-allowlist-3`
@@ -209,14 +209,14 @@ The system **MUST** implement plugin gateway routing that resolves the configure
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-mtls-auth`
 
-The system **MUST** support MTLS client certificate authentication for service-to-service requests. MTLS requests **MUST** bypass AuthZ evaluation entirely — no PolicyEnforcer call, no access_evaluation_request. Only `GET /api/resource-group/v1/groups/{group_id}/depth` **MUST** be reachable via MTLS; all other endpoints **MUST** return `403 Forbidden` in MTLS mode. This is enforced by RG gateway-level allowlist, not by AuthZ evaluation. The MTLS certificate identity **MUST** produce a system `SecurityContext` (trusted system principal).
+The system **MUST** support MTLS client certificate authentication for service-to-service requests. MTLS requests **MUST** bypass AuthZ evaluation entirely — no PolicyEnforcer call, no access_evaluation_request. Only `GET /api/resource-group/v1/groups/{group_id}/hierarchy` **MUST** be reachable via MTLS; all other endpoints **MUST** return `403 Forbidden` in MTLS mode. This is enforced by RG gateway-level allowlist, not by AuthZ evaluation. The MTLS certificate identity **MUST** produce a system `SecurityContext` (trusted system principal).
 
 **Implements**:
 - `cpt-cf-resource-group-flow-mtls-hierarchy-read`
 - `cpt-cf-resource-group-algo-mtls-allowlist`
 
 **Touches**:
-- API: `GET /api/resource-group/v1/groups/{group_id}/depth` (MTLS path)
+- API: `GET /api/resource-group/v1/groups/{group_id}/hierarchy` (MTLS path)
 
 ### JWT Authentication with AuthZ Evaluation
 
@@ -263,7 +263,7 @@ The system **MUST** propagate caller `SecurityContext` through all read paths wi
 - [ ] Plugin gateway routes to built-in provider by default (local DB reads)
 - [ ] Plugin gateway routes to vendor-specific provider when configured (GTS scoped plugin resolution)
 - [ ] SecurityContext is forwarded unchanged through gateway to provider (no policy interpretation)
-- [ ] MTLS-authenticated request to `GET /groups/{group_id}/depth` succeeds and bypasses AuthZ evaluation
+- [ ] MTLS-authenticated request to `GET /groups/{group_id}/hierarchy` succeeds and bypasses AuthZ evaluation
 - [ ] MTLS-authenticated request to any other endpoint returns `403 Forbidden`
 - [ ] MTLS certificate identity produces system SecurityContext (trusted principal)
 - [ ] MTLS requests do not call PolicyEnforcer

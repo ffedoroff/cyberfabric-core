@@ -18,7 +18,7 @@ Addresses:
 - `cpt-cf-resource-group-fr-validate-type-code` — code format validation with case normalization
 - `cpt-cf-resource-group-fr-reject-duplicate-type` — unique `code_ci` persistence constraint
 - `cpt-cf-resource-group-fr-delete-type-only-if-empty` — delete guard when entities reference the type
-- `cpt-cf-resource-group-fr-seed-types` — deterministic pre-deployment seeding
+- `cpt-cf-resource-group-fr-seed-types` — optional deployment-specific type data seeding (plugin data migration, manual DB admin, or RG API)
 - `cpt-cf-resource-group-principle-dynamic-types` — runtime-configurable type rules
 
 ### 1.3 Actors
@@ -104,7 +104,7 @@ Addresses:
 
 **Steps**:
 1. [ ] - `p2` - Actor sends API: GET /api/resource-group/v1/types?$filter={expr}&$top={n}&$skip={m} - `inst-type-list-1`
-2. [ ] - `p2` - Parse OData parameters: `$filter` on `code` (eq, ne, in, contains, startswith, endswith), `$top` (1..300, default 50), `$skip` (default 0) - `inst-type-list-2`
+2. [ ] - `p2` - Parse OData parameters: `$filter` on `code` (eq, ne, in), `$top` (1..300, default 50), `$skip` (default 0) - `inst-type-list-2`
 3. [ ] - `p2` - **IF** OData parse fails - `inst-type-list-3`
    1. [ ] - `p2` - **RETURN** `Validation` error with parse detail - `inst-type-list-3a`
 4. [ ] - `p2` - DB: SELECT code, parents FROM resource_group_type WHERE {filter} ORDER BY code ASC LIMIT $top OFFSET $skip - `inst-type-list-4`
@@ -241,7 +241,7 @@ The system **MUST** create a resource group type via `POST /api/resource-group/v
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-type-read`
 
-The system **MUST** retrieve a single type by code via `GET /api/resource-group/v1/types/{code}` returning `ResourceGroupType` or `NotFound`. The system **MUST** list types via `GET /api/resource-group/v1/types` with OData `$filter` on `code` field (eq, ne, in, contains, startswith, endswith), `$top` (1..300, default 50), `$skip` (default 0). Results **MUST** be sorted by `code` ASC for deterministic pagination.
+The system **MUST** retrieve a single type by code via `GET /api/resource-group/v1/types/{code}` returning `ResourceGroupType` or `NotFound`. The system **MUST** list types via `GET /api/resource-group/v1/types` with OData `$filter` on `code` field (eq, ne, in), `$top` (1..300, default 50), `$skip` (default 0). Results **MUST** be sorted by `code` ASC for deterministic pagination.
 
 **Implements**:
 - `cpt-cf-resource-group-flow-type-get`
@@ -297,7 +297,7 @@ The system **MUST** enforce case-insensitive uniqueness for type codes via the `
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-type-seed`
 
-The system **MUST** provide a deterministic seed path that upserts type definitions at pre-deployment time. Seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ). For each type in seed data: validate code format, normalize case, then insert or update parents on conflict. Seed **MUST** abort on the first validation error. The seed path **MUST** produce identical results when re-run against the same data (idempotent).
+Type data seeding is **optional** and deployment-specific. It can be performed via plugin data migration, manual database administration, or RG API calls. When performed via the module's seed path, seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ). For each type in seed data: validate code format, normalize case, then insert or update parents on conflict. Seed **MUST** abort on the first validation error. The seed path **MUST** produce identical results when re-run against the same data (idempotent).
 
 **Implements**:
 - `cpt-cf-resource-group-flow-type-seed`
@@ -317,7 +317,7 @@ The system **MUST** provide a deterministic seed path that upserts type definiti
 - [ ] Empty parents array is rejected with `Validation` error
 - [ ] `GET /api/resource-group/v1/types/{code}` returns the type or `404`
 - [ ] `GET /api/resource-group/v1/types` returns paginated types sorted by `code` ASC
-- [ ] OData `$filter` on `code` works for eq, ne, in, contains, startswith, endswith operators
+- [ ] OData `$filter` on `code` works for eq, ne, in operators
 - [ ] `$top` limits page size (1..300), `$skip` offsets from beginning
 - [ ] `PUT /api/resource-group/v1/types/{code}` updates parents and returns updated type
 - [ ] Update sets `modified` timestamp
