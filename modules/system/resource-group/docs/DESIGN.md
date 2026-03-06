@@ -1,3 +1,6 @@
+Created:  2026-03-06 by Constructor Tech
+Updated:  2026-03-06 by Constructor Tech
+
 # Technical Design - Resource Group (RG)
 
 > **Abbreviation**: Resource Group = **RG**. Used throughout this document.
