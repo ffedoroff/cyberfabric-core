@@ -45,7 +45,7 @@ Addresses:
 - **PRD**: [PRD.md](../PRD.md)
 - **Design**: [DESIGN.md](../DESIGN.md)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) — `cpt-cf-resource-group-feature-entity-hierarchy`
-- **OpenAPI**: [openapi.yaml](../openapi.yaml) — `/groups`, `/groups/{group_id}`, `/groups/{group_id}/depth`
+- **OpenAPI**: [openapi.yaml](../openapi.yaml) — `/groups`, `/groups/{group_id}`, `/groups/{group_id}/hierarchy`
 - **Migration**: [migration.sql](../migration.sql) — `resource_group`, `resource_group_closure` tables with indexes
 - **Design Components**: `cpt-cf-resource-group-component-entity-service`, `cpt-cf-resource-group-component-hierarchy-service`
 - **Design Sequences**: `cpt-cf-resource-group-seq-create-entity-with-parent`, `cpt-cf-resource-group-seq-move-subtree`
@@ -140,7 +140,7 @@ Addresses:
 
 **Steps**:
 1. [ ] - `p2` - Actor sends API: GET /api/resource-group/v1/groups?$filter={expr}&$top={n}&$skip={m} - `inst-grp-list-1`
-2. [ ] - `p2` - Parse OData: `$filter` on group_type (eq, ne, in), parent_id (eq, ne, in), group_id (eq, ne, in), name (eq, ne, in, contains, startswith, endswith), external_id (eq, ne, in, contains, startswith, endswith); `$top` (1..300, default 50); `$skip` (default 0) - `inst-grp-list-2`
+2. [ ] - `p2` - Parse OData: `$filter` on group_type (eq, ne, in), parent_id (eq, ne, in — direct parent only, depth=1; for ancestor traversal use `listGroupHierarchy`), group_id (eq, ne, in), name (eq, ne, in), external_id (eq, ne, in); `$top` (1..300, default 50); `$skip` (default 0) - `inst-grp-list-2`
 3. [ ] - `p2` - **IF** OData parse fails - `inst-grp-list-3`
    1. [ ] - `p2` - **RETURN** `Validation` error - `inst-grp-list-3a`
 4. [ ] - `p2` - DB: SELECT ... FROM resource_group WHERE {filter} ORDER BY id ASC LIMIT $top OFFSET $skip - `inst-grp-list-4`
@@ -238,7 +238,7 @@ Addresses:
 - Invalid OData filter — `Validation`
 
 **Steps**:
-1. [ ] - `p1` - Actor sends API: GET /api/resource-group/v1/groups/{group_id}/depth?$filter={expr}&$top={n}&$skip={m} - `inst-grp-depth-1`
+1. [ ] - `p1` - Actor sends API: GET /api/resource-group/v1/groups/{group_id}/hierarchy?$filter={expr}&$top={n}&$skip={m} - `inst-grp-depth-1`
 2. [ ] - `p1` - DB: SELECT id FROM resource_group WHERE id = :group_id — verify reference group exists - `inst-grp-depth-2`
 3. [ ] - `p1` - **IF** reference group not found - `inst-grp-depth-3`
    1. [ ] - `p1` - **RETURN** `NotFound` error - `inst-grp-depth-3a`
@@ -388,7 +388,7 @@ The system **MUST** create a resource group via `POST /api/resource-group/v1/gro
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-read`
 
-The system **MUST** retrieve a single group by ID via `GET /api/resource-group/v1/groups/{group_id}` returning `ResourceGroup` or `NotFound`. The system **MUST** list groups via `GET /api/resource-group/v1/groups` with OData `$filter` on group_type (eq, ne, in), parent_id (eq, ne, in), group_id (eq, ne, in), name (eq, ne, in, contains, startswith, endswith), external_id (eq, ne, in, contains, startswith, endswith). Results **MUST** be sorted by `group_id` ASC. Group responses **MUST NOT** include `created`/`modified` timestamps per DESIGN API projection rules.
+The system **MUST** retrieve a single group by ID via `GET /api/resource-group/v1/groups/{group_id}` returning `ResourceGroup` or `NotFound`. The system **MUST** list groups via `GET /api/resource-group/v1/groups` with OData `$filter` on group_type (eq, ne, in), parent_id (eq, ne, in — direct parent only, depth=1; for ancestor traversal use `listGroupHierarchy`), group_id (eq, ne, in), name (eq, ne, in), external_id (eq, ne, in). Results **MUST** be sorted by `group_id` ASC. Group responses **MUST NOT** include `created`/`modified` timestamps per DESIGN API projection rules.
 
 **Implements**:
 - `cpt-cf-resource-group-flow-group-get`
@@ -436,13 +436,13 @@ The system **MUST** delete a group via `DELETE /api/resource-group/v1/groups/{gr
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-depth-traversal`
 
-The system **MUST** provide hierarchy traversal via `GET /api/resource-group/v1/groups/{group_id}/depth` returning `Page<ResourceGroupWithDepth>` with computed relative `depth` field: `0` = reference group, positive = descendants, negative = ancestors. OData `$filter` **MUST** support `depth` (eq, ne, gt, ge, lt, le) and `group_type` (eq, ne, in). Negative depth **MUST** be computed by reversing the closure table lookup direction and negating the stored depth. Results **MUST** be sorted by `depth` ASC, `group_id` ASC. The reference group **MUST** be included when the depth range covers `0`.
+The system **MUST** provide hierarchy traversal via `GET /api/resource-group/v1/groups/{group_id}/hierarchy` returning `Page<ResourceGroupWithDepth>` with computed relative `depth` field: `0` = reference group, positive = descendants, negative = ancestors. OData `$filter` **MUST** support `depth` (eq, ne, gt, ge, lt, le) and `group_type` (eq, ne, in). Negative depth **MUST** be computed by reversing the closure table lookup direction and negating the stored depth. Results **MUST** be sorted by `depth` ASC, `group_id` ASC. The reference group **MUST** be included when the depth range covers `0`.
 
 **Implements**:
 - `cpt-cf-resource-group-flow-group-depth`
 
 **Touches**:
-- API: `GET /api/resource-group/v1/groups/{group_id}/depth`
+- API: `GET /api/resource-group/v1/groups/{group_id}/hierarchy`
 - DB: `resource_group`, `resource_group_closure`
 - Entities: `ResourceGroupWithDepth`
 
@@ -462,7 +462,7 @@ The system **MUST** enforce `max_depth` and `max_width` limits from the query pr
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-group-seed`
 
-The system **MUST** provide a deterministic seed path that creates/updates group hierarchy definitions at pre-deployment time. Seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ). Seed **MUST** process groups in dependency order (parents before children), validate type existence and parent-child compatibility, create closure table rows, and abort on the first validation error. The seed path **MUST** be idempotent.
+Group data seeding is **optional** and deployment-specific. It can be performed via plugin data migration, manual database administration, or RG API calls. When performed via the module's seed path, seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ). Seed **MUST** process groups in dependency order (parents before children), validate type existence and parent-child compatibility, create closure table rows, and abort on the first validation error. The seed path **MUST** be idempotent.
 
 **Implements**:
 - `cpt-cf-resource-group-flow-group-seed`
@@ -483,7 +483,7 @@ The system **MUST** provide a deterministic seed path that creates/updates group
 - [ ] All create validations and inserts execute within a single SERIALIZABLE transaction
 - [ ] `GET /groups/{group_id}` returns group or `404`
 - [ ] `GET /groups` returns paginated list sorted by `group_id` ASC
-- [ ] OData `$filter` works on group_type, parent_id, group_id, name, external_id with specified operators
+- [ ] OData `$filter` works on group_type (eq, ne, in), parent_id (eq, ne, in — direct parent only, depth=1; for ancestor traversal use `listGroupHierarchy`), group_id (eq, ne, in), name (eq, ne, in), external_id (eq, ne, in)
 - [ ] `PUT /groups/{group_id}` updates fields and returns updated group
 - [ ] Parent move (changed parent_id) triggers closure recalculation within SERIALIZABLE transaction
 - [ ] Move to own descendant is rejected with `CycleDetected`
@@ -492,7 +492,7 @@ The system **MUST** provide a deterministic seed path that creates/updates group
 - [ ] `DELETE /groups/{group_id}` returns `204` when no active references and force=false
 - [ ] Delete is rejected with `ConflictActiveReferences` when children or memberships exist and force=false
 - [ ] Delete with `force=true` cascades subtree and memberships (deepest first)
-- [ ] `GET /groups/{group_id}/depth` returns groups with relative depth (negative=ancestors, 0=self, positive=descendants)
+- [ ] `GET /groups/{group_id}/hierarchy` returns groups with relative depth (negative=ancestors, 0=self, positive=descendants)
 - [ ] Depth endpoint applies OData `$filter` on depth (eq, ne, gt, ge, lt, le) and group_type (eq, ne, in)
 - [ ] Depth results sorted by depth ASC, group_id ASC
 - [ ] Reference group included when depth range covers 0

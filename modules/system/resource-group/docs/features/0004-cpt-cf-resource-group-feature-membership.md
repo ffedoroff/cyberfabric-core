@@ -108,7 +108,7 @@ Addresses:
 
 **Steps**:
 1. [ ] - `p1` - Actor sends API: GET /api/resource-group/v1/memberships?$filter={expr}&$top={n}&$skip={m} - `inst-mbr-list-1`
-2. [ ] - `p1` - Parse OData: `$filter` on resource_id (eq, ne, in, contains, startswith, endswith), resource_type (eq, ne, in), group_id (eq, ne, in); `$top` (1..300, default 50); `$skip` (default 0) - `inst-mbr-list-2`
+2. [ ] - `p1` - Parse OData: `$filter` on resource_id (eq, ne, in), resource_type (eq, ne, in), group_id (eq, ne, in); `$top` (1..300, default 50); `$skip` (default 0) - `inst-mbr-list-2`
 3. [ ] - `p1` - **IF** OData parse fails - `inst-mbr-list-3`
    1. [ ] - `p1` - **RETURN** `Validation` error - `inst-mbr-list-3a`
 4. [ ] - `p1` - DB: SELECT group_id, resource_type, resource_id FROM resource_group_membership WHERE {filter} ORDER BY group_id ASC, resource_type ASC, resource_id ASC LIMIT $top OFFSET $skip - `inst-mbr-list-4`
@@ -194,7 +194,7 @@ The system **MUST** remove a membership via `DELETE /api/resource-group/v1/membe
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-list`
 
-The system **MUST** list memberships via `GET /api/resource-group/v1/memberships` with OData `$filter` on resource_id (eq, ne, in, contains, startswith, endswith), resource_type (eq, ne, in), group_id (eq, ne, in). Results **MUST** be sorted by `group_id` ASC, `resource_type` ASC, `resource_id` ASC. Membership responses **MUST NOT** include `tenant_id` — tenant scope is derived from group data the caller already has. Pagination via `$top` (1..300, default 50) and `$skip` (default 0).
+The system **MUST** list memberships via `GET /api/resource-group/v1/memberships` with OData `$filter` on resource_id (eq, ne, in), resource_type (eq, ne, in), group_id (eq, ne, in). Results **MUST** be sorted by `group_id` ASC, `resource_type` ASC, `resource_id` ASC. Membership responses **MUST NOT** include `tenant_id` — tenant scope is derived from group data the caller already has. Pagination via `$top` (1..300, default 50) and `$skip` (default 0).
 
 **Implements**:
 - `cpt-cf-resource-group-flow-membership-list`
@@ -220,7 +220,7 @@ The system **MUST** protect group deletion when memberships exist. When `DELETE 
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-seed`
 
-The system **MUST** provide a deterministic seed path that creates membership links at pre-deployment time. Seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ and tenant scope validation). The seed path **MUST** verify that each target group exists, abort on the first `NotFound`, and handle duplicates idempotently (insert-or-ignore on unique constraint). The seed path **MUST** be idempotent.
+Membership data seeding is **optional** and deployment-specific. It can be performed via plugin data migration, manual database administration, or RG API calls. When performed via the module's seed path, seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ and tenant scope validation). The seed path **MUST** verify that each target group exists, abort on the first `NotFound`, and handle duplicates idempotently (insert-or-ignore on unique constraint). The seed path **MUST** be idempotent.
 
 **Implements**:
 - `cpt-cf-resource-group-flow-membership-seed`
@@ -239,7 +239,7 @@ The system **MUST** provide a deterministic seed path that creates membership li
 - [ ] Remove non-existent membership returns `NotFound`
 - [ ] In ownership-graph profile, remove membership validates tenant scope
 - [ ] `GET /memberships` returns paginated list sorted by group_id ASC, resource_type ASC, resource_id ASC
-- [ ] OData `$filter` on resource_id works for eq, ne, in, contains, startswith, endswith
+- [ ] OData `$filter` on resource_id works for eq, ne, in
 - [ ] OData `$filter` on resource_type works for eq, ne, in
 - [ ] OData `$filter` on group_id works for eq, ne, in
 - [ ] Membership responses do not include `tenant_id`

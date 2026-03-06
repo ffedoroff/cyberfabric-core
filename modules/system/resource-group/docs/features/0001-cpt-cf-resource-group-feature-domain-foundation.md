@@ -182,7 +182,7 @@ The system **MUST** implement the `#[modkit::module]` macro and `Module` trait f
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-rest-api-shell`
 
-The system **MUST** configure REST endpoint routes via OperationBuilder under base path `/api/resource-group/v1/`. The shell **MUST** wire all 14 REST endpoints defined in the OpenAPI contract (`listTypes`, `createType`, `getType`, `updateType`, `deleteType`, `listGroups`, `createGroup`, `getGroup`, `updateGroup`, `deleteGroup`, `listGroupDepth`, `listMemberships`, `addMembership`, `deleteMembership`). Each handler **MUST** accept OData query parameters (`$filter`, `$top`, `$skip`) on list endpoints. Handler implementations at this stage return stub responses or delegate to domain services wired in Phase 1. OData field-to-column mapping infrastructure **MUST** be configured for all filterable fields per OpenAPI `x-odata-filter` definitions.
+The system **MUST** configure REST endpoint routes via OperationBuilder under base path `/api/resource-group/v1/`. The shell **MUST** wire all 14 REST endpoints defined in the OpenAPI contract (`listTypes`, `createType`, `getType`, `updateType`, `deleteType`, `listGroups`, `createGroup`, `getGroup`, `updateGroup`, `deleteGroup`, `listGroupHierarchy`, `listMemberships`, `addMembership`, `deleteMembership`). Each handler **MUST** accept OData query parameters (`$filter`, `$top`, `$skip`) on list endpoints. Handler implementations at this stage return stub responses or delegate to domain services wired in Phase 1. OData field-to-column mapping infrastructure **MUST** be configured for all filterable fields per OpenAPI `x-odata-filter` definitions.
 
 **Implements**:
 - `cpt-cf-resource-group-flow-module-bootstrap`
