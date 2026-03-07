@@ -224,13 +224,23 @@ the scalability benefits. Rejecting with a clear error lets clients adapt their 
 
 The system **MUST** validate the declared mime_type against the actual file content (magic bytes / file signature) on
 proxied uploads (where file content passes through FileStorage). If the declared type does not match the detected type,
-the system **MUST** reject the upload with an error indicating the mismatch. Content-type validation does not apply to
-direct uploads via presigned URLs because FileStorage does not receive the file content in that flow.
+the system **MUST** reject the upload with an error indicating the mismatch.
+
+For proxied multipart uploads (`cpt-cf-file-storage-fr-multipart-upload`), the system **MUST** validate the declared
+mime_type against the content of the **first uploaded part**, which contains the file's magic bytes / file signature.
+Validation **MUST** occur when the first part is received — before subsequent parts are accepted. If the first part does
+not match the declared type, the system **MUST** abort the multipart upload and reject all subsequent parts.
+
+Content-type validation does not apply to direct uploads (single-part or multipart) via presigned URLs because
+FileStorage does not receive the file content in that flow.
 
 **Rationale**: Without content inspection, a client can declare `image/png` but upload an executable, trivially
 bypassing file type policies. Content-type validation ensures declared types are trustworthy for downstream consumers
-and policy enforcement. Direct uploads trade server-side content validation for transfer efficiency — consumers relying
-on strict type guarantees should use proxied uploads.  
+and policy enforcement. First-part validation for multipart uploads provides the same level of guarantee as single-part
+validation — magic bytes reside at the start of the file and are contained in the first part. Post-assembly
+re-validation would require downloading the assembled file from the backend, negating the efficiency benefits of
+multipart upload. Direct uploads trade server-side content validation for transfer efficiency — consumers relying on
+strict type guarantees should use proxied uploads.  
 **Actors**: `cpt-cf-file-storage-actor-platform-user`, `cpt-cf-file-storage-actor-cf-modules`
 
 ### 5.2 Ownership & Access Control
