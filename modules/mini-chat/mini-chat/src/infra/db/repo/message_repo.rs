@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use modkit_db::odata::{LimitCfg, paginate_odata};
-use modkit_db::secure::{DBRunner, SecureEntityExt, exec_custom_all, secure_insert};
+use modkit_db::secure::{DBRunner, SecureEntityExt, secure_insert};
 use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
 use sea_orm::{
@@ -193,34 +193,32 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             return Ok(HashMap::new());
         }
 
-        let tenant_ids =
-            scope.all_uuid_values_for(modkit_security::pep_properties::OWNER_TENANT_ID);
-
         // Single join query: message_attachments ⟕ attachments
         // Selecting only the columns needed for AttachmentSummary.
-        let select = MaEntity::find()
-            .select_only()
-            .column(MaCol::MessageId)
-            .column_as(AttCol::Id, "attachment_id")
-            .column(AttCol::AttachmentKind)
-            .column(AttCol::Filename)
-            .column(AttCol::Status)
-            .column(AttCol::ImgThumbnail)
-            .column(AttCol::ImgThumbnailWidth)
-            .column(AttCol::ImgThumbnailHeight)
+        let rows: Vec<AttachmentRow> = MaEntity::find()
             .join(JoinType::InnerJoin, MaRelation::Attachment.def())
             .filter(
                 Condition::all()
-                    .add(MaCol::TenantId.is_in(tenant_ids))
                     .add(MaCol::ChatId.eq(chat_id))
                     .add(MaCol::MessageId.is_in(message_ids.iter().copied()))
                     .add(AttCol::DeletedAt.is_null()),
             )
-            .order_by(MaCol::CreatedAt, Order::Asc)
-            .order_by(AttCol::Id, Order::Asc)
-            .into_model::<AttachmentRow>();
-
-        let rows: Vec<AttachmentRow> = exec_custom_all(select, runner)
+            .secure()
+            .scope_with(scope)
+            .project_all(runner, |q| {
+                q.select_only()
+                    .column(MaCol::MessageId)
+                    .column_as(AttCol::Id, "attachment_id")
+                    .column(AttCol::AttachmentKind)
+                    .column(AttCol::Filename)
+                    .column(AttCol::Status)
+                    .column(AttCol::ImgThumbnail)
+                    .column(AttCol::ImgThumbnailWidth)
+                    .column(AttCol::ImgThumbnailHeight)
+                    .order_by(MaCol::CreatedAt, Order::Asc)
+                    .order_by(AttCol::Id, Order::Asc)
+                    .into_model::<AttachmentRow>()
+            })
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
 
