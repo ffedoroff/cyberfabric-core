@@ -85,7 +85,7 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 ### 2. Type Management - HIGH
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-type-management`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-type-management`
 
 - **Purpose**: Implement the full type lifecycle — CRUD operations, code format validation with case-insensitive normalization, uniqueness enforcement, seed path, and delete-if-unused guard.
 
@@ -106,14 +106,14 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - Type usage in membership context — covered by Feature 4
 
 - **Requirements Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-fr-manage-types`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-validate-type-code`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-reject-duplicate-type`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-delete-type-only-if-empty`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-seed-types`
+  - [x] `p1` - `cpt-cf-resource-group-fr-manage-types`
+  - [x] `p1` - `cpt-cf-resource-group-fr-validate-type-code`
+  - [x] `p1` - `cpt-cf-resource-group-fr-reject-duplicate-type`
+  - [x] `p1` - `cpt-cf-resource-group-fr-delete-type-only-if-empty`
+  - [x] `p1` - `cpt-cf-resource-group-fr-seed-types`
 
 - **Design Principles Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-principle-dynamic-types`
+  - [x] `p1` - `cpt-cf-resource-group-principle-dynamic-types`
 
 - **Design Constraints Covered**:
   - None
@@ -122,7 +122,7 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - `ResourceGroupType`
 
 - **Design Components**:
-  - [ ] `p1` - `cpt-cf-resource-group-component-type-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-type-service`
 
 - **API**:
   - GET /api/resource-group/v1/types
@@ -141,7 +141,7 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 ### 3. Entity & Hierarchy Management - HIGH
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-entity-hierarchy`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-entity-hierarchy`
 
 - **Purpose**: Implement entity CRUD with strict forest topology enforcement, closure-table hierarchy maintenance, subtree operations (move/delete), depth-based hierarchy queries, and query profile enforcement (max_depth/max_width guardrails).
 
@@ -168,36 +168,36 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - Type lifecycle management — covered by Feature 2
 
 - **Requirements Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-fr-manage-entities`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-enforce-forest-hierarchy`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-validate-parent-type`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-delete-entity-no-active-references`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-closure-table`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-query-group-hierarchy`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-subtree-operations`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-query-profile`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-profile-change-no-rewrite`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-reduced-constraints-behavior`
-  - [ ] `p2` - `cpt-cf-resource-group-fr-force-delete`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-list-groups-depth`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-seed-groups`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-hierarchy-query-latency`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-transactional-consistency`
+  - [x] `p1` - `cpt-cf-resource-group-fr-manage-entities`
+  - [x] `p1` - `cpt-cf-resource-group-fr-enforce-forest-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-validate-parent-type`
+  - [x] `p1` - `cpt-cf-resource-group-fr-delete-entity-no-active-references`
+  - [x] `p1` - `cpt-cf-resource-group-fr-closure-table`
+  - [x] `p1` - `cpt-cf-resource-group-fr-query-group-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-subtree-operations`
+  - [x] `p1` - `cpt-cf-resource-group-fr-query-profile`
+  - [x] `p1` - `cpt-cf-resource-group-fr-profile-change-no-rewrite`
+  - [x] `p1` - `cpt-cf-resource-group-fr-reduced-constraints-behavior`
+  - [x] `p2` - `cpt-cf-resource-group-fr-force-delete`
+  - [x] `p1` - `cpt-cf-resource-group-fr-list-groups-depth`
+  - [x] `p1` - `cpt-cf-resource-group-fr-seed-groups`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-hierarchy-query-latency`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-transactional-consistency`
 
 - **Design Principles Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-principle-strict-forest`
-  - [ ] `p1` - `cpt-cf-resource-group-principle-query-profile-guardrail`
+  - [x] `p1` - `cpt-cf-resource-group-principle-strict-forest`
+  - [x] `p1` - `cpt-cf-resource-group-principle-query-profile-guardrail`
 
 - **Design Constraints Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-profile-change-safety`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-profile-change-safety`
 
 - **Domain Model Entities**:
   - `ResourceGroup`
   - `ResourceGroupClosure`
 
 - **Design Components**:
-  - [ ] `p1` - `cpt-cf-resource-group-component-entity-service`
-  - [ ] `p1` - `cpt-cf-resource-group-component-hierarchy-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-entity-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-hierarchy-service`
 
 - **API**:
   - GET /api/resource-group/v1/groups
@@ -219,7 +219,7 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 ### 4. Membership Management - MEDIUM
 
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-feature-membership`
+- [x] `p2` - **ID**: `cpt-cf-resource-group-feature-membership`
 
 - **Purpose**: Implement membership CRUD with tenant-scoped ownership-graph semantics, seed path, and indexed lookups by group and resource.
 
@@ -239,14 +239,14 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - Integration read contract exposure — covered by Feature 5
 
 - **Requirements Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-fr-manage-membership`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-query-membership-relations`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-seed-memberships`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-membership-query-latency`
+  - [x] `p1` - `cpt-cf-resource-group-fr-manage-membership`
+  - [x] `p1` - `cpt-cf-resource-group-fr-query-membership-relations`
+  - [x] `p1` - `cpt-cf-resource-group-fr-seed-memberships`
+  - [x] `p1` - `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-membership-query-latency`
 
 - **Design Principles Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
+  - [x] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
 - **Design Constraints Covered**:
   - None
@@ -255,7 +255,7 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - `ResourceGroupMembership`
 
 - **Design Components**:
-  - [ ] `p1` - `cpt-cf-resource-group-component-membership-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-membership-service`
 
 - **API**:
   - GET /api/resource-group/v1/memberships
@@ -298,12 +298,12 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
   - [ ] `p1` - `cpt-cf-resource-group-fr-dual-auth-modes`
 
 - **Design Principles Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
-  - [ ] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
+  - [x] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
+  - [x] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
 - **Design Constraints Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
 - **Domain Model Entities**:
   - `ResourceGroupWithDepth`

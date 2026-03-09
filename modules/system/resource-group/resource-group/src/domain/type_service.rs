@@ -27,6 +27,12 @@ const MAX_TOP: i32 = 300;
 // @cpt-flow:cpt-cf-resource-group-flow-type-seed:p1
 // @cpt-algo:cpt-cf-resource-group-algo-type-code-validation:p1
 // @cpt-algo:cpt-cf-resource-group-algo-type-delete-guard:p1
+// @cpt-req:cpt-cf-resource-group-dod-type-create:p1
+// @cpt-req:cpt-cf-resource-group-dod-type-read:p1
+// @cpt-req:cpt-cf-resource-group-dod-type-update:p1
+// @cpt-req:cpt-cf-resource-group-dod-type-delete:p1
+// @cpt-req:cpt-cf-resource-group-dod-type-uniqueness:p1
+// @cpt-req:cpt-cf-resource-group-dod-type-seed:p1
 
 pub struct TypeService<TR: TypeRepository, GR: GroupRepository> {
     type_repo: TR,

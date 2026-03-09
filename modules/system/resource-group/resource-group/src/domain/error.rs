@@ -59,6 +59,14 @@ pub enum DomainError {
     Forbidden,
 }
 
+impl From<modkit_db::DbError> for DomainError {
+    fn from(err: modkit_db::DbError) -> Self {
+        DomainError::Database {
+            message: err.to_string(),
+        }
+    }
+}
+
 impl DomainError {
     pub fn validation(message: impl Into<String>) -> Self {
         Self::Validation {

@@ -10,33 +10,59 @@ use resource_group_sdk::{
 };
 use uuid::Uuid;
 
+use crate::domain::group_service::GroupService;
+use crate::domain::membership_service::MembershipService;
 use crate::domain::type_service::TypeService;
+use crate::infra::db::repo::closure_repo::ClosureRepositoryImpl;
 use crate::infra::db::repo::group_repo::GroupRepositoryImpl;
+use crate::infra::db::repo::membership_repo::MembershipRepositoryImpl;
 use crate::infra::db::repo::type_repo::TypeRepositoryImpl;
 
 /// Unified service facade implementing both SDK traits.
 /// Backed by domain services and repositories.
+#[allow(clippy::struct_field_names)]
 pub struct RgService {
     type_service: TypeService<TypeRepositoryImpl, GroupRepositoryImpl>,
-    _db: Arc<modkit_db::DBProvider<modkit_db::DbError>>,
+    group_service: GroupService<
+        TypeRepositoryImpl,
+        GroupRepositoryImpl,
+        ClosureRepositoryImpl,
+        MembershipRepositoryImpl,
+    >,
+    membership_service: MembershipService<GroupRepositoryImpl, MembershipRepositoryImpl>,
 }
 
 impl RgService {
     #[must_use]
-    pub fn new(db: Arc<modkit_db::DBProvider<modkit_db::DbError>>) -> Self {
+    pub fn new(
+        db: Arc<modkit_db::DBProvider<modkit_db::DbError>>,
+        max_depth: Option<usize>,
+        max_width: Option<usize>,
+    ) -> Self {
         let type_service =
             TypeService::new(TypeRepositoryImpl, GroupRepositoryImpl, Arc::clone(&db));
+        let membership_service = MembershipService::new(
+            GroupRepositoryImpl,
+            MembershipRepositoryImpl,
+            Arc::clone(&db),
+        );
+        let group_service = GroupService::new(
+            TypeRepositoryImpl,
+            GroupRepositoryImpl,
+            ClosureRepositoryImpl,
+            MembershipRepositoryImpl,
+            db,
+            max_depth,
+            max_width,
+        );
         Self {
             type_service,
-            _db: db,
+            group_service,
+            membership_service,
         }
     }
 }
 
-// Stub for non-type methods — domain logic is out of scope for Feature 0002.
-fn not_implemented() -> ResourceGroupError {
-    ResourceGroupError::Internal
-}
 
 #[async_trait]
 impl ResourceGroupClient for RgService {
@@ -96,76 +122,103 @@ impl ResourceGroupClient for RgService {
     async fn create_group(
         &self,
         _ctx: &SecurityContext,
-        _request: CreateGroupRequest,
+        request: CreateGroupRequest,
     ) -> Result<ResourceGroup, ResourceGroupError> {
-        Err(not_implemented())
+        self.group_service
+            .create_group(request)
+            .await
+            .map_err(Into::into)
     }
 
     async fn get_group(
         &self,
         _ctx: &SecurityContext,
-        _group_id: Uuid,
+        group_id: Uuid,
     ) -> Result<ResourceGroup, ResourceGroupError> {
-        Err(not_implemented())
+        self.group_service
+            .get_group(group_id)
+            .await
+            .map_err(Into::into)
     }
 
     async fn list_groups(
         &self,
         _ctx: &SecurityContext,
-        _query: ListQuery,
+        query: ListQuery,
     ) -> Result<Page<ResourceGroup>, ResourceGroupError> {
-        Err(not_implemented())
+        self.group_service
+            .list_groups(query)
+            .await
+            .map_err(Into::into)
     }
 
     async fn update_group(
         &self,
         _ctx: &SecurityContext,
-        _group_id: Uuid,
-        _request: UpdateGroupRequest,
+        group_id: Uuid,
+        request: UpdateGroupRequest,
     ) -> Result<ResourceGroup, ResourceGroupError> {
-        Err(not_implemented())
+        self.group_service
+            .update_group(group_id, request)
+            .await
+            .map_err(Into::into)
     }
 
     async fn delete_group(
         &self,
         _ctx: &SecurityContext,
-        _group_id: Uuid,
-        _force: bool,
+        group_id: Uuid,
+        force: bool,
     ) -> Result<(), ResourceGroupError> {
-        Err(not_implemented())
+        self.group_service
+            .delete_group(group_id, force)
+            .await
+            .map_err(Into::into)
     }
 
     async fn list_group_depth(
         &self,
         _ctx: &SecurityContext,
-        _group_id: Uuid,
-        _query: ListQuery,
+        group_id: Uuid,
+        query: ListQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError> {
-        Err(not_implemented())
+        self.group_service
+            .list_group_depth(group_id, query)
+            .await
+            .map_err(Into::into)
     }
 
     async fn add_membership(
         &self,
         _ctx: &SecurityContext,
-        _request: AddMembershipRequest,
+        request: AddMembershipRequest,
     ) -> Result<ResourceGroupMembership, ResourceGroupError> {
-        Err(not_implemented())
+        self.membership_service
+            .add_membership(request)
+            .await
+            .map_err(Into::into)
     }
 
     async fn remove_membership(
         &self,
         _ctx: &SecurityContext,
-        _request: RemoveMembershipRequest,
+        request: RemoveMembershipRequest,
     ) -> Result<(), ResourceGroupError> {
-        Err(not_implemented())
+        self.membership_service
+            .remove_membership(request)
+            .await
+            .map_err(Into::into)
     }
 
     async fn list_memberships(
         &self,
         _ctx: &SecurityContext,
-        _query: ListQuery,
+        query: ListQuery,
     ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError> {
-        Err(not_implemented())
+        self.membership_service
+            .list_memberships(query)
+            .await
+            .map_err(Into::into)
     }
 }
 

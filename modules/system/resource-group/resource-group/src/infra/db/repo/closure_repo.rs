@@ -48,6 +48,22 @@ pub trait ClosureRepository: Send + Sync {
         ancestor_id: Uuid,
         descendant_id: Uuid,
     ) -> Result<bool, DomainError>;
+
+    /// Delete ALL closure rows involving a node (ancestor or descendant).
+    async fn delete_all_for_node<C: DBRunner>(
+        &self,
+        conn: &C,
+        node_id: Uuid,
+    ) -> Result<u64, DomainError>;
+
+    /// Delete external ancestor paths for a set of subtree nodes.
+    /// Removes rows where `descendant_id` IN `subtree_ids` AND `ancestor_id` NOT IN `subtree_ids`.
+    /// Preserves internal subtree structure.
+    async fn delete_external_ancestor_paths<C: DBRunner>(
+        &self,
+        conn: &C,
+        subtree_ids: &[Uuid],
+    ) -> Result<u64, DomainError>;
 }
 
 #[derive(Clone)]
@@ -133,5 +149,51 @@ impl ClosureRepository for ClosureRepositoryImpl {
             .await
             .map_err(db_err)?;
         Ok(count > 0)
+    }
+
+    async fn delete_all_for_node<C: DBRunner>(
+        &self,
+        conn: &C,
+        node_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        let scope = unconstrained_scope();
+        let result = resource_group_closure::Entity::delete_many()
+            .filter(
+                Condition::any()
+                    .add(resource_group_closure::Column::AncestorId.eq(node_id))
+                    .add(resource_group_closure::Column::DescendantId.eq(node_id)),
+            )
+            .secure()
+            .scope_with(&scope)
+            .exec(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected)
+    }
+
+    async fn delete_external_ancestor_paths<C: DBRunner>(
+        &self,
+        conn: &C,
+        subtree_ids: &[Uuid],
+    ) -> Result<u64, DomainError> {
+        let scope = unconstrained_scope();
+        let result = resource_group_closure::Entity::delete_many()
+            .filter(
+                Condition::all()
+                    .add(
+                        resource_group_closure::Column::DescendantId
+                            .is_in(subtree_ids.to_vec()),
+                    )
+                    .add(
+                        resource_group_closure::Column::AncestorId
+                            .is_not_in(subtree_ids.to_vec()),
+                    ),
+            )
+            .secure()
+            .scope_with(&scope)
+            .exec(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected)
     }
 }

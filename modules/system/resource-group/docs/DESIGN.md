@@ -122,25 +122,25 @@ RG handles graph/membership data only.
 
 #### Strict Forest Integrity
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
 
 Hierarchy guarantees single parent and cycle prevention for all writes.
 
 #### Dynamic Type Governance
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-dynamic-types`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-dynamic-types`
 
 Type rules are runtime-configurable through API/seed data with deterministic validation.
 
 #### Query Profile as Guardrail
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-query-profile-guardrail`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-query-profile-guardrail`
 
 `(max_depth, max_width)` is a service profile controlling write admissibility and SLO classification.
 
 #### Tenant Scope for Ownership Graph
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
 In ownership-graph usage, groups are tenant-scoped and links must be tenant-hierarchy-compatible (same-tenant or allowed related-tenant link per tenant hierarchy rules).
 
@@ -166,7 +166,7 @@ RG persistence layer uses SeaORM abstractions and standard SQL. The module **MUS
 
 #### Profile Change Safety
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
 
 Reducing enabled `max_depth`/`max_width` cannot rewrite existing rows. Writes that worsen violation are rejected until external migration runs. Limits may also be disabled.
 
@@ -236,7 +236,7 @@ Boundaries:
 
 #### Type Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-type-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-type-service`
 
 Responsibilities:
 
@@ -246,7 +246,7 @@ Responsibilities:
 
 #### Entity Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-entity-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-entity-service`
 
 Responsibilities:
 
@@ -256,7 +256,7 @@ Responsibilities:
 
 #### Hierarchy Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-hierarchy-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-hierarchy-service`
 
 Responsibilities:
 
@@ -266,7 +266,7 @@ Responsibilities:
 
 #### Membership Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-membership-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-membership-service`
 
 Responsibilities:
 

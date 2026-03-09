@@ -32,11 +32,13 @@ Addresses:
 
 - **PRD**: [PRD.md](../PRD.md)
 - **Design**: [DESIGN.md](../DESIGN.md)
-- **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) — `cpt-cf-resource-group-feature-type-management`
+- **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md)
+  - [x] `p1` - `cpt-cf-resource-group-feature-type-management`
 - **OpenAPI**: [openapi.yaml](../openapi.yaml) — `/api/resource-group/v1/types`, `/api/resource-group/v1/types/{code}`
 - **Migration**: [migration.sql](../migration.sql) — `resource_group_type` table and `idx_resource_group_type_code_lower`
 - **Design Components**: `cpt-cf-resource-group-component-type-service`
-- **Dependencies**: `cpt-cf-resource-group-feature-domain-foundation` (SDK, module shell, persistence adapter, DB schema)
+- **Dependencies**:
+  - [x] `p1` - `cpt-cf-resource-group-feature-domain-foundation`
 
 ## 2. Actor Flows (CDSL)
 

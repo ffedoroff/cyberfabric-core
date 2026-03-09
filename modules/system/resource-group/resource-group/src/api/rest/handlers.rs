@@ -121,9 +121,10 @@ pub async fn delete_type(
 pub async fn list_groups(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<RgService>>,
+    Query(params): Query<ListQueryParams>,
 ) -> ApiResult<Json<PageResponse<GroupResponse>>> {
     let page = svc
-        .list_groups(&ctx, ListQuery::default())
+        .list_groups(&ctx, params.into())
         .await
         .map_err(|e| Problem::from(DomainError::from_sdk_err(e)))?;
     Ok(Json(to_page_response(page, GroupResponse::from)))
@@ -184,13 +185,21 @@ pub async fn update_group(
     Ok(Json(GroupResponse::from(result)))
 }
 
+/// Query parameter for force delete.
+#[derive(Debug, Default, Deserialize)]
+pub struct DeleteQueryParams {
+    #[serde(default)]
+    pub force: Option<bool>,
+}
+
 pub async fn delete_group(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<RgService>>,
     Path(group_id): Path<Uuid>,
+    Query(params): Query<DeleteQueryParams>,
 ) -> ApiResult<StatusCode> {
-    // TODO: parse ?force=true from query params when implementing Feature 3
-    svc.delete_group(&ctx, group_id, false)
+    let force = params.force.unwrap_or(false);
+    svc.delete_group(&ctx, group_id, force)
         .await
         .map_err(|e| Problem::from(DomainError::from_sdk_err(e)))?;
     Ok(StatusCode::NO_CONTENT)
@@ -200,9 +209,10 @@ pub async fn list_group_depth(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<RgService>>,
     Path(group_id): Path<Uuid>,
+    Query(params): Query<ListQueryParams>,
 ) -> ApiResult<Json<PageResponse<GroupWithDepthResponse>>> {
     let page = svc
-        .list_group_depth(&ctx, group_id, ListQuery::default())
+        .list_group_depth(&ctx, group_id, params.into())
         .await
         .map_err(|e| Problem::from(DomainError::from_sdk_err(e)))?;
     Ok(Json(to_page_response(page, GroupWithDepthResponse::from)))
@@ -213,9 +223,10 @@ pub async fn list_group_depth(
 pub async fn list_memberships(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<RgService>>,
+    Query(params): Query<ListQueryParams>,
 ) -> ApiResult<Json<PageResponse<MembershipResponse>>> {
     let page = svc
-        .list_memberships(&ctx, ListQuery::default())
+        .list_memberships(&ctx, params.into())
         .await
         .map_err(|e| Problem::from(DomainError::from_sdk_err(e)))?;
     Ok(Json(to_page_response(page, MembershipResponse::from)))

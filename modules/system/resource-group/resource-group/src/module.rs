@@ -62,7 +62,7 @@ impl Module for ResourceGroupModule {
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
         // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
-        let svc = Arc::new(RgService::new(db));
+        let svc = Arc::new(RgService::new(db, cfg.max_depth, cfg.max_width));
         // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
         // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
         // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3

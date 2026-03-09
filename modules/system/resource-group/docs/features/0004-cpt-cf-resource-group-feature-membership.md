@@ -1,7 +1,7 @@
 # Feature: Membership Management
 
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-featstatus-membership`
-- [ ] `p2` - `cpt-cf-resource-group-feature-membership`
+- [x] `p2` - **ID**: `cpt-cf-resource-group-featstatus-membership`
+- [x] `p2` - `cpt-cf-resource-group-feature-membership`
 
 ## 1. Feature Context
 
@@ -33,17 +33,19 @@ Addresses:
 
 - **PRD**: [PRD.md](../PRD.md)
 - **Design**: [DESIGN.md](../DESIGN.md)
-- **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) — `cpt-cf-resource-group-feature-membership`
+- **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md)
+  - [x] `p2` - `cpt-cf-resource-group-feature-membership`
 - **OpenAPI**: [openapi.yaml](../openapi.yaml) — `/memberships`, `/memberships/{group_id}/{resource_type}/{resource_id}`
 - **Migration**: [migration.sql](../migration.sql) — `resource_group_membership` table, `uq_resource_group_membership_unique`, `idx_rgm_resource_type_id`
 - **Design Components**: `cpt-cf-resource-group-component-membership-service`
-- **Dependencies**: `cpt-cf-resource-group-feature-entity-hierarchy` (memberships reference groups that must exist)
+- **Dependencies**:
+  - [x] `p1` - `cpt-cf-resource-group-feature-entity-hierarchy`
 
 ## 2. Actor Flows (CDSL)
 
 ### Add Membership Flow
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-add`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-add`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -56,21 +58,21 @@ Addresses:
 - Tenant scope incompatible (ownership-graph profile) — `TenantIncompatibility`
 
 **Steps**:
-1. [ ] - `p1` - Actor sends API: POST /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-mbr-add-1`
-2. [ ] - `p1` - DB: SELECT id, tenant_id FROM resource_group WHERE id = :group_id — verify group exists and load tenant_id - `inst-mbr-add-2`
-3. [ ] - `p1` - **IF** group not found - `inst-mbr-add-3`
-   1. [ ] - `p1` - **RETURN** `NotFound` error — group does not exist - `inst-mbr-add-3a`
-4. [ ] - `p1` - Invoke tenant scope validation (`cpt-cf-resource-group-algo-membership-tenant-scope`) — verify caller's effective scope is compatible with group's tenant_id - `inst-mbr-add-4`
-5. [ ] - `p1` - **IF** tenant scope incompatible - `inst-mbr-add-5`
-   1. [ ] - `p1` - **RETURN** `TenantIncompatibility` error with tenant context - `inst-mbr-add-5a`
-6. [ ] - `p1` - DB: INSERT INTO resource_group_membership (group_id, resource_type, resource_id, created) - `inst-mbr-add-6`
-7. [ ] - `p1` - **IF** unique constraint violation on (group_id, resource_type, resource_id) - `inst-mbr-add-7`
-   1. [ ] - `p1` - **RETURN** `ConflictActiveReferences` error — membership already exists - `inst-mbr-add-7a`
-8. [ ] - `p1` - **RETURN** created `ResourceGroupMembership` { group_id, resource_type, resource_id } (201 Created) - `inst-mbr-add-8`
+1. [x] - `p1` - Actor sends API: POST /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-mbr-add-1`
+2. [x] - `p1` - DB: SELECT id, tenant_id FROM resource_group WHERE id = :group_id — verify group exists and load tenant_id - `inst-mbr-add-2`
+3. [x] - `p1` - **IF** group not found - `inst-mbr-add-3`
+   1. [x] - `p1` - **RETURN** `NotFound` error — group does not exist - `inst-mbr-add-3a`
+4. [x] - `p1` - Invoke tenant scope validation (`cpt-cf-resource-group-algo-membership-tenant-scope`) — verify caller's effective scope is compatible with group's tenant_id - `inst-mbr-add-4`
+5. [x] - `p1` - **IF** tenant scope incompatible - `inst-mbr-add-5`
+   1. [x] - `p1` - **RETURN** `TenantIncompatibility` error with tenant context - `inst-mbr-add-5a`
+6. [x] - `p1` - DB: INSERT INTO resource_group_membership (group_id, resource_type, resource_id, created) - `inst-mbr-add-6`
+7. [x] - `p1` - **IF** unique constraint violation on (group_id, resource_type, resource_id) - `inst-mbr-add-7`
+   1. [x] - `p1` - **RETURN** `ConflictActiveReferences` error — membership already exists - `inst-mbr-add-7a`
+8. [x] - `p1` - **RETURN** created `ResourceGroupMembership` { group_id, resource_type, resource_id } (201 Created) - `inst-mbr-add-8`
 
 ### Remove Membership Flow
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-remove`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-remove`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -82,20 +84,20 @@ Addresses:
 - Tenant scope incompatible — `TenantIncompatibility`
 
 **Steps**:
-1. [ ] - `p1` - Actor sends API: DELETE /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-mbr-remove-1`
-2. [ ] - `p1` - DB: SELECT group_id, resource_type, resource_id FROM resource_group_membership WHERE group_id = :group_id AND resource_type = :resource_type AND resource_id = :resource_id — verify existence - `inst-mbr-remove-2`
-3. [ ] - `p1` - **IF** membership not found - `inst-mbr-remove-3`
-   1. [ ] - `p1` - **RETURN** `NotFound` error - `inst-mbr-remove-3a`
-4. [ ] - `p1` - DB: SELECT tenant_id FROM resource_group WHERE id = :group_id — load group tenant for scope check - `inst-mbr-remove-4`
-5. [ ] - `p1` - Invoke tenant scope validation (`cpt-cf-resource-group-algo-membership-tenant-scope`) - `inst-mbr-remove-5`
-6. [ ] - `p1` - **IF** tenant scope incompatible - `inst-mbr-remove-6`
-   1. [ ] - `p1` - **RETURN** `TenantIncompatibility` error - `inst-mbr-remove-6a`
-7. [ ] - `p1` - DB: DELETE FROM resource_group_membership WHERE group_id = :group_id AND resource_type = :resource_type AND resource_id = :resource_id - `inst-mbr-remove-7`
-8. [ ] - `p1` - **RETURN** success (204 No Content) - `inst-mbr-remove-8`
+1. [x] - `p1` - Actor sends API: DELETE /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-mbr-remove-1`
+2. [x] - `p1` - DB: SELECT group_id, resource_type, resource_id FROM resource_group_membership WHERE group_id = :group_id AND resource_type = :resource_type AND resource_id = :resource_id — verify existence - `inst-mbr-remove-2`
+3. [x] - `p1` - **IF** membership not found - `inst-mbr-remove-3`
+   1. [x] - `p1` - **RETURN** `NotFound` error - `inst-mbr-remove-3a`
+4. [x] - `p1` - DB: SELECT tenant_id FROM resource_group WHERE id = :group_id — load group tenant for scope check - `inst-mbr-remove-4`
+5. [x] - `p1` - Invoke tenant scope validation (`cpt-cf-resource-group-algo-membership-tenant-scope`) - `inst-mbr-remove-5`
+6. [x] - `p1` - **IF** tenant scope incompatible - `inst-mbr-remove-6`
+   1. [x] - `p1` - **RETURN** `TenantIncompatibility` error - `inst-mbr-remove-6a`
+7. [x] - `p1` - DB: DELETE FROM resource_group_membership WHERE group_id = :group_id AND resource_type = :resource_type AND resource_id = :resource_id - `inst-mbr-remove-7`
+8. [x] - `p1` - **RETURN** success (204 No Content) - `inst-mbr-remove-8`
 
 ### List Memberships Flow
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-list`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-list`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -107,16 +109,16 @@ Addresses:
 - Invalid OData filter — `Validation` error
 
 **Steps**:
-1. [ ] - `p1` - Actor sends API: GET /api/resource-group/v1/memberships?$filter={expr}&$top={n}&$skip={m} - `inst-mbr-list-1`
-2. [ ] - `p1` - Parse OData: `$filter` on resource_id (eq, ne, in), resource_type (eq, ne, in), group_id (eq, ne, in); `$top` (1..300, default 50); `$skip` (default 0) - `inst-mbr-list-2`
-3. [ ] - `p1` - **IF** OData parse fails - `inst-mbr-list-3`
-   1. [ ] - `p1` - **RETURN** `Validation` error - `inst-mbr-list-3a`
-4. [ ] - `p1` - DB: SELECT group_id, resource_type, resource_id FROM resource_group_membership WHERE {filter} ORDER BY group_id ASC, resource_type ASC, resource_id ASC LIMIT $top OFFSET $skip - `inst-mbr-list-4`
-5. [ ] - `p1` - **RETURN** `Page<ResourceGroupMembership>` { items, page_info } - `inst-mbr-list-5`
+1. [x] - `p1` - Actor sends API: GET /api/resource-group/v1/memberships?$filter={expr}&$top={n}&$skip={m} - `inst-mbr-list-1`
+2. [x] - `p1` - Parse OData: `$filter` on resource_id (eq, ne, in), resource_type (eq, ne, in), group_id (eq, ne, in); `$top` (1..300, default 50); `$skip` (default 0) - `inst-mbr-list-2`
+3. [x] - `p1` - **IF** OData parse fails - `inst-mbr-list-3`
+   1. [x] - `p1` - **RETURN** `Validation` error - `inst-mbr-list-3a`
+4. [x] - `p1` - DB: SELECT group_id, resource_type, resource_id FROM resource_group_membership WHERE {filter} ORDER BY group_id ASC, resource_type ASC, resource_id ASC LIMIT $top OFFSET $skip - `inst-mbr-list-4`
+5. [x] - `p1` - **RETURN** `Page<ResourceGroupMembership>` { items, page_info } - `inst-mbr-list-5`
 
 ### Seed Memberships Flow
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-seed`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-seed`
 
 **Actor**: `cpt-cf-resource-group-actor-instance-administrator`
 
@@ -128,32 +130,32 @@ Addresses:
 - Seed data references non-existent group — seed aborts
 
 **Steps**:
-1. [ ] - `p1` - Instance Administrator triggers seed operation (pre-deployment, system SecurityContext) - `inst-mbr-seed-1`
-2. [ ] - `p1` - **FOR EACH** membership definition in seed data - `inst-mbr-seed-2`
-   1. [ ] - `p1` - DB: SELECT id, tenant_id FROM resource_group WHERE id = :group_id — verify group exists - `inst-mbr-seed-2a`
-   2. [ ] - `p1` - **IF** group not found — **RETURN** `NotFound` error, seed aborts - `inst-mbr-seed-2b`
-   3. [ ] - `p1` - DB: INSERT INTO resource_group_membership (group_id, resource_type, resource_id, created) ON CONFLICT (group_id, resource_type, resource_id) DO NOTHING — idempotent upsert - `inst-mbr-seed-2c`
-3. [ ] - `p1` - **RETURN** seed complete — memberships provisioned - `inst-mbr-seed-3`
+1. [x] - `p1` - Instance Administrator triggers seed operation (pre-deployment, system SecurityContext) - `inst-mbr-seed-1`
+2. [x] - `p1` - **FOR EACH** membership definition in seed data - `inst-mbr-seed-2`
+   1. [x] - `p1` - DB: SELECT id, tenant_id FROM resource_group WHERE id = :group_id — verify group exists - `inst-mbr-seed-2a`
+   2. [x] - `p1` - **IF** group not found — **RETURN** `NotFound` error, seed aborts - `inst-mbr-seed-2b`
+   3. [x] - `p1` - DB: INSERT INTO resource_group_membership (group_id, resource_type, resource_id, created) ON CONFLICT (group_id, resource_type, resource_id) DO NOTHING — idempotent upsert - `inst-mbr-seed-2c`
+3. [x] - `p1` - **RETURN** seed complete — memberships provisioned - `inst-mbr-seed-3`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### Membership Tenant Scope Validation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-membership-tenant-scope`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-membership-tenant-scope`
 
 **Input**: Caller `SecurityContext` (with `subject_tenant_id` / effective scope), target group `tenant_id`
 
 **Output**: Compatible (allow) or incompatible (reject with tenant context)
 
 **Steps**:
-1. [ ] - `p1` - **IF** ownership-graph profile is not active — **RETURN** compatible (no tenant scope enforcement in catalog profile) - `inst-tenant-1`
-2. [ ] - `p1` - Extract caller effective scope from SecurityContext (`subject_tenant_id`) - `inst-tenant-2`
-3. [ ] - `p1` - **IF** caller is platform-admin (privileged provisioning exception) - `inst-tenant-3`
-   1. [ ] - `p1` - **RETURN** compatible — platform-admin provisioning bypasses tenant scope check for management operations - `inst-tenant-3a`
-4. [ ] - `p1` - **IF** target group's tenant_id is within caller's effective tenant scope (same-tenant or allowed related-tenant per tenant hierarchy rules) - `inst-tenant-4`
-   1. [ ] - `p1` - **RETURN** compatible - `inst-tenant-4a`
-5. [ ] - `p1` - **ELSE** - `inst-tenant-5`
-   1. [ ] - `p1` - **RETURN** incompatible — caller tenant scope does not cover target group tenant - `inst-tenant-5a`
+1. [x] - `p1` - **IF** ownership-graph profile is not active — **RETURN** compatible (no tenant scope enforcement in catalog profile) - `inst-tenant-1`
+2. [x] - `p1` - Extract caller effective scope from SecurityContext (`subject_tenant_id`) - `inst-tenant-2`
+3. [x] - `p1` - **IF** caller is platform-admin (privileged provisioning exception) - `inst-tenant-3`
+   1. [x] - `p1` - **RETURN** compatible — platform-admin provisioning bypasses tenant scope check for management operations - `inst-tenant-3a`
+4. [x] - `p1` - **IF** target group's tenant_id is within caller's effective tenant scope (same-tenant or allowed related-tenant per tenant hierarchy rules) - `inst-tenant-4`
+   1. [x] - `p1` - **RETURN** compatible - `inst-tenant-4a`
+5. [x] - `p1` - **ELSE** - `inst-tenant-5`
+   1. [x] - `p1` - **RETURN** incompatible — caller tenant scope does not cover target group tenant - `inst-tenant-5a`
 
 ## 4. States (CDSL)
 
@@ -163,7 +165,7 @@ Not applicable. Memberships are simple links with no lifecycle states — they e
 
 ### Add Membership
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-add`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-add`
 
 The system **MUST** add a membership via `POST /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id}` returning `ResourceGroupMembership` (201 Created). The system **MUST** verify the target group exists or return `NotFound`. In ownership-graph profile, the system **MUST** validate that the caller's effective tenant scope covers the target group's `tenant_id` (derived via JOIN), rejecting with `TenantIncompatibility` if incompatible. Platform-admin provisioning calls **MUST** bypass tenant scope validation. Duplicate membership (same composite key) **MUST** return `ConflictActiveReferences`.
 
@@ -178,7 +180,7 @@ The system **MUST** add a membership via `POST /api/resource-group/v1/membership
 
 ### Remove Membership
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-remove`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-remove`
 
 The system **MUST** remove a membership via `DELETE /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id}` returning 204 No Content. The system **MUST** verify the membership exists or return `NotFound`. In ownership-graph profile, the system **MUST** validate tenant scope compatibility before removal.
 
@@ -192,7 +194,7 @@ The system **MUST** remove a membership via `DELETE /api/resource-group/v1/membe
 
 ### List Memberships with OData
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-list`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-list`
 
 The system **MUST** list memberships via `GET /api/resource-group/v1/memberships` with OData `$filter` on resource_id (eq, ne, in), resource_type (eq, ne, in), group_id (eq, ne, in). Results **MUST** be sorted by `group_id` ASC, `resource_type` ASC, `resource_id` ASC. Membership responses **MUST NOT** include `tenant_id` — tenant scope is derived from group data the caller already has. Pagination via `$top` (1..300, default 50) and `$skip` (default 0).
 
@@ -206,7 +208,7 @@ The system **MUST** list memberships via `GET /api/resource-group/v1/memberships
 
 ### Membership Active-Reference Guard
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-active-ref-guard`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-active-ref-guard`
 
 The system **MUST** protect group deletion when memberships exist. When `DELETE /groups/{group_id}` is called with `force=false` and memberships reference the group, the delete **MUST** be rejected with `ConflictActiveReferences`. This guard is implemented in the entity delete flow (Feature 3) but depends on membership data managed by this feature. The `resource_group_membership.group_id` FK with `ON DELETE RESTRICT` provides the database-level safety net.
 
@@ -218,7 +220,7 @@ The system **MUST** protect group deletion when memberships exist. When `DELETE 
 
 ### Seed Memberships Path
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-seed`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-seed`
 
 Membership data seeding is **optional** and deployment-specific. It can be performed via plugin data migration, manual database administration, or RG API calls. When performed via the module's seed path, seed operations **MUST** run with system `SecurityContext` (bypassing AuthZ and tenant scope validation). The seed path **MUST** verify that each target group exists, abort on the first `NotFound`, and handle duplicates idempotently (insert-or-ignore on unique constraint). The seed path **MUST** be idempotent.
 
@@ -230,26 +232,26 @@ Membership data seeding is **optional** and deployment-specific. It can be perfo
 
 ## 6. Acceptance Criteria
 
-- [ ] `POST /memberships/{group_id}/{resource_type}/{resource_id}` creates membership and returns `201` with `ResourceGroupMembership`
-- [ ] Add membership to non-existent group returns `NotFound`
-- [ ] Duplicate membership (same composite key) returns `ConflictActiveReferences`
-- [ ] In ownership-graph profile, add membership with incompatible tenant scope returns `TenantIncompatibility`
-- [ ] Platform-admin add membership bypasses tenant scope validation
-- [ ] `DELETE /memberships/{group_id}/{resource_type}/{resource_id}` removes membership and returns `204`
-- [ ] Remove non-existent membership returns `NotFound`
-- [ ] In ownership-graph profile, remove membership validates tenant scope
-- [ ] `GET /memberships` returns paginated list sorted by group_id ASC, resource_type ASC, resource_id ASC
-- [ ] OData `$filter` on resource_id works for eq, ne, in
-- [ ] OData `$filter` on resource_type works for eq, ne, in
-- [ ] OData `$filter` on group_id works for eq, ne, in
-- [ ] Membership responses do not include `tenant_id`
-- [ ] Reverse lookup by resource_type + resource_id returns memberships across groups (uses `idx_rgm_resource_type_id` index)
-- [ ] Group delete with `force=false` is rejected when memberships reference the group
-- [ ] Group delete with `force=true` cascades membership removal
-- [ ] Seed memberships path provisions links deterministically and is idempotent
-- [ ] Seed aborts on first non-existent group reference
-- [ ] Seed runs with system SecurityContext (bypasses AuthZ and tenant scope)
-- [ ] Seed handles duplicate entries idempotently (insert-or-ignore)
+- [x] `POST /memberships/{group_id}/{resource_type}/{resource_id}` creates membership and returns `201` with `ResourceGroupMembership`
+- [x] Add membership to non-existent group returns `NotFound`
+- [x] Duplicate membership (same composite key) returns `ConflictActiveReferences`
+- [x] In ownership-graph profile, add membership with incompatible tenant scope returns `TenantIncompatibility`
+- [x] Platform-admin add membership bypasses tenant scope validation
+- [x] `DELETE /memberships/{group_id}/{resource_type}/{resource_id}` removes membership and returns `204`
+- [x] Remove non-existent membership returns `NotFound`
+- [x] In ownership-graph profile, remove membership validates tenant scope
+- [x] `GET /memberships` returns paginated list sorted by group_id ASC, resource_type ASC, resource_id ASC
+- [x] OData `$filter` on resource_id works for eq, ne, in
+- [x] OData `$filter` on resource_type works for eq, ne, in
+- [x] OData `$filter` on group_id works for eq, ne, in
+- [x] Membership responses do not include `tenant_id`
+- [x] Reverse lookup by resource_type + resource_id returns memberships across groups (uses `idx_rgm_resource_type_id` index)
+- [x] Group delete with `force=false` is rejected when memberships reference the group
+- [x] Group delete with `force=true` cascades membership removal
+- [x] Seed memberships path provisions links deterministically and is idempotent
+- [x] Seed aborts on first non-existent group reference
+- [x] Seed runs with system SecurityContext (bypasses AuthZ and tenant scope)
+- [x] Seed handles duplicate entries idempotently (insert-or-ignore)
 
 ## 7. Non-Applicable Domains
 
