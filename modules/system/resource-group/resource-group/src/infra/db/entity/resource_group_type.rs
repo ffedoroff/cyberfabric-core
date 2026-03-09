@@ -8,9 +8,18 @@ use time::OffsetDateTime;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub code: String,
-    pub parents: Vec<String>,
+    #[sea_orm(column_type = "Json")]
+    pub parents: serde_json::Value,
     pub created: OffsetDateTime,
     pub modified: Option<OffsetDateTime>,
+}
+
+impl Model {
+    /// Get parents as `Vec<String>`.
+    #[must_use]
+    pub fn parents_vec(&self) -> Vec<String> {
+        serde_json::from_value(self.parents.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

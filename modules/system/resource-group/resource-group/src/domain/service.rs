@@ -61,6 +61,32 @@ impl RgService {
             membership_service,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn type_service(
+        &self,
+    ) -> &TypeService<TypeRepositoryImpl, GroupRepositoryImpl> {
+        &self.type_service
+    }
+
+    #[cfg(test)]
+    pub(crate) fn group_service(
+        &self,
+    ) -> &GroupService<
+        TypeRepositoryImpl,
+        GroupRepositoryImpl,
+        ClosureRepositoryImpl,
+        MembershipRepositoryImpl,
+    > {
+        &self.group_service
+    }
+
+    #[cfg(test)]
+    pub(crate) fn membership_service(
+        &self,
+    ) -> &MembershipService<GroupRepositoryImpl, MembershipRepositoryImpl> {
+        &self.membership_service
+    }
 }
 
 

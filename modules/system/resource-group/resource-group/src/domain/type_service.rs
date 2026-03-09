@@ -122,7 +122,7 @@ impl<TR: TypeRepository, GR: GroupRepository> TypeService<TR, GR> {
         let now = OffsetDateTime::now_utc();
         let active_model = resource_group_type::ActiveModel {
             code: sea_orm::ActiveValue::Set(normalized_code.clone()),
-            parents: sea_orm::ActiveValue::Set(request.parents),
+            parents: sea_orm::ActiveValue::Set(serde_json::to_value(&request.parents).unwrap_or_default()),
             created: sea_orm::ActiveValue::Set(now),
             modified: sea_orm::ActiveValue::NotSet,
         };
@@ -212,7 +212,7 @@ impl<TR: TypeRepository, GR: GroupRepository> TypeService<TR, GR> {
         // inst-type-update-6: update
         let active_model = resource_group_type::ActiveModel {
             code: sea_orm::ActiveValue::Unchanged(code.to_owned()),
-            parents: sea_orm::ActiveValue::Set(request.parents),
+            parents: sea_orm::ActiveValue::Set(serde_json::to_value(&request.parents).unwrap_or_default()),
             created: sea_orm::ActiveValue::NotSet,
             modified: sea_orm::ActiveValue::Set(Some(OffsetDateTime::now_utc())),
         };
@@ -281,7 +281,7 @@ impl<TR: TypeRepository, GR: GroupRepository> TypeService<TR, GR> {
                 // Update parents
                 let active_model = resource_group_type::ActiveModel {
                     code: sea_orm::ActiveValue::Unchanged(normalized_code),
-                    parents: sea_orm::ActiveValue::Set(type_def.parents),
+                    parents: sea_orm::ActiveValue::Set(serde_json::to_value(&type_def.parents).unwrap_or_default()),
                     created: sea_orm::ActiveValue::NotSet,
                     modified: sea_orm::ActiveValue::Set(Some(OffsetDateTime::now_utc())),
                 };
@@ -291,7 +291,7 @@ impl<TR: TypeRepository, GR: GroupRepository> TypeService<TR, GR> {
                 let now = OffsetDateTime::now_utc();
                 let active_model = resource_group_type::ActiveModel {
                     code: sea_orm::ActiveValue::Set(normalized_code),
-                    parents: sea_orm::ActiveValue::Set(type_def.parents),
+                    parents: sea_orm::ActiveValue::Set(serde_json::to_value(&type_def.parents).unwrap_or_default()),
                     created: sea_orm::ActiveValue::Set(now),
                     modified: sea_orm::ActiveValue::NotSet,
                 };
@@ -308,7 +308,7 @@ impl<TR: TypeRepository, GR: GroupRepository> TypeService<TR, GR> {
 fn to_sdk_type(model: &resource_group_type::Model) -> ResourceGroupType {
     ResourceGroupType {
         code: model.code.clone(),
-        parents: model.parents.clone(),
+        parents: model.parents_vec(),
     }
 }
 
@@ -394,12 +394,12 @@ mod tests {
 
     #[test]
     fn validate_parents_accepts_root_marker() {
-        assert!(validate_parents(&["".to_string()]).is_ok());
+        assert!(validate_parents(&[String::new()]).is_ok());
     }
 
     #[test]
     fn validate_parents_accepts_multiple() {
-        assert!(validate_parents(&["tenant".to_string(), "".to_string()]).is_ok());
+        assert!(validate_parents(&["tenant".to_owned(), String::new()]).is_ok());
     }
 
     #[test]

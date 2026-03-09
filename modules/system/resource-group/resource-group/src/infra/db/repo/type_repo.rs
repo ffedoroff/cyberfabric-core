@@ -142,14 +142,7 @@ impl TypeRepository for TypeRepositoryImpl {
         if let sea_orm::ActiveValue::Set(ref v) = model.parents {
             update = update.col_expr(
                 resource_group_type::Column::Parents,
-                sea_orm::sea_query::Expr::value(sea_orm::Value::Array(
-                    sea_orm::sea_query::ArrayType::String,
-                    Some(Box::new(
-                        v.iter()
-                            .map(|s| sea_orm::Value::String(Some(Box::new(s.clone()))))
-                            .collect(),
-                    )),
-                )),
+                sea_orm::sea_query::Expr::value(sea_orm::Value::Json(Some(Box::new(v.clone())))),
             );
         }
         if let sea_orm::ActiveValue::Set(ref v) = model.modified {

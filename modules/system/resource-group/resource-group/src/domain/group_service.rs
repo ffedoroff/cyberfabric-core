@@ -360,7 +360,7 @@ where
 
                         // inst-grp-create-5c: parent type compatibility
                         check_parent_type_compat(
-                            &type_model.parents,
+                            &type_model.parents_vec(),
                             Some(&parent.group_type),
                             &group_type,
                         )
@@ -380,7 +380,7 @@ where
                     } else {
                         // inst-grp-create-6a: verify root placement allowed
                         check_parent_type_compat(
-                            &type_model.parents,
+                            &type_model.parents_vec(),
                             None,
                             &group_type,
                         )
@@ -551,7 +551,7 @@ where
 
                             // inst-grp-update-6a3: type compatibility
                             check_parent_type_compat(
-                                &type_model.parents,
+                                &type_model.parents_vec(),
                                 Some(&parent.group_type),
                                 &new_group_type,
                             )
@@ -559,7 +559,7 @@ where
                         } else {
                             // Moving to root — check root placement
                             check_parent_type_compat(
-                                &type_model.parents,
+                                &type_model.parents_vec(),
                                 None,
                                 &new_group_type,
                             )
@@ -810,13 +810,13 @@ where
                     .ok_or(DomainError::GroupNotFound { id: pid })?;
 
                 check_parent_type_compat(
-                    &type_model.parents,
+                    &type_model.parents_vec(),
                     Some(&parent.group_type),
                     &group_def.group_type,
                 )?;
             } else {
                 check_parent_type_compat(
-                    &type_model.parents,
+                    &type_model.parents_vec(),
                     None,
                     &group_def.group_type,
                 )?;
@@ -871,26 +871,26 @@ mod tests {
 
     #[test]
     fn parent_type_compat_allows_root_when_empty_string_in_parents() {
-        let parents = vec!["".to_string(), "org".to_string()];
+        let parents = vec![String::new(), "org".to_owned()];
         assert!(check_parent_type_compat(&parents, None, "tenant").is_ok());
     }
 
     #[test]
     fn parent_type_compat_rejects_root_when_no_empty_string() {
-        let parents = vec!["org".to_string()];
+        let parents = vec!["org".to_owned()];
         assert!(check_parent_type_compat(&parents, None, "dept").is_err());
     }
 
     #[test]
     fn parent_type_compat_allows_matching_parent_type() {
-        let parents = vec!["org".to_string(), "tenant".to_string()];
+        let parents = vec!["org".to_owned(), "tenant".to_owned()];
         assert!(check_parent_type_compat(&parents, Some("org"), "dept").is_ok());
         assert!(check_parent_type_compat(&parents, Some("tenant"), "dept").is_ok());
     }
 
     #[test]
     fn parent_type_compat_rejects_non_matching_parent_type() {
-        let parents = vec!["org".to_string()];
+        let parents = vec!["org".to_owned()];
         assert!(check_parent_type_compat(&parents, Some("tenant"), "dept").is_err());
     }
 

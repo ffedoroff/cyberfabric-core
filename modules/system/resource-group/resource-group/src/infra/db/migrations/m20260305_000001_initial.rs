@@ -32,7 +32,7 @@ impl MigrationTrait for Migration {
 const POSTGRES_UP: &str = r"
 CREATE TABLE resource_group_type (
     code TEXT PRIMARY KEY,
-    parents TEXT[] NOT NULL CHECK (cardinality(parents) >= 1),
+    parents JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_array_length(parents) >= 1),
     created TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     modified TIMESTAMPTZ DEFAULT NULL
 );
