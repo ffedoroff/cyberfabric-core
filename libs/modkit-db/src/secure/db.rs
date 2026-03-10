@@ -480,6 +480,25 @@ impl Db {
             DbBackend::Sqlite => "sqlite",
         }
     }
+
+    /// Execute raw SQL statement bypassing SecureORM.
+    ///
+    /// Intended for seeding projection tables (e.g., `tenant_closure`) in integration tests.
+    /// Gated behind `testing` feature to prevent accidental use in production code.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DbError` if the SQL execution fails.
+    #[cfg(feature = "testing")]
+    pub async fn execute_raw(&self, sql: &str) -> Result<(), DbError> {
+        use sea_orm::ConnectionTrait;
+        self.handle
+            .sea_internal_ref()
+            .execute_unprepared(sql)
+            .await
+            .map_err(DbError::from)?;
+        Ok(())
+    }
 }
 
 /// Non-transactional database runner.

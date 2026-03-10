@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use authz_resolver_sdk::{
     Capability, Constraint, EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
-    InPredicate, InTenantSubtreePredicate, Predicate, PredicateBarrierMode,
+    InGroupSubtreePredicate, InPredicate, InTenantSubtreePredicate, Predicate,
+    PredicateBarrierMode,
 };
 use modkit_macros::domain_model;
 use modkit_security::{SecurityContext, pep_properties};
@@ -108,7 +109,11 @@ impl Service {
         Self::allow_with_tenant(tid)
     }
 
-    /// Evaluate with group hierarchy — verify group belongs to tenant, expand to subtree.
+    /// Evaluate with group hierarchy — verify group belongs to tenant, return `InGroupSubtree`.
+    ///
+    /// When group ownership is validated, returns a compound constraint with:
+    /// - Tenant predicate (`InTenantSubtree` if `TenantHierarchy` capability, else flat `In`)
+    /// - `InGroupSubtree` predicate scoping resources to the group's subtree
     async fn evaluate_with_hierarchy(
         &self,
         hierarchy: &Arc<dyn ResourceGroupReadHierarchy>,
@@ -127,15 +132,13 @@ impl Service {
             .await
         {
             Ok(page) => {
-                // Collect all tenant IDs from the hierarchy (the root group + descendants)
-                let mut tenant_ids: Vec<Uuid> = page
+                // Verify group belongs to this tenant
+                let belongs_to_tenant = page
                     .items
                     .iter()
-                    .map(|g| g.tenant_id)
-                    .filter(|t| *t == tenant_id)
-                    .collect();
+                    .any(|g| g.tenant_id == tenant_id);
 
-                if tenant_ids.is_empty() {
+                if !belongs_to_tenant {
                     // Group doesn't belong to this tenant — deny
                     tracing::warn!(
                         group_id = %group_id,
@@ -148,9 +151,8 @@ impl Service {
                     };
                 }
 
-                tenant_ids.dedup();
-
-                Self::allow_with_tenant(tenant_id)
+                // Build compound constraint: tenant scope AND group subtree scope
+                Self::allow_with_group_subtree(tenant_id, group_id, request)
             }
             Err(e) => {
                 tracing::warn!(
@@ -232,6 +234,69 @@ impl Service {
             context: EvaluationResponseContext {
                 constraints: vec![Constraint {
                     predicates: vec![Predicate::InTenantSubtree(pred)],
+                }],
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Allow response with tenant scope AND group subtree scope.
+    ///
+    /// Returns a compound constraint (predicates AND'd):
+    /// - Tenant predicate: `InTenantSubtree` if `TenantHierarchy` capability, else flat `In`
+    /// - Group subtree predicate: `InGroupSubtree(RESOURCE_ID, group_id)`
+    fn allow_with_group_subtree(
+        tenant_id: Uuid,
+        group_id: Uuid,
+        request: &EvaluationRequest,
+    ) -> EvaluationResponse {
+        let has_tenant_hierarchy = request
+            .context
+            .capabilities
+            .contains(&Capability::TenantHierarchy);
+
+        let tenant_predicate = if has_tenant_hierarchy {
+            let barrier_mode = request
+                .context
+                .tenant_context
+                .as_ref()
+                .map(|tc| match tc.barrier_mode {
+                    authz_resolver_sdk::BarrierMode::Respect => PredicateBarrierMode::Respect,
+                    authz_resolver_sdk::BarrierMode::Ignore => PredicateBarrierMode::Ignore,
+                })
+                .unwrap_or(PredicateBarrierMode::Respect);
+
+            let mut pred =
+                InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, tenant_id)
+                    .barrier_mode(barrier_mode);
+
+            if let Some(statuses) = request
+                .context
+                .tenant_context
+                .as_ref()
+                .and_then(|tc| tc.tenant_status.clone())
+            {
+                pred = pred.tenant_status(statuses);
+            }
+
+            Predicate::InTenantSubtree(pred)
+        } else {
+            Predicate::In(InPredicate::new(
+                pep_properties::OWNER_TENANT_ID,
+                [tenant_id],
+            ))
+        };
+
+        let group_predicate = Predicate::InGroupSubtree(InGroupSubtreePredicate::new(
+            pep_properties::RESOURCE_ID,
+            group_id,
+        ));
+
+        EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![tenant_predicate, group_predicate],
                 }],
                 ..Default::default()
             },
@@ -597,6 +662,67 @@ mod tests {
 
             assert!(response.decision);
             assert_eq!(response.context.constraints.len(), 1);
+
+            // Compound constraint: tenant scope AND group subtree
+            let predicates = &response.context.constraints[0].predicates;
+            assert_eq!(predicates.len(), 2);
+
+            // First predicate: flat In(OWNER_TENANT_ID) — no TenantHierarchy cap
+            match &predicates[0] {
+                Predicate::In(p) => {
+                    assert_eq!(p.property, pep_properties::OWNER_TENANT_ID);
+                }
+                other => panic!("Expected In predicate for tenant, got: {other:?}"),
+            }
+
+            // Second predicate: InGroupSubtree(RESOURCE_ID, group_id)
+            match &predicates[1] {
+                Predicate::InGroupSubtree(p) => {
+                    assert_eq!(p.property, pep_properties::RESOURCE_ID);
+                    assert_eq!(p.root_group_id, group_id);
+                }
+                other => panic!("Expected InGroupSubtree predicate, got: {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn group_hierarchy_with_tenant_hierarchy_returns_compound_subtree() {
+            let tenant_id =
+                Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+            let group_id =
+                Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+
+            let hierarchy = Arc::new(MockHierarchy { tenant_id });
+            let service = Service::with_hierarchy(hierarchy);
+
+            // Request with BOTH GroupHierarchy and TenantHierarchy capabilities
+            let mut request = make_group_hierarchy_request(tenant_id, group_id);
+            request.context.capabilities =
+                vec![Capability::GroupHierarchy, Capability::TenantHierarchy];
+
+            let response = service.evaluate(&request).await;
+
+            assert!(response.decision);
+            let predicates = &response.context.constraints[0].predicates;
+            assert_eq!(predicates.len(), 2);
+
+            // First predicate: InTenantSubtree (because TenantHierarchy cap declared)
+            match &predicates[0] {
+                Predicate::InTenantSubtree(p) => {
+                    assert_eq!(p.root_tenant_id, tenant_id);
+                    assert_eq!(p.property, pep_properties::OWNER_TENANT_ID);
+                }
+                other => panic!("Expected InTenantSubtree predicate, got: {other:?}"),
+            }
+
+            // Second predicate: InGroupSubtree
+            match &predicates[1] {
+                Predicate::InGroupSubtree(p) => {
+                    assert_eq!(p.property, pep_properties::RESOURCE_ID);
+                    assert_eq!(p.root_group_id, group_id);
+                }
+                other => panic!("Expected InGroupSubtree predicate, got: {other:?}"),
+            }
         }
 
         #[tokio::test]

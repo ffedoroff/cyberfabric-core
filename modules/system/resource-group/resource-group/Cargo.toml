@@ -58,3 +58,4 @@ modkit-odata = { workspace = true, features = ["with-utoipa"] }
 
 [dev-dependencies]
 static-authz-plugin = { package = "cf-static-authz-plugin", path = "../../authz-resolver/plugins/static-authz-plugin" }
+modkit-db = { workspace = true, features = ["sqlite", "pg", "testing"] }

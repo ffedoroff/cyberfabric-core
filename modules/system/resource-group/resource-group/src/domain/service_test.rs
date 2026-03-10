@@ -1999,6 +1999,393 @@ mod tests {
     }
 
     // =========================================================================
+    // InTenantSubtree: tenant_closure projection integration
+    // =========================================================================
+
+    /// Tests that `InTenantSubtree` predicate correctly queries the `tenant_closure`
+    /// local projection table. This validates the full path:
+    /// MockResolver → `InTenantSubtree` predicate → compiler → `ScopeFilter` →
+    /// SecureORM → SQL subquery on `tenant_closure`.
+    ///
+    mod tenant_subtree_integration {
+        use super::*;
+        use authz_resolver_sdk::constraints::{InTenantSubtreePredicate, PredicateBarrierMode};
+
+        /// Mock resolver that returns `InTenantSubtree` predicate instead of flat `Eq`.
+        struct SubtreeAuthZResolver;
+
+        #[async_trait::async_trait]
+        impl AuthZResolverClient for SubtreeAuthZResolver {
+            async fn evaluate(
+                &self,
+                request: EvaluationRequest,
+            ) -> Result<EvaluationResponse, AuthZResolverError> {
+                let subject_tenant_id = request
+                    .subject
+                    .properties
+                    .get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok());
+
+                let supports_tenant = request
+                    .context
+                    .supported_properties
+                    .iter()
+                    .any(|p| p == pep_properties::OWNER_TENANT_ID);
+
+                if request.context.require_constraints && supports_tenant {
+                    if let Some(tid) = subject_tenant_id {
+                        let pred = InTenantSubtreePredicate::new(
+                            pep_properties::OWNER_TENANT_ID,
+                            tid,
+                        );
+                        Ok(EvaluationResponse {
+                            decision: true,
+                            context: EvaluationResponseContext {
+                                constraints: vec![Constraint {
+                                    predicates: vec![Predicate::InTenantSubtree(pred)],
+                                }],
+                                ..Default::default()
+                            },
+                        })
+                    } else {
+                        Ok(EvaluationResponse {
+                            decision: false,
+                            context: EvaluationResponseContext::default(),
+                        })
+                    }
+                } else {
+                    Ok(EvaluationResponse {
+                        decision: true,
+                        context: EvaluationResponseContext::default(),
+                    })
+                }
+            }
+        }
+
+        /// Mock resolver returning `InTenantSubtree` with `barrier_mode: Ignore`.
+        struct SubtreeIgnoreBarrierResolver;
+
+        #[async_trait::async_trait]
+        impl AuthZResolverClient for SubtreeIgnoreBarrierResolver {
+            async fn evaluate(
+                &self,
+                request: EvaluationRequest,
+            ) -> Result<EvaluationResponse, AuthZResolverError> {
+                let subject_tenant_id = request
+                    .subject
+                    .properties
+                    .get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok());
+
+                let supports_tenant = request
+                    .context
+                    .supported_properties
+                    .iter()
+                    .any(|p| p == pep_properties::OWNER_TENANT_ID);
+
+                if request.context.require_constraints && supports_tenant {
+                    if let Some(tid) = subject_tenant_id {
+                        let pred = InTenantSubtreePredicate::new(
+                            pep_properties::OWNER_TENANT_ID,
+                            tid,
+                        )
+                        .barrier_mode(PredicateBarrierMode::Ignore);
+                        Ok(EvaluationResponse {
+                            decision: true,
+                            context: EvaluationResponseContext {
+                                constraints: vec![Constraint {
+                                    predicates: vec![Predicate::InTenantSubtree(pred)],
+                                }],
+                                ..Default::default()
+                            },
+                        })
+                    } else {
+                        Ok(EvaluationResponse {
+                            decision: false,
+                            context: EvaluationResponseContext::default(),
+                        })
+                    }
+                } else {
+                    Ok(EvaluationResponse {
+                        decision: true,
+                        context: EvaluationResponseContext::default(),
+                    })
+                }
+            }
+        }
+
+        fn subtree_enforcer() -> PolicyEnforcer {
+            let authz: Arc<dyn AuthZResolverClient> = Arc::new(SubtreeAuthZResolver);
+            PolicyEnforcer::new(authz)
+                .with_capabilities(vec![authz_resolver_sdk::Capability::TenantHierarchy])
+        }
+
+        fn subtree_ignore_barrier_enforcer() -> PolicyEnforcer {
+            let authz: Arc<dyn AuthZResolverClient> = Arc::new(SubtreeIgnoreBarrierResolver);
+            PolicyEnforcer::new(authz)
+                .with_capabilities(vec![authz_resolver_sdk::Capability::TenantHierarchy])
+        }
+
+        /// Insert rows into `tenant_closure` using `Db::execute_raw` (requires `testing` feature).
+        ///
+        /// UUIDs are inserted as BLOB hex literals (`X'...'`) to match how SeaORM/sqlx
+        /// stores `uuid::Uuid` values in SQLite (16-byte BLOB, not TEXT).
+        async fn seed_tenant_closure(db: &Db, rows: &[(Uuid, Uuid, i32, &str)]) {
+            for (ancestor, descendant, barrier, status) in rows {
+                let sql = format!(
+                    "INSERT INTO tenant_closure (ancestor_id, descendant_id, barrier, descendant_status) \
+                     VALUES (X'{anc}', X'{desc}', {barrier}, '{status}')",
+                    anc = ancestor.simple(),
+                    desc = descendant.simple(),
+                );
+                db.execute_raw(&sql).await.unwrap();
+            }
+        }
+
+        /// Verifies that `execute_raw` + `InTenantSubtree` scope filter works end-to-end.
+        #[tokio::test]
+        async fn execute_raw_seeds_tenant_closure() {
+            let db = inmem_db().await;
+            let t1 = Uuid::new_v4();
+
+            // Seed tenant_closure
+            seed_tenant_closure(&db, &[(t1, t1, 0, "active")]).await;
+
+            // Verify: query via raw SQL (use BLOB hex literal to match stored format)
+            let result = db
+                .execute_raw(&format!(
+                    "SELECT COUNT(*) as cnt FROM tenant_closure WHERE ancestor_id = X'{}'",
+                    t1.simple()
+                ))
+                .await;
+            assert!(result.is_ok(), "execute_raw should work: {result:?}");
+
+            // Now test with a direct scope that uses InTenantSubtree
+            let svc = build_service(db);
+            seed_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+            svc.group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G1".into(),
+                        parent_id: None,
+                        tenant_id: t1,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // List with InTenantSubtree scope directly
+            use modkit_security::{ScopeBarrierMode, ScopeConstraint, ScopeFilter};
+            let subtree_scope = AccessScope::single(ScopeConstraint::new(vec![
+                ScopeFilter::in_tenant_subtree(
+                    pep_properties::OWNER_TENANT_ID,
+                    t1,
+                    ScopeBarrierMode::Respect,
+                    None,
+                ),
+            ]));
+            let page = svc
+                .group_service()
+                .list_groups(ListQuery::default(), &subtree_scope)
+                .await
+                .unwrap();
+            assert_eq!(
+                page.items.len(),
+                1,
+                "InTenantSubtree scope should find the group via tenant_closure, got: {:?}",
+                page.items
+            );
+        }
+
+        /// Parent tenant T1 with children T2, T3.
+        /// T2 is self_managed (barrier=1 from T1's perspective).
+        ///
+        /// ```text
+        /// T1
+        /// ├── T2 (self_managed=true) → barrier
+        /// │   └── T3
+        /// └── T4
+        /// ```
+        #[tokio::test]
+        async fn in_tenant_subtree_respects_barriers() {
+            let db = inmem_db().await;
+            let t1 = Uuid::new_v4();
+            let t2 = Uuid::new_v4();
+            let t3 = Uuid::new_v4();
+            let t4 = Uuid::new_v4();
+
+            seed_tenant_closure(
+                &db,
+                &[
+                    (t1, t1, 0, "active"),
+                    (t1, t2, 1, "active"), // barrier
+                    (t1, t3, 1, "active"), // behind barrier
+                    (t1, t4, 0, "active"),
+                    (t2, t2, 0, "active"),
+                    (t2, t3, 0, "active"),
+                    (t3, t3, 0, "active"),
+                    (t4, t4, 0, "active"),
+                ],
+            )
+            .await;
+
+            let svc = build_service_with_enforcer(db, subtree_enforcer());
+            seed_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+            for (name, tid) in [("G-T1", t1), ("G-T2", t2), ("G-T3", t3), ("G-T4", t4)] {
+                svc.group_service()
+                    .create_group(
+                        CreateGroupRequest {
+                            group_type: "tenant".into(),
+                            name: name.into(),
+                            parent_id: None,
+                            tenant_id: tid,
+                            external_id: None,
+                        },
+                        &scope,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            // T1 with barrier_mode=Respect should see T1 + T4 (2 groups)
+            let ctx_t1 = test_security_ctx(t1);
+            let page = ResourceGroupClient::list_groups(&svc, &ctx_t1, ListQuery::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                page.items.len(),
+                2,
+                "T1 with barrier_mode=Respect should see 2 groups (T1, T4), got: {:?}",
+                page.items.iter().map(|g| &g.name).collect::<Vec<_>>()
+            );
+
+            // T2 should see T2 + T3 (no barrier between them)
+            let ctx_t2 = test_security_ctx(t2);
+            let page = ResourceGroupClient::list_groups(&svc, &ctx_t2, ListQuery::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                page.items.len(),
+                2,
+                "T2 should see 2 groups (T2, T3), got: {:?}",
+                page.items.iter().map(|g| &g.name).collect::<Vec<_>>()
+            );
+        }
+
+        /// Same hierarchy, but with `barrier_mode: Ignore`.
+        /// T1 should see all 4 groups.
+        #[tokio::test]
+        async fn in_tenant_subtree_ignores_barriers_when_requested() {
+            let db = inmem_db().await;
+            let t1 = Uuid::new_v4();
+            let t2 = Uuid::new_v4();
+            let t3 = Uuid::new_v4();
+            let t4 = Uuid::new_v4();
+
+            seed_tenant_closure(
+                &db,
+                &[
+                    (t1, t1, 0, "active"),
+                    (t1, t2, 1, "active"),
+                    (t1, t3, 1, "active"),
+                    (t1, t4, 0, "active"),
+                    (t2, t2, 0, "active"),
+                    (t2, t3, 0, "active"),
+                    (t3, t3, 0, "active"),
+                    (t4, t4, 0, "active"),
+                ],
+            )
+            .await;
+
+            let svc = build_service_with_enforcer(db, subtree_ignore_barrier_enforcer());
+            seed_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+            for (name, tid) in [("G-T1", t1), ("G-T2", t2), ("G-T3", t3), ("G-T4", t4)] {
+                svc.group_service()
+                    .create_group(
+                        CreateGroupRequest {
+                            group_type: "tenant".into(),
+                            name: name.into(),
+                            parent_id: None,
+                            tenant_id: tid,
+                            external_id: None,
+                        },
+                        &scope,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            // T1 with barrier_mode=Ignore should see all 4 groups
+            let ctx_t1 = test_security_ctx(t1);
+            let page = ResourceGroupClient::list_groups(&svc, &ctx_t1, ListQuery::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                page.items.len(),
+                4,
+                "T1 with barrier_mode=Ignore should see all 4 groups, got: {:?}",
+                page.items.iter().map(|g| &g.name).collect::<Vec<_>>()
+            );
+        }
+
+        /// Leaf tenant sees only its own group.
+        #[tokio::test]
+        async fn leaf_tenant_sees_only_own_group() {
+            let db = inmem_db().await;
+            let t1 = Uuid::new_v4();
+            let t3 = Uuid::new_v4();
+
+            seed_tenant_closure(
+                &db,
+                &[
+                    (t1, t1, 0, "active"),
+                    (t1, t3, 0, "active"),
+                    (t3, t3, 0, "active"),
+                ],
+            )
+            .await;
+
+            let svc = build_service_with_enforcer(db, subtree_enforcer());
+            seed_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+            for (name, tid) in [("G-T1", t1), ("G-T3", t3)] {
+                svc.group_service()
+                    .create_group(
+                        CreateGroupRequest {
+                            group_type: "tenant".into(),
+                            name: name.into(),
+                            parent_id: None,
+                            tenant_id: tid,
+                            external_id: None,
+                        },
+                        &scope,
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let ctx_t3 = test_security_ctx(t3);
+            let page = ResourceGroupClient::list_groups(&svc, &ctx_t3, ListQuery::default())
+                .await
+                .unwrap();
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].name, "G-T3");
+        }
+    }
+
+    // =========================================================================
     // Cross-module: Static-AuthZ-Plugin + RG (real DB, real hierarchy)
     // =========================================================================
 

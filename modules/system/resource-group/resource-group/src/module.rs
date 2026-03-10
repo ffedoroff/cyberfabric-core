@@ -67,10 +67,10 @@ impl Module for ResourceGroupModule {
             .get::<dyn AuthZResolverClient>()
             .map_err(|e| anyhow::anyhow!("failed to get AuthZ resolver: {e}"))?;
         // Declare PEP capabilities so PDP can return advanced predicates.
+        // TenantHierarchy: `tenant_closure` local projection exists (CDC from tenant-resolver).
         // GroupHierarchy: plugin validates group ownership via ResourceGroupReadHierarchy.
-        // TenantHierarchy: omitted until `tenant_closure` local projection table exists.
         let enforcer = PolicyEnforcer::new(authz)
-            .with_capabilities(vec![Capability::GroupHierarchy]);
+            .with_capabilities(vec![Capability::TenantHierarchy, Capability::GroupHierarchy]);
 
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4

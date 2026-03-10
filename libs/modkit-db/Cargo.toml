@@ -46,6 +46,10 @@ mysql = [
 
 integration = []
 
+# Exposes raw SQL execution on `Db` for test data seeding (e.g., projection tables).
+# Must only be enabled in `[dev-dependencies]`.
+testing = []
+
 # Transactional outbox pipeline (preview — API may change)
 preview-outbox = ["dep:tokio-util"]
 

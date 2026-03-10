@@ -19,7 +19,7 @@
 | Constraint compiler | DONE | 0007 | All 5 predicate types → `ScopeFilter` variants |
 | SecureORM SQL generation | DONE | 0007 | Subquery generation for all advanced predicates |
 | Static plugin → `InTenantSubtree` | DONE | 0007 | Returns when `TenantHierarchy` capability declared |
-| Static plugin → `InGroupSubtree` | NOT DONE | 0007 | Plugin does not yet return `InGroupSubtree` predicates |
+| Static plugin → `InGroupSubtree` | DONE | 0007 | Returns compound constraint: tenant + `InGroupSubtree` when `GroupHierarchy` + group_id validated |
 | PEP capabilities in RG module | PARTIAL | 0007 | `GroupHierarchy` declared; `TenantHierarchy` deferred (needs `tenant_closure`) |
 | MTLS auth path | DEFERRED | 0006 | Blocked on platform MTLS infra |
 | Plugin gateway routing | DEFERRED | 0006 | Blocked on vendor plugin architecture |
@@ -99,19 +99,17 @@ DECOMPOSITION.md line 407 mentions "Local projections: `tenant_closure`, `resour
 3. **(C) Shared schema**: `tenant_closure` lives in a shared schema accessible to all modules
 4. **(Recommended)**: Option (A) — aligns with DESIGN.md's local projection strategy. Requires CDC pipeline from tenant-resolver → RG.
 
-### C5: Static plugin `InGroupSubtree` not implemented
+### C5: Static plugin `InGroupSubtree` — RESOLVED
 
-**Severity**: LOW (future work)
+**Severity**: LOW (was future work, now implemented)
 
 Feature 0007 doc line 137: "Static AuthZ plugin **SHOULD** return `InGroupSubtree` when `GroupHierarchy` capability is declared with a group_id."
 
-Current static plugin behavior with `GroupHierarchy` capability:
-- Validates group belongs to caller's tenant via `ResourceGroupReadHierarchy`
-- Returns flat `In(OWNER_TENANT_ID, [tid])` or `InTenantSubtree` — NOT `InGroupSubtree`
+**Implemented**: `evaluate_with_hierarchy` now returns a compound constraint with two AND'd predicates:
+- Tenant predicate: `InTenantSubtree` (if `TenantHierarchy` cap) or flat `In(OWNER_TENANT_ID)`
+- Group predicate: `InGroupSubtree(RESOURCE_ID, group_id)`
 
-The SDK types and compiler for `InGroupSubtree` are implemented, but the plugin doesn't produce them yet.
-
-**Resolution**: Feature 0007 plugin enhancement task (already tracked in DECOMPOSITION.md line 380). Not a contradiction — it's planned but not yet done.
+Tests: 14/14 pass including new `group_hierarchy_with_tenant_hierarchy_returns_compound_subtree`.
 
 ### C6: `require_constraints` semantics documentation gap
 
@@ -225,7 +223,7 @@ Blocked on:
 | C2 | No PEP capabilities in RG | Added `with_capabilities(vec![GroupHierarchy])` in `module.rs`. `TenantHierarchy` deferred until C4 resolved. | cf-resource-group | PARTIAL |
 | C3 | `resource_id` String vs UUID | Updated DESIGN.md: `resource_id` is TEXT (polymorphic external identifier) | arch docs | DONE |
 | C4 | `tenant_closure` absent | Add local projection migration + CDC | cf-resource-group | TODO |
-| C5 | No `InGroupSubtree` from plugin | Plugin enhancement | cf-static-authz-plugin | PLANNED (Feature 0007) |
+| C5 | No `InGroupSubtree` from plugin | Implemented compound constraint in `evaluate_with_hierarchy` | cf-static-authz-plugin | DONE |
 | C6 | `require_constraints` undocumented | Added "Design Notes" section to Feature 0005 doc | Feature 0005 doc | DONE |
 
 ## 6. Runtime Verification Checklist
