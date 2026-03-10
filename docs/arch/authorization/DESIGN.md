@@ -202,7 +202,7 @@ flowchart TB
             Handler["Handler"]
             subgraph ModuleDB["Module Database"]
                 DomainTables["Domain Tables<br/>(events, ...)"]
-                LocalProj["Local Projections<br/>• tenant_closure<br/>• resource_group_closure<br/>• resource_group_membership"]
+                LocalProj["Local Projections<br/>• resource_group_closure<br/>• resource_group_membership"]
             end
         end
     end
@@ -596,13 +596,13 @@ We extend AuthZEN's evaluation response with optional `context.constraints`. Ins
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenant123-uuid", "barrier_mode": "respect" }
+          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenant123-uuid" }
         ]
       }
     ]
   }
 }
-// PEP compiles to: WHERE owner_tenant_id IN (SELECT descendant_id FROM tenant_closure WHERE ancestor_id = 'tenant123-uuid' AND barrier = 0)
+// PEP compiles to: WHERE owner_tenant_id IN (SELECT rc.descendant_id FROM resource_group_closure rc JOIN resource_group rg ON rg.id = rc.descendant_id WHERE rc.ancestor_id = 'tenant123-uuid' AND rg.group_type = 'tenant')
 // Result: SELECT * FROM events WHERE (constraints) LIMIT 10 — correct pagination!
 ```
 
@@ -751,7 +751,6 @@ All **core entity identifiers** in the authorization API are **UUIDs**:
 | `owner_tenant_id` | UUID | Tenant that owns a resource (resource property) |
 | `owner_id` | UUID | Subject that owns a resource (resource property, nullable) |
 | `group_id` | UUID | Resource group identifier |
-| `tenant_closure` keys | UUID | `ancestor_id`, `descendant_id` |
 | `resource_group_closure` keys | UUID | `ancestor_id`, `descendant_id` |
 | `resource_group_membership` keys | UUID/TEXT | `resource_id` (TEXT — external identifier), `group_id` (UUID) |
 
@@ -803,14 +802,12 @@ Content-Type: application/json
     // Context Tenant (optional) — PDP, for example, can determine from token_scopes or subject.tenant_id if absent
     "tenant_context": {
       "mode": "subtree",           // "root_only" | "subtree", default: "subtree"
-      "root_id": "51f18034-3b2f-4bfa-bb99-22113bddee68",  // optional - request param (URL query, header), handler can set
-      "barrier_mode": "respect",   // default: "respect" (legacy alias: "all")
-      "tenant_status": ["active", "suspended"]  // optional filter
+      "root_id": "51f18034-3b2f-4bfa-bb99-22113bddee68"  // optional - request param (URL query, header), handler can set
     },
 
     "token_scopes": ["read:events", "write:tasks"],  // SecurityContext.token_scopes
     "require_constraints": true,   // handler config: LIST requires constraints
-    "capabilities": ["tenant_hierarchy"],  // module config: has tenant_closure table
+    "capabilities": ["tenant_hierarchy"],  // module config: has resource_group_closure table with group_type='tenant'
     "supported_properties": ["owner_tenant_id", "topic_id", "id", "owner_id"],  // handler config: properties PEP can map to SQL
     "bearer_token": "eyJhbGciOiJSUzI1NiIs..."  // SecurityContext.bearer_token: Secret<String> (optional, see notes below)
   }
@@ -833,12 +830,10 @@ The response contains a `decision` and, when `decision: true`, optional `context
       {
         "predicates": [
           {
-            // Tenant subtree predicate - uses local tenant_closure table
+            // Tenant subtree predicate - uses resource_group_closure JOIN resource_group WHERE group_type='tenant'
             "type": "in_tenant_subtree",
             "property": "owner_tenant_id",
-            "root_tenant_id": "51f18034-3b2f-4bfa-bb99-22113bddee68",
-            "barrier_mode": "respect",   // default: "respect" (legacy alias: "all")
-            "tenant_status": ["active", "suspended"]
+            "root_tenant_id": "51f18034-3b2f-4bfa-bb99-22113bddee68"
           },
           {
             // Equality predicate
@@ -878,10 +873,6 @@ The response contains a `decision` and, when `decision: true`, optional `context
 |-------|----------|---------|-------------|
 | `mode` | No | `"subtree"` | `"root_only"` (single tenant) or `"subtree"` (tenant + descendants) |
 | `root_id` | No | — | Root context tenant ID. If absent, PDP determines from `token_scopes`, `subject.properties.tenant_id`, or something else - it's fully up to the PDP implementation |
-| `barrier_mode` | No | `"respect"` | `"respect"` (respect barriers) or `"ignore"` (ignore barriers). Legacy aliases `"all"`/`"none"` accepted on deserialization. |
-| `tenant_status` | No | — | Filter by tenant status (e.g., `["active", "suspended"]`) |
-
-The `barrier_mode` and `tenant_status` parameters apply to any scope source — whether explicitly provided via `root_id` or derived from the token/subject.
 
 #### PEP Decision Matrix
 
@@ -939,7 +930,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
+          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid" }
         ]
       }
     ]
@@ -965,7 +956,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
+          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid" }
         ]
       }
     ]
@@ -990,7 +981,6 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
             "type": "in_tenant_subtree",
             "property": "owner_tenant_id",
             "root_tenant_id": "tenantA-uuid",
-            "barrier_mode": "respect"  // default: "respect"
           },
           {
             // Group subtree predicate - uses resource_group_membership + resource_group_closure tables
@@ -1068,7 +1058,7 @@ The Rust SQL compilation library supports **extensible predicate types**:
 |------|-------------|-----------------|-----------------|
 | `eq` | Property equals value | `resource_property`, `value` | — |
 | `in` | Property in value list | `resource_property`, `values` | — |
-| `in_tenant_subtree` | Tenant subtree via closure table | `resource_property`, `root_tenant_id` | `barrier_mode`, `tenant_status` |
+| `in_tenant_subtree` | Tenant subtree via `resource_group_closure` + `resource_group` JOIN | `resource_property`, `root_tenant_id` | — |
 | `in_group` | Flat group membership | `resource_property`, `group_ids` | — |
 | `in_group_subtree` | Group subtree via closure table | `resource_property`, `root_group_id` | — |
 
@@ -1105,42 +1095,29 @@ Compares resource property to a list of values.
 
 #### 3. Tenant Subtree Predicate (`type: "in_tenant_subtree"`)
 
-Filters resources by tenant subtree using the closure table. The `resource_property` specifies which property contains the tenant ID.
+Filters resources by tenant subtree. Uses `resource_group_closure` joined with `resource_group` (filtering by `group_type = 'tenant'`) instead of a separate tenant closure table. The `resource_property` specifies which property contains the tenant ID.
 
 **Schema:**
 - `type` (required): `"in_tenant_subtree"`
 - `resource_property` (required): Property containing tenant ID (e.g., `owner_tenant_id`)
 - `root_tenant_id` (required): Root of tenant subtree
-- `barrier_mode` (optional): Barrier handling mode, default `"respect"`. Values: `"respect"` (respect all barriers), `"ignore"` (ignore barriers). Legacy aliases `"all"`/`"none"` accepted on deserialization.
-- `tenant_status` (optional): Filter by tenant status
 
 ```jsonc
 {
   "type": "in_tenant_subtree",
   "property": "owner_tenant_id",
-  "root_tenant_id": "tenantA-uuid",
-  "barrier_mode": "respect",  // default: "respect" (legacy alias: "all")
-  "tenant_status": ["active", "suspended"]
+  "root_tenant_id": "tenantA-uuid"
 }
 // SQL: owner_tenant_id IN (
-//   SELECT descendant_id FROM tenant_closure
-//   WHERE ancestor_id = 'tenantA-uuid'
-//     AND barrier = 0  -- barrier_mode: "respect"
-//     AND descendant_status IN ('active', 'suspended')
+//   SELECT rc.descendant_id
+//   FROM resource_group_closure rc
+//   JOIN resource_group rg ON rg.id = rc.descendant_id
+//   WHERE rc.ancestor_id = 'tenantA-uuid'
+//     AND rg.group_type = 'tenant'
 // )
-// Note: barrier_mode: "ignore" omits the barrier clause
 ```
 
-**Barrier Modes:**
-
-| Mode | SQL Clause | Description |
-|------|------------|-------------|
-| `"respect"` (alias: `"all"`) | `AND barrier = 0` | (default) Respect all barriers. Stops traversal at `self_managed` tenants. |
-| `"ignore"` (alias: `"none"`) | (omit clause) | Ignore barriers. Use for billing, tenant metadata, or other cross-barrier operations. |
-
-**Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types. Future modes (e.g., `"data_sovereignty_only"`) can be added with selective checks like `(barrier & mask) = 0` without breaking existing consumers.
-
-**Relationship to request `tenant_context`:** The PDP uses `context.tenant_context` from the request to determine the tenant context, then generates `in_tenant_subtree` predicates in the response. The predicate's `root_tenant_id` comes from either the request's `tenant_context.root_id` or PDP's resolution from token/subject. The `barrier_mode` and `tenant_status` parameters flow through from request to predicate.
+**Relationship to request `tenant_context`:** The PDP uses `context.tenant_context` from the request to determine the tenant context, then generates `in_tenant_subtree` predicates in the response. The predicate's `root_tenant_id` comes from either the request's `tenant_context.root_id` or PDP's resolution from token/subject.
 
 #### 4. Group Membership Predicate (`type: "in_group"`)
 
@@ -1234,7 +1211,7 @@ Modules may also declare custom properties via `pep_prop(property_name = "column
 | `{ "type": "eq", "property": "topic_id", "value": "v" }` | `events.topic_id = 'v'` |
 | `{ "type": "eq", "property": "owner_id", "value": "user123-uuid" }` | `events.creator_id = 'user123-uuid'` |
 | `{ "type": "in", "property": "owner_tenant_id", "values": ["t1-uuid", "t2-uuid"] }` | `events.tenant_id IN ('t1-uuid', 't2-uuid')` |
-| `{ "type": "in_tenant_subtree", "property": "owner_tenant_id", ... }` | `events.tenant_id IN (SELECT descendant_id FROM tenant_closure WHERE ...)` |
+| `{ "type": "in_tenant_subtree", "property": "owner_tenant_id", ... }` | `events.tenant_id IN (SELECT rc.descendant_id FROM resource_group_closure rc JOIN resource_group rg ON rg.id = rc.descendant_id WHERE rc.ancestor_id = :root AND rg.group_type = 'tenant')` |
 | `{ "type": "in_group", "property": "id", "group_ids": ["g1-uuid", "g2-uuid"] }` | `events.id IN (SELECT resource_id FROM resource_group_membership WHERE ...)` |
 | `{ "type": "in_group_subtree", "property": "id", "root_group_id": "g1-uuid" }` | `events.id IN (SELECT ... FROM resource_group_membership WHERE group_id IN (SELECT ... FROM resource_group_closure ...))` |
 
@@ -1291,39 +1268,9 @@ Capabilities declare what predicate types the PEP can enforce locally:
 
 These tables are maintained locally by Cyber Fabric modules (Tenant Resolver, Resource Group Resolver) and used by PEPs to execute constraint queries efficiently without calling back to the vendor platform.
 
-#### `tenant_closure`
-
-Denormalized closure table for tenant hierarchy. Enables efficient subtree queries without recursive CTEs.
-
-| Column | Type | Nullable | Description |
-|--------|------|----------|-------------|
-| `ancestor_id` | UUID | No | Parent tenant in the hierarchy |
-| `descendant_id` | UUID | No | Child tenant (the one we check ownership against) |
-| `barrier` | INT | No | 0 = no barrier on path, 1 = barrier exists between ancestor and descendant (default 0) |
-| `descendant_status` | TEXT | No | Status of descendant tenant (`active`, `suspended`, `deleted`) |
-
-**Notes:**
-- Status is denormalized into closure for query simplicity (avoids JOIN). When a tenant's status changes, all rows where it is `descendant_id` are updated.
-- **Barrier semantics:** The `barrier` column stores barriers **strictly between** ancestor and descendant, **not including the ancestor itself**. This means when T2 is self_managed, rows with `ancestor_id = T2` have `barrier = 0`, while rows with T2 on the path from another ancestor have `barrier = 1`.
-- The `barrier` column enables simple filtering: `barrier_mode: "respect"` adds `AND barrier = 0`, `barrier_mode: "ignore"` omits the clause.
-- Self-referential rows exist: each tenant has a row where `ancestor_id = descendant_id`.
-- **Predicate mapping:** `in_tenant_subtree` predicate compiles to SQL using this closure table.
-- **Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types (e.g., `(barrier & mask) = 0` for selective enforcement).
-
-**Example query (in_tenant_subtree):**
-```sql
-SELECT * FROM events
-WHERE owner_tenant_id IN (
-  SELECT descendant_id FROM tenant_closure
-  WHERE ancestor_id = :root_tenant_id
-    AND barrier = 0  -- barrier_mode: "respect"
-    AND descendant_status IN ('active', 'suspended')  -- tenant_status filter
-)
-```
-
 #### `resource_group_closure`
 
-Closure table for resource group hierarchy. Similar structure to tenant_closure but simpler (no barrier or status).
+Closure table for resource group hierarchy (including tenant hierarchy). Tenants are modeled as resource groups with `group_type = 'tenant'` in the `resource_group` table, so the `in_tenant_subtree` predicate uses this same closure table with a JOIN on `resource_group.group_type = 'tenant'`.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -1332,7 +1279,19 @@ Closure table for resource group hierarchy. Similar structure to tenant_closure 
 
 **Notes:**
 - Self-referential rows exist: each group has a row where `ancestor_id = descendant_id`.
-- **Predicate mapping:** `in_group_subtree` predicate compiles to SQL using this closure table.
+- **Predicate mapping:** `in_group_subtree` predicate compiles to SQL using this closure table. The `in_tenant_subtree` predicate also uses this table, joined with `resource_group` to filter by `group_type = 'tenant'`.
+
+**Example query (in_tenant_subtree):**
+```sql
+SELECT * FROM events
+WHERE owner_tenant_id IN (
+  SELECT rc.descendant_id
+  FROM resource_group_closure rc
+  JOIN resource_group rg ON rg.id = rc.descendant_id
+  WHERE rc.ancestor_id = :root_tenant_id
+    AND rg.group_type = 'tenant'
+)
+```
 
 #### `resource_group_membership`
 
@@ -1375,7 +1334,7 @@ These questions require further design work.
 
 2. **Projection tables scalability** - Closure table approach works well for moderate scale, but may not perform for all scenarios. Key factors: tenant hierarchy depth (10+ levels), total object count (10M+), object distribution across tenants, and query patterns (root tenant queries are heavier than leaf). For large-scale deployments, vendors may need alternative strategies: denormalization (e.g., PostgreSQL ltree), materialized views, or sharding. This design doc describes the reference architecture; concrete optimization strategy depends on vendor's data model and scale requirements.
 
-3. **Local projections sync** - How to keep projection tables (tenant_closure, resource_group_closure, resource_group_membership) in sync with vendor's source of truth? Possible approaches: event-based sync (requires event broker), CDC-based (Debezium-like), or periodic polling via Resolver APIs. Each has trade-offs in consistency, latency, and infrastructure complexity.
+3. **Local projections sync** - How to keep projection tables (resource_group_closure, resource_group_membership) in sync with vendor's source of truth? Possible approaches: event-based sync (requires event broker), CDC-based (Debezium-like), or periodic polling via Resolver APIs. Each has trade-offs in consistency, latency, and infrastructure complexity.
 
 4. **Resource Group Service** - Should Cyber Fabric have its own Resource Group Service, or is Resource Group Resolver (module bridging to vendor's service) sufficient? Having a Cyber Fabric-native service has pros and cons. Needs design.
 
@@ -1385,7 +1344,7 @@ These questions require further design work.
 
 7. **ABAC with related entity attributes** - Current predicates filter by resource's own properties (`owner_tenant_id`, `id`). Some ABAC policies require filtering by attributes of related entities (e.g., "tasks where project.status = 'active'" or "events where creator.department = 'engineering'"). This requires JOINs with other tables. Open questions: Should PDP return join-aware predicates? How to declare joinable relations in `supported_properties`? Performance implications of cross-table constraint compilation? Alternative: require denormalization of frequently-filtered attributes into the resource table.
 
-8. **Closure table schema evolution** - How to handle schema changes in `tenant_closure` and `resource_group_closure` tables? Open questions:
+8. **Closure table schema evolution** - How to handle schema changes in `resource_group_closure` and related tables? Open questions:
    - **Schema versioning** — How are closure table schemas versioned? (semantic versioning, version column, schema_version table?)
    - **Migration protocol** — When closure table schema changes, how do PEPs discover and adapt? Is there a capabilities negotiation mechanism?
    - **Backward compatibility** — Can old PEPs work with new schema, or is coordinated upgrade required? What's the compatibility matrix?
@@ -1427,7 +1386,7 @@ These questions require further design work.
 - [ADR 0002: Split AuthN and AuthZ Resolvers](./ADR/0002-split-authn-authz-resolvers.md)
 
 ### Internal
-- [TENANT_MODEL.md](./TENANT_MODEL.md) — Tenant topology, barriers, closure tables
+- [TENANT_MODEL.md](./TENANT_MODEL.md) — Tenant topology and hierarchy
 - [RESOURCE_GROUP_MODEL.md](./RESOURCE_GROUP_MODEL.md) — Resource group topology, membership, hierarchy
 - [AUTHZ_USAGE_SCENARIOS.md](./AUTHZ_USAGE_SCENARIOS.md) — Authorization usage scenarios
 - [Cyber Fabric GTS (Global Type System)](../../../modules/system/types-registry/)

@@ -7,7 +7,7 @@
 
 ### 1.1 Overview
 
-Extend the constraint model with `in_tenant_subtree`, `in_group`, and `in_group_subtree` predicate types as defined in the authorization architecture (`docs/arch/authorization/DESIGN.md`). Implement PEP constraint compiler support for these types, enabling SQL subquery generation through `tenant_closure`, `resource_group_closure`, and `resource_group_membership` local projection tables. Update the static-authz-plugin to return these advanced predicates when PEP capabilities declare support.
+Extend the constraint model with `in_tenant_subtree`, `in_group`, and `in_group_subtree` predicate types as defined in the authorization architecture (`docs/arch/authorization/DESIGN.md`). Implement PEP constraint compiler support for these types, enabling SQL subquery generation through `resource_group_closure` and `resource_group_membership` tables. `InTenantSubtree` uses `resource_group_closure` with a JOIN on `resource_group.group_type = 'tenant'`. Update the static-authz-plugin to return these advanced predicates when PEP capabilities declare support.
 
 ### 1.2 Purpose
 
@@ -35,7 +35,7 @@ Addresses:
 
 - **Authorization Architecture**: `docs/arch/authorization/DESIGN.md` — Sections: Predicate Types Reference, Capabilities → Predicate Matrix, Table Schemas
 - **RESOURCE_GROUP_MODEL.md**: `docs/arch/authorization/RESOURCE_GROUP_MODEL.md` — Closure table, membership table schemas
-- **TENANT_MODEL.md**: `docs/arch/authorization/TENANT_MODEL.md` — Tenant hierarchy, barrier modes
+- **TENANT_MODEL.md**: `docs/arch/authorization/TENANT_MODEL.md` — Tenant hierarchy
 - **AUTHZ_USAGE_SCENARIOS.md**: `docs/arch/authorization/AUTHZ_USAGE_SCENARIOS.md` — Concrete predicate examples
 - **Dependencies**:
   - [x] `p1` - `cpt-cf-resource-group-feature-authz-enforcement` (Feature 5 — PolicyEnforcer pipeline)
@@ -72,7 +72,7 @@ pub enum Predicate {
 
 | Predicate | Fields | SQL Compilation |
 |---|---|---|
-| `InTenantSubtree` | `resource_property`, `root_tenant_id`, `barrier_mode`, `tenant_status` | `col IN (SELECT descendant_id FROM tenant_closure WHERE ancestor_id = ? AND barrier = 0)` |
+| `InTenantSubtree` | `property`, `root_tenant_id` | `col IN (SELECT rc.descendant_id FROM resource_group_closure rc JOIN resource_group rg ON rg.id = rc.descendant_id WHERE rc.ancestor_id = ? AND rg.group_type = 'tenant')` |
 | `InGroup` | `resource_property`, `group_ids` | `col IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (?))` |
 | `InGroupSubtree` | `resource_property`, `root_group_id` | `col IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = ?))` |
 
@@ -101,7 +101,6 @@ Each new variant generates the appropriate SQL subquery using SeaORM's `Conditio
 
 When PEP declares `Capability::TenantHierarchy`:
 - Return `InTenantSubtree` predicate instead of `In(OWNER_TENANT_ID, [tid])`
-- Includes `barrier_mode` from request context
 
 When PEP declares `Capability::GroupHierarchy` + group_id available:
 - Additionally return `InGroupSubtree` or `InGroup` predicate
@@ -144,10 +143,9 @@ Static AuthZ plugin **SHOULD** return `InTenantSubtree` when `TenantHierarchy` c
 - [x] Compiler produces `ScopeFilter::InTenantSubtree` from `Predicate::InTenantSubtree`
 - [x] Compiler produces `ScopeFilter::InGroup` from `Predicate::InGroup`
 - [x] Compiler produces `ScopeFilter::InGroupSubtree` from `Predicate::InGroupSubtree`
-- [x] SecureORM generates correct SQL subquery for `InTenantSubtree` using `tenant_closure`
+- [x] SecureORM generates correct SQL subquery for `InTenantSubtree` using `resource_group_closure` + `resource_group` JOIN
 - [x] SecureORM generates correct SQL subquery for `InGroup` using `resource_group_membership`
 - [x] SecureORM generates correct SQL subquery for `InGroupSubtree` using both closure + membership
-- [x] Barrier mode `respect` adds `AND barrier = 0` clause; `ignore` omits it
 - [x] Static plugin returns `InTenantSubtree` when `TenantHierarchy` capability declared
 - [x] Static plugin returns flat `In` when `TenantHierarchy` capability NOT declared (backward compatible)
 - [x] Existing `Eq`/`In` predicate tests still pass (no regression)
@@ -158,7 +156,7 @@ Static AuthZ plugin **SHOULD** return `InTenantSubtree` when `TenantHierarchy` c
 ### Unit Tests — SDK (`constraints.rs`)
 - Serialization roundtrip for all 5 predicate types
 - Tag-based deserialization (`op` field) discriminates correctly
-- `InTenantSubtree` with/without optional fields (barrier_mode, tenant_status)
+- `InTenantSubtree` serialization roundtrip with `property` and `root_tenant_id`
 
 ### Unit Tests — Compiler (`compiler.rs`)
 - `InTenantSubtree` compiles to `ScopeFilter::InTenantSubtree`
@@ -205,16 +203,23 @@ col IN (SELECT resource_id FROM resource_group_membership
 
 **Future consideration**: If non-UUID `resource_id` values are introduced (e.g., slugs that could collide across types), adding optional `resource_type` to `InGroup`/`InGroupSubtree` predicates with a `membership_resource_type` field should be considered. This would be a backward-compatible extension to the predicate schema.
 
-### Tenant Closure Data Dependency
+### Tenant Hierarchy via resource_group_closure
 
-`InTenantSubtree` SQL reads from the `tenant_closure` local projection table. This table is created by migration `m20260310_000002_tenant_closure_projection` but is populated by the CDC pipeline (Feature 0008: `cpt-cf-resource-group-feature-tenant-closure-cdc`). Until the CDC pipeline is operational, `InTenantSubtree` queries will return empty results (no descendant tenants found), effectively behaving as `Eq(OWNER_TENANT_ID, root_tenant_id)` — only the root tenant itself is visible.
+`InTenantSubtree` SQL uses `resource_group_closure` with a JOIN on `resource_group.group_type = 'tenant'` to resolve tenant hierarchy. Tenants ARE resource groups, and their hierarchy is maintained by the resource group closure table.
 
-This is safe because:
-- Empty `tenant_closure` means no subtree expansion — queries return a subset (not superset) of expected results
-- The root tenant's self-row (if seeded) would still match
-- No cross-tenant data leakage occurs from empty projection
+The generated SQL:
+```sql
+SELECT rc.descendant_id
+FROM resource_group_closure rc
+JOIN resource_group rg ON rg.id = rc.descendant_id
+WHERE rc.ancestor_id = :root_tenant_id
+  AND rg.group_type = 'tenant'
+```
 
-See: `cpt-cf-resource-group-feature-tenant-closure-cdc` for the data population plan.
+This approach:
+- Eliminates the need for a separate projection table and CDC pipeline
+- Uses data that is always consistent (same transaction as hierarchy mutations)
+- Automatically benefits from existing closure table indexes
 
 ### ADR: Graceful Degradation for Group Hierarchy
 

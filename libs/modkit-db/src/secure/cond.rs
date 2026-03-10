@@ -2,7 +2,7 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, sea_query::Expr};
 use sea_orm::sea_query::{Alias, IntoColumnRef, Query};
 
 use crate::secure::{AccessScope, ScopableEntity};
-use modkit_security::access_scope::{ScopeBarrierMode, ScopeConstraint, ScopeFilter, ScopeValue};
+use modkit_security::access_scope::{ScopeConstraint, ScopeFilter, ScopeValue};
 
 /// Convert a [`ScopeValue`] to a `sea_query::SimpleExpr` for SQL binding.
 fn scope_value_to_sea_expr(v: &ScopeValue) -> sea_orm::sea_query::SimpleExpr {
@@ -105,13 +105,8 @@ where
             }
             ScopeFilter::InTenantSubtree(f) => {
                 and_cond = and_cond.add(
-                    Expr::col(col.into_column_ref()).in_subquery(
-                        build_tenant_subtree_subquery(
-                            f.root_tenant_id(),
-                            f.barrier_mode(),
-                            f.tenant_status(),
-                        ),
-                    ),
+                    Expr::col(col.into_column_ref())
+                        .in_subquery(build_tenant_subtree_subquery(f.root_tenant_id())),
                 );
             }
             ScopeFilter::InGroup(f) => {
@@ -131,27 +126,25 @@ where
     Some(and_cond)
 }
 
-/// Build subquery: `SELECT descendant_id FROM tenant_closure WHERE ancestor_id = ? [AND barrier = 0] [AND descendant_status IN (?)]`.
+/// Build subquery: `SELECT rc.descendant_id FROM resource_group_closure rc JOIN resource_group rg ON rg.id = rc.descendant_id WHERE rc.ancestor_id = ? AND rg.group_type = 'tenant'`.
 fn build_tenant_subtree_subquery(
     root_tenant_id: uuid::Uuid,
-    barrier_mode: &ScopeBarrierMode,
-    tenant_status: Option<&[String]>,
 ) -> sea_orm::sea_query::SelectStatement {
-    let mut q = Query::select();
-    q.column(Alias::new("descendant_id"))
-        .from(Alias::new("tenant_closure"))
-        .and_where(Expr::col(Alias::new("ancestor_id")).eq(root_tenant_id));
-
-    if *barrier_mode == ScopeBarrierMode::Respect {
-        q.and_where(Expr::col(Alias::new("barrier")).eq(0));
-    }
-
-    if let Some(statuses) = tenant_status {
-        let values: Vec<sea_orm::Value> = statuses.iter().map(|s| s.clone().into()).collect();
-        q.and_where(Expr::col(Alias::new("descendant_status")).is_in(values));
-    }
-
-    q.to_owned()
+    let rc = Alias::new("rc");
+    let rg = Alias::new("rg");
+    Query::select()
+        .expr(Expr::col((rc.clone(), Alias::new("descendant_id"))))
+        .from_as(Alias::new("resource_group_closure"), rc.clone())
+        .join_as(
+            sea_orm::sea_query::JoinType::InnerJoin,
+            Alias::new("resource_group"),
+            rg.clone(),
+            Expr::col((rg.clone(), Alias::new("id")))
+                .eq(Expr::col((rc.clone(), Alias::new("descendant_id")))),
+        )
+        .and_where(Expr::col((rc, Alias::new("ancestor_id"))).eq(root_tenant_id))
+        .and_where(Expr::col((rg, Alias::new("group_type"))).eq("tenant"))
+        .to_owned()
 }
 
 /// Build subquery: `SELECT resource_id FROM resource_group_membership WHERE group_id IN (?)`.
@@ -347,43 +340,14 @@ mod tests {
 
     #[test]
     fn test_in_tenant_subtree_produces_subquery_condition() {
-        use modkit_security::access_scope::ScopeBarrierMode;
-
         let tid = uuid::Uuid::new_v4();
         let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
-            ScopeFilter::in_tenant_subtree(
-                pep_properties::OWNER_TENANT_ID,
-                tid,
-                ScopeBarrierMode::Respect,
-                Some(vec!["active".to_owned()]),
-            ),
+            ScopeFilter::in_tenant_subtree(pep_properties::OWNER_TENANT_ID, tid),
         ])]);
 
         let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
         let cond_str = format!("{cond:?}");
         // Should NOT be deny-all — property resolves successfully
-        assert!(
-            !cond_str.contains("Value(Bool(Some(false)))"),
-            "Expected subquery condition, got deny-all: {cond_str}"
-        );
-    }
-
-    #[test]
-    fn test_in_tenant_subtree_ignore_barrier() {
-        use modkit_security::access_scope::ScopeBarrierMode;
-
-        let tid = uuid::Uuid::new_v4();
-        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
-            ScopeFilter::in_tenant_subtree(
-                pep_properties::OWNER_TENANT_ID,
-                tid,
-                ScopeBarrierMode::Ignore,
-                None,
-            ),
-        ])]);
-
-        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
-        let cond_str = format!("{cond:?}");
         assert!(
             !cond_str.contains("Value(Bool(Some(false)))"),
             "Expected subquery condition, got deny-all: {cond_str}"
@@ -423,17 +387,10 @@ mod tests {
 
     #[test]
     fn test_combined_tenant_subtree_and_group() {
-        use modkit_security::access_scope::ScopeBarrierMode;
-
         let tid = uuid::Uuid::new_v4();
         let gid = uuid::Uuid::new_v4();
         let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
-            ScopeFilter::in_tenant_subtree(
-                pep_properties::OWNER_TENANT_ID,
-                tid,
-                ScopeBarrierMode::Respect,
-                None,
-            ),
+            ScopeFilter::in_tenant_subtree(pep_properties::OWNER_TENANT_ID, tid),
             ScopeFilter::in_group(pep_properties::RESOURCE_ID, vec![gid]),
         ])]);
 
@@ -448,16 +405,9 @@ mod tests {
 
     #[test]
     fn test_subquery_with_unknown_property_deny_all() {
-        use modkit_security::access_scope::ScopeBarrierMode;
-
         let tid = uuid::Uuid::new_v4();
         let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
-            ScopeFilter::in_tenant_subtree(
-                "nonexistent_prop",
-                tid,
-                ScopeBarrierMode::Respect,
-                None,
-            ),
+            ScopeFilter::in_tenant_subtree("nonexistent_prop", tid),
         ])]);
 
         let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);

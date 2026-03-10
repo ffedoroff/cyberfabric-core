@@ -102,18 +102,6 @@ pub mod pep_properties {
     pub const OWNER_ID: &str = "owner_id";
 }
 
-/// Barrier enforcement mode for tenant subtree queries.
-///
-/// Determines whether tenant barriers (self-managed tenants) are respected
-/// during hierarchy traversal.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ScopeBarrierMode {
-    /// Respect barriers — add `AND barrier = 0` clause (default).
-    Respect,
-    /// Ignore barriers — no barrier filtering (for billing, metadata, etc.).
-    Ignore,
-}
-
 /// A single scope filter — a typed predicate on a named resource property.
 ///
 /// The property name (e.g., `"owner_tenant_id"`, `"id"`) is an authorization
@@ -131,7 +119,7 @@ pub enum ScopeFilter {
     Eq(EqScopeFilter),
     /// Set membership: `property IN (values)`.
     In(InScopeFilter),
-    /// Tenant subtree: `property IN (SELECT descendant_id FROM tenant_closure WHERE ...)`.
+    /// Tenant subtree: `property IN (SELECT descendant_id FROM resource_group_closure JOIN resource_group ... WHERE group_type = 'tenant')`.
     InTenantSubtree(InTenantSubtreeScopeFilter),
     /// Group membership: `property IN (SELECT resource_id FROM resource_group_membership WHERE ...)`.
     InGroup(InGroupScopeFilter),
@@ -221,33 +209,22 @@ impl InScopeFilter {
 
 /// Tenant subtree scope filter.
 ///
-/// Compiles to: `property IN (SELECT descendant_id FROM tenant_closure WHERE ancestor_id = ? [AND barrier = 0] [AND descendant_status IN (?)])`.
+/// Compiles to: `property IN (SELECT rc.descendant_id FROM resource_group_closure rc JOIN resource_group rg ON rg.id = rc.descendant_id WHERE rc.ancestor_id = ? AND rg.group_type = 'tenant')`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InTenantSubtreeScopeFilter {
     /// Authorization property name (e.g., `pep_properties::OWNER_TENANT_ID`).
     property: String,
     /// Root tenant ID for the subtree query.
     root_tenant_id: Uuid,
-    /// Whether to respect barriers in the closure table.
-    barrier_mode: ScopeBarrierMode,
-    /// Optional tenant status filter (e.g., `["active"]`).
-    tenant_status: Option<Vec<String>>,
 }
 
 impl InTenantSubtreeScopeFilter {
     /// Create a new tenant subtree scope filter.
     #[must_use]
-    pub fn new(
-        property: impl Into<String>,
-        root_tenant_id: Uuid,
-        barrier_mode: ScopeBarrierMode,
-        tenant_status: Option<Vec<String>>,
-    ) -> Self {
+    pub fn new(property: impl Into<String>, root_tenant_id: Uuid) -> Self {
         Self {
             property: property.into(),
             root_tenant_id,
-            barrier_mode,
-            tenant_status,
         }
     }
 
@@ -263,20 +240,6 @@ impl InTenantSubtreeScopeFilter {
     #[must_use]
     pub fn root_tenant_id(&self) -> Uuid {
         self.root_tenant_id
-    }
-
-    /// The barrier enforcement mode.
-    #[inline]
-    #[must_use]
-    pub fn barrier_mode(&self) -> &ScopeBarrierMode {
-        &self.barrier_mode
-    }
-
-    /// Optional tenant status filter.
-    #[inline]
-    #[must_use]
-    pub fn tenant_status(&self) -> Option<&[String]> {
-        self.tenant_status.as_deref()
     }
 }
 
@@ -376,18 +339,8 @@ impl ScopeFilter {
 
     /// Create a tenant subtree filter.
     #[must_use]
-    pub fn in_tenant_subtree(
-        property: impl Into<String>,
-        root_tenant_id: Uuid,
-        barrier_mode: ScopeBarrierMode,
-        tenant_status: Option<Vec<String>>,
-    ) -> Self {
-        Self::InTenantSubtree(InTenantSubtreeScopeFilter::new(
-            property,
-            root_tenant_id,
-            barrier_mode,
-            tenant_status,
-        ))
+    pub fn in_tenant_subtree(property: impl Into<String>, root_tenant_id: Uuid) -> Self {
+        Self::InTenantSubtree(InTenantSubtreeScopeFilter::new(property, root_tenant_id))
     }
 
     /// Create a group membership filter.

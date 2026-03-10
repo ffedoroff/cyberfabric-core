@@ -5,7 +5,6 @@ use std::sync::Arc;
 use authz_resolver_sdk::{
     Capability, Constraint, EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
     InGroupSubtreePredicate, InPredicate, InTenantSubtreePredicate, Predicate,
-    PredicateBarrierMode,
 };
 use modkit_macros::domain_model;
 use modkit_security::{SecurityContext, pep_properties};
@@ -201,33 +200,13 @@ impl Service {
     /// Advanced allow response with tenant subtree predicate.
     ///
     /// Returned when `TenantHierarchy` capability is declared. Uses `InTenantSubtree`
-    /// instead of flat `In` so the PEP can query the `tenant_closure` table.
+    /// instead of flat `In` so the PEP can query the `resource_group_closure` table
+    /// with `group_type = 'tenant'`.
     fn allow_with_tenant_subtree(
         tenant_id: Uuid,
-        request: &EvaluationRequest,
+        _request: &EvaluationRequest,
     ) -> EvaluationResponse {
-        let barrier_mode = request
-            .context
-            .tenant_context
-            .as_ref()
-            .map(|tc| match tc.barrier_mode {
-                authz_resolver_sdk::BarrierMode::Respect => PredicateBarrierMode::Respect,
-                authz_resolver_sdk::BarrierMode::Ignore => PredicateBarrierMode::Ignore,
-            })
-            .unwrap_or(PredicateBarrierMode::Respect);
-
-        let tenant_status = request
-            .context
-            .tenant_context
-            .as_ref()
-            .and_then(|tc| tc.tenant_status.clone());
-
-        let mut pred =
-            InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, tenant_id)
-                .barrier_mode(barrier_mode);
-        if let Some(statuses) = tenant_status {
-            pred = pred.tenant_status(statuses);
-        }
+        let pred = InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, tenant_id);
 
         EvaluationResponse {
             decision: true,
@@ -256,30 +235,10 @@ impl Service {
             .contains(&Capability::TenantHierarchy);
 
         let tenant_predicate = if has_tenant_hierarchy {
-            let barrier_mode = request
-                .context
-                .tenant_context
-                .as_ref()
-                .map(|tc| match tc.barrier_mode {
-                    authz_resolver_sdk::BarrierMode::Respect => PredicateBarrierMode::Respect,
-                    authz_resolver_sdk::BarrierMode::Ignore => PredicateBarrierMode::Ignore,
-                })
-                .unwrap_or(PredicateBarrierMode::Respect);
-
-            let mut pred =
-                InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, tenant_id)
-                    .barrier_mode(barrier_mode);
-
-            if let Some(statuses) = request
-                .context
-                .tenant_context
-                .as_ref()
-                .and_then(|tc| tc.tenant_status.clone())
-            {
-                pred = pred.tenant_status(statuses);
-            }
-
-            Predicate::InTenantSubtree(pred)
+            Predicate::InTenantSubtree(InTenantSubtreePredicate::new(
+                pep_properties::OWNER_TENANT_ID,
+                tenant_id,
+            ))
         } else {
             Predicate::In(InPredicate::new(
                 pep_properties::OWNER_TENANT_ID,
@@ -471,10 +430,6 @@ mod tests {
             Predicate::InTenantSubtree(p) => {
                 assert_eq!(p.root_tenant_id, tenant_id);
                 assert_eq!(p.property, pep_properties::OWNER_TENANT_ID);
-                assert_eq!(
-                    p.barrier_mode,
-                    authz_resolver_sdk::PredicateBarrierMode::Respect
-                );
             }
             other => panic!("Expected InTenantSubtree, got: {other:?}"),
         }
@@ -492,35 +447,6 @@ mod tests {
                 assert_eq!(p.property, pep_properties::OWNER_TENANT_ID);
             }
             other => panic!("Expected flat In predicate, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn tenant_subtree_respects_barrier_mode_from_request() {
-        let tenant_id = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
-        let service = Service::new();
-
-        let mut request = make_request(true, Some(tenant_id));
-        request.context.capabilities = vec![Capability::TenantHierarchy];
-        request.context.tenant_context.as_mut().unwrap().barrier_mode =
-            authz_resolver_sdk::BarrierMode::Ignore;
-        request.context.tenant_context.as_mut().unwrap().tenant_status =
-            Some(vec!["active".to_owned()]);
-
-        let response = service.evaluate(&request).await;
-
-        match &response.context.constraints[0].predicates[0] {
-            Predicate::InTenantSubtree(p) => {
-                assert_eq!(
-                    p.barrier_mode,
-                    authz_resolver_sdk::PredicateBarrierMode::Ignore
-                );
-                assert_eq!(
-                    p.tenant_status,
-                    Some(vec!["active".to_owned()])
-                );
-            }
-            other => panic!("Expected InTenantSubtree, got: {other:?}"),
         }
     }
 
@@ -712,7 +638,7 @@ mod tests {
                     assert_eq!(p.root_tenant_id, tenant_id);
                     assert_eq!(p.property, pep_properties::OWNER_TENANT_ID);
                 }
-                other => panic!("Expected InTenantSubtree predicate, got: {other:?}"),
+                other => panic!("Expected InTenantSubtree, got: {other:?}"),
             }
 
             // Second predicate: InGroupSubtree
@@ -721,7 +647,7 @@ mod tests {
                     assert_eq!(p.property, pep_properties::RESOURCE_ID);
                     assert_eq!(p.root_group_id, group_id);
                 }
-                other => panic!("Expected InGroupSubtree predicate, got: {other:?}"),
+                other => panic!("Expected InGroupSubtree, got: {other:?}"),
             }
         }
 

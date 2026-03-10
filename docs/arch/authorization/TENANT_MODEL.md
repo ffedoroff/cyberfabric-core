@@ -9,10 +9,10 @@ This document describes Cyber Fabric's multi-tenancy model, tenant topology, and
   - [Overview](#overview)
   - [Tenant Topology: Forest](#tenant-topology-forest)
   - [Tenant Properties](#tenant-properties)
-  - [Barriers (Self-Managed Tenants)](#barriers-self-managed-tenants)
+  - [Hierarchical Access](#hierarchical-access)
   - [Context Tenant vs Subject Tenant](#context-tenant-vs-subject-tenant)
   - [Tenant Subtree Queries](#tenant-subtree-queries)
-  - [Closure Table](#closure-table)
+  - [Closure Table (via Resource Group)](#closure-table-via-resource-group)
   - [References](#references)
 
 ---
@@ -33,8 +33,8 @@ Vendor
 
 Key principles:
 - **Isolation by default** — tenants cannot access each other's data
-- **Hierarchical access** — parent tenants may access child tenant data (configurable)
-- **Barriers** — child tenants can opt out of parent visibility via `self_managed` flag
+- **Hierarchical access** — parent tenants can access child tenant data throughout the entire subtree
+- **No barriers** — all tenants in a subtree are accessible to their ancestor tenants
 
 ---
 
@@ -70,63 +70,42 @@ The tenant structure is a **forest** — a collection of independent trees with 
 |----------|------|-------------|
 | `id` | UUID | Unique tenant identifier |
 | `parent_id` | UUID? | Parent tenant (NULL for root tenants) |
-| `status` | enum | `active`, `suspended`, `deleted` |
-| `self_managed` | bool | If true, creates a barrier — parent cannot access this subtree |
+| `status` | enum | `active` |
+
+Tenants are modeled as resource groups with `group_type = 'tenant'`. See [RESOURCE_GROUP_MODEL.md](./RESOURCE_GROUP_MODEL.md).
 
 **Status semantics:**
 - `active` — normal operation
-- `suspended` — tenant temporarily disabled (e.g., billing issue), data preserved
-- `deleted` — soft-deleted, may be purged after retention period
+
+There is no soft delete. Tenants are either present (`active`) or hard-deleted. Suspension semantics, if needed, are handled at the tenant-resolver level, not in the closure/hierarchy model.
 
 ---
 
-## Barriers (Self-Managed Tenants)
+## Hierarchical Access
 
-A **barrier** is created when a tenant sets `self_managed = true`. This prevents parent tenants from accessing the subtree rooted at the barrier tenant.
+All tenants in a subtree are accessible to their ancestor tenants. Parent tenants always have full visibility into their entire subtree.
 
 **Example:**
 
 ```
 T1 (parent)
-├── T2 (self_managed=true)  ← BARRIER
+├── T2
 │   └── T3
 └── T4
 ```
 
 **Access from T1's perspective:**
-- ✅ Can access T1's own resources
-- ❌ Cannot access T2's resources (barrier)
-- ❌ Cannot access T3's resources (behind barrier)
-- ✅ Can access T4's resources
+- Can access T1's own resources
+- Can access T2's resources (child)
+- Can access T3's resources (grandchild, via T2)
+- Can access T4's resources (child)
 
 **Access from T2's perspective:**
-- ✅ Can access T2's own resources
-- ✅ Can access T3's resources (T3 is in T2's subtree, no barrier between them)
+- Can access T2's own resources
+- Can access T3's resources (child)
+- Cannot access T1's or T4's resources (T2 is not their ancestor)
 
-**Use cases:**
-- Enterprise customer wants data isolation from reseller/partner
-- Compliance requirements (data sovereignty)
-- Organizational autonomy within a larger structure
-
-**Barrier interpretation is context-dependent:**
-
-Barriers are not absolute — their enforcement depends on the type of data and operation. The same parent-child relationship may have different access rules for different resource types:
-
-| Data Type | Barrier Enforced? | Rationale |
-|-----------|-------------------|-----------|
-| Business data (tasks, documents) | ✅ Yes | Core isolation requirement |
-| Usage/metrics for billing | ❌ No | Parent needs to bill child tenant |
-| Audit logs | ⚠️ Configurable | Compliance may require parent visibility |
-| Tenant metadata (name, status) | ❌ No | Parent needs to manage child tenants |
-
-**Example:** Reseller T1 has enterprise customer T2 (`self_managed=true`):
-- T1 ❌ cannot read T2's business data (tasks, files, etc.)
-- T1 ✅ can read T2's usage metrics for billing purposes
-- T1 ✅ can see T2's tenant metadata (name, status, plan)
-
-This means `barrier_mode` in authorization requests applies to specific resource types, not globally. Each module/endpoint decides whether barriers apply to its resources.
-
-**Implementation:** The `tenant_closure` table includes a `barrier` column that indicates whether a barrier exists between ancestor and descendant. See [Closure Table](#closure-table).
+Fine-grained access control within the subtree is handled by authorization policies at the module/endpoint level, not by the tenant hierarchy model itself.
 
 ---
 
@@ -187,76 +166,104 @@ Cyber Fabric recommends **closure tables** for production deployments with hiera
 |-----------|---------|-------------|
 | `mode` | `"subtree"` | `"root_only"` (single tenant) or `"subtree"` (tenant + descendants) |
 | `root_id` | — | Root tenant. Optional — PDP can determine from `token_scopes` or `subject.properties.tenant_id` |
-| `barrier_mode` | `"respect"` | `"respect"` (respect barriers) or `"ignore"` (ignore barriers). Legacy aliases `"all"`/`"none"` accepted. See [DESIGN.md](./DESIGN.md#3-tenant-subtree-predicate-type-in_tenant_subtree). |
-| `tenant_status` | all | Filter by tenant status (`active`, `suspended`) |
 
 ---
 
-## Closure Table
+## Closure Table (via Resource Group)
 
-The `tenant_closure` table is a denormalized representation of the tenant hierarchy. It contains all ancestor-descendant pairs, enabling efficient subtree queries.
+Tenants are resource groups with `group_type = 'tenant'`, and the hierarchy is stored in the `resource_group_closure` table. Tenant subtree queries use a JOIN to filter by group type.
 
-**Schema:**
+See [RESOURCE_GROUP_MODEL.md](./RESOURCE_GROUP_MODEL.md) for the full resource group closure table design.
+
+**`resource_group_closure` schema (relevant columns):**
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `ancestor_id` | UUID | Ancestor tenant |
-| `descendant_id` | UUID | Descendant tenant |
-| `barrier` | INT NOT NULL DEFAULT 0 | 0 = no barrier on path, 1 = barrier exists between ancestor and descendant |
-| `descendant_status` | enum | Status of descendant tenant (denormalized for query efficiency) |
+| `ancestor_id` | UUID | Ancestor resource group |
+| `descendant_id` | UUID | Descendant resource group |
+| `depth` | INT | Distance between ancestor and descendant (0 for self-references) |
 
-**Barrier semantics:** The `barrier` column stores whether a barrier exists **strictly between** ancestor and descendant, **not including the ancestor itself**. This means:
-- When querying from T2 (a self_managed tenant), rows with `ancestor_id = T2` have `barrier = 0` because T2 is the ancestor, not "between" itself and its descendants
-- When querying from T1 (parent of T2), rows with `ancestor_id = T1` and `descendant_id` in T2's subtree have `barrier = 1` because T2 is between T1 and its descendants
+**`resource_group` schema (relevant columns):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Resource group identifier |
+| `group_type` | VARCHAR | Type discriminator (`'tenant'`, etc.) |
 
 **Example data for the hierarchy:**
 
 ```
 T1
-├── T2 (self_managed=true)
+├── T2
 │   └── T3
 └── T4
 ```
 
-| ancestor_id | descendant_id | barrier | descendant_status |
-|-------------|---------------|---------|-------------------|
-| T1 | T1 | 0 | active |
-| T1 | T2 | 1 | active |
-| T1 | T3 | 1 | active |
-| T1 | T4 | 0 | active |
-| T2 | T2 | 0 | active |
-| T2 | T3 | 0 | active |
-| T3 | T3 | 0 | active |
-| T4 | T4 | 0 | active |
+`resource_group` rows (tenant entries only):
+
+| id | group_type |
+|----|------------|
+| T1 | tenant |
+| T2 | tenant |
+| T3 | tenant |
+| T4 | tenant |
+
+`resource_group_closure` rows (tenant entries only):
+
+| ancestor_id | descendant_id | depth |
+|-------------|---------------|-------|
+| T1 | T1 | 0 |
+| T1 | T2 | 1 |
+| T1 | T3 | 2 |
+| T1 | T4 | 1 |
+| T2 | T2 | 0 |
+| T2 | T3 | 1 |
+| T3 | T3 | 0 |
+| T4 | T4 | 0 |
 
 **Key observations:**
-- `T1 → T2`: barrier = 1 because T2 (self_managed) is on the path
-- `T1 → T3`: barrier = 1 because T2 is on the path from T1 to T3
-- `T2 → T2` and `T2 → T3`: barrier = 0 because T2 is the **ancestor**, not between T2 and its descendants
+- Every tenant has a self-referencing row (`depth = 0`)
+- All ancestor-descendant pairs are present, enabling O(1) subtree lookups via JOIN
+- Parent tenants have full visibility into their subtree
 
-**Query: "All tenants in T1's subtree, with `barrier_mode: "respect"`"**
+**Query: "All tenants in T1's subtree"**
 
 ```sql
--- barrier_mode: "respect" (default) adds the barrier clause
-SELECT descendant_id FROM tenant_closure
-WHERE ancestor_id = 'T1'
-  AND barrier = 0
--- barrier_mode: "ignore" omits the barrier clause
+SELECT c.descendant_id
+FROM resource_group_closure c
+JOIN resource_group rg ON rg.id = c.descendant_id
+WHERE c.ancestor_id = 'T1'
+  AND rg.group_type = 'tenant'
 ```
 
-Result: T1, T4 (T2 and T3 excluded due to barrier = 1)
+Result: T1, T2, T3, T4
 
 **Query: "All tenants in T2's subtree"**
 
 ```sql
-SELECT descendant_id FROM tenant_closure WHERE ancestor_id = 'T2' AND barrier = 0
+SELECT c.descendant_id
+FROM resource_group_closure c
+JOIN resource_group rg ON rg.id = c.descendant_id
+WHERE c.ancestor_id = 'T2'
+  AND rg.group_type = 'tenant'
 ```
 
-Result: T2, T3 (barrier = 0 for both rows because T2 is the ancestor, not between T2 and its descendants)
+Result: T2, T3
 
-**Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types (e.g., bit 0 for self_managed, bit 1 for data_sovereignty). SQL would change from `barrier = 0` to `(barrier & mask) = 0` for selective enforcement.
+**Query: "Direct children of T1"**
 
-**Synchronization:** How projection tables are synchronized with vendor systems, consistency guarantees, and conflict resolution are out of scope for this document. See Tenant Resolver design documentation (TBD).
+```sql
+SELECT c.descendant_id
+FROM resource_group_closure c
+JOIN resource_group rg ON rg.id = c.descendant_id
+WHERE c.ancestor_id = 'T1'
+  AND c.depth = 1
+  AND rg.group_type = 'tenant'
+```
+
+Result: T2, T4
+
+**Synchronization:** How the closure table is synchronized with tenant lifecycle events, consistency guarantees, and conflict resolution are out of scope for this document. See Tenant Resolver design documentation (TBD).
 
 ---
 

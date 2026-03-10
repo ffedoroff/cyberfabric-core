@@ -54,12 +54,12 @@ pub mod plugin_api;
 pub use api::AuthZResolverClient;
 pub use constraints::{
     Constraint, EqPredicate, InGroupPredicate, InGroupSubtreePredicate, InPredicate,
-    InTenantSubtreePredicate, Predicate, PredicateBarrierMode,
+    InTenantSubtreePredicate, Predicate,
 };
 pub use error::AuthZResolverError;
 pub use gts::AuthZResolverPluginSpecV1;
 pub use models::{
-    Action, BarrierMode, Capability, DenyReason, EvaluationRequest, EvaluationRequestContext,
+    Action, Capability, DenyReason, EvaluationRequest, EvaluationRequestContext,
     EvaluationResponse, EvaluationResponseContext, Resource, Subject, TenantContext, TenantMode,
 };
 pub use pep::{AccessRequest, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType};

@@ -19,9 +19,6 @@ resource-group-sdk = { package = "cf-resource-group-sdk", path = "../resource-gr
 # AuthZ resolver for authorization (PEP flow)
 authz-resolver-sdk = { package = "cf-authz-resolver-sdk", path = "../../authz-resolver/authz-resolver-sdk" }
 
-# Tenant Resolver SDK (for full resync)
-tenant-resolver-sdk = { package = "cf-tenant-resolver-sdk", path = "../../tenant-resolver/tenant-resolver-sdk" }
-
 # Core
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -55,7 +52,7 @@ thiserror = { workspace = true }
 
 # ModKit
 modkit = { workspace = true }
-modkit-db = { workspace = true, features = ["sqlite", "pg", "preview-outbox"] }
+modkit-db = { workspace = true, features = ["sqlite", "pg"] }
 modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
@@ -63,4 +60,4 @@ modkit-odata = { workspace = true, features = ["with-utoipa"] }
 
 [dev-dependencies]
 static-authz-plugin = { package = "cf-static-authz-plugin", path = "../../authz-resolver/plugins/static-authz-plugin" }
-modkit-db = { workspace = true, features = ["sqlite", "pg", "testing", "preview-outbox"] }
+modkit-db = { workspace = true, features = ["sqlite", "pg", "testing"] }

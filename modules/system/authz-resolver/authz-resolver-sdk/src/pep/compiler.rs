@@ -18,9 +18,9 @@
 //! `require_constraints=true`, empty constraints are an error (fail-closed).
 //! If the PDP returns constraints regardless of the flag, they are compiled.
 
-use modkit_security::{AccessScope, ScopeBarrierMode, ScopeConstraint, ScopeFilter, ScopeValue};
+use modkit_security::{AccessScope, ScopeConstraint, ScopeFilter, ScopeValue};
 
-use crate::constraints::{Constraint, Predicate, PredicateBarrierMode};
+use crate::constraints::{Constraint, Predicate};
 use crate::models::EvaluationResponse;
 
 /// Error during constraint compilation.
@@ -128,21 +128,10 @@ fn compile_constraint(
                     .collect::<Result<_, _>>()?;
                 (p.property.as_str(), ScopeFilter::r#in(&p.property, values))
             }
-            Predicate::InTenantSubtree(p) => {
-                let barrier_mode = match p.barrier_mode {
-                    PredicateBarrierMode::Respect => ScopeBarrierMode::Respect,
-                    PredicateBarrierMode::Ignore => ScopeBarrierMode::Ignore,
-                };
-                (
-                    p.property.as_str(),
-                    ScopeFilter::in_tenant_subtree(
-                        &p.property,
-                        p.root_tenant_id,
-                        barrier_mode,
-                        p.tenant_status.clone(),
-                    ),
-                )
-            }
+            Predicate::InTenantSubtree(p) => (
+                p.property.as_str(),
+                ScopeFilter::in_tenant_subtree(&p.property, p.root_tenant_id),
+            ),
             Predicate::InGroup(p) => (
                 p.property.as_str(),
                 ScopeFilter::in_group(&p.property, p.group_ids.clone()),
@@ -515,8 +504,7 @@ mod tests {
             context: EvaluationResponseContext {
                 constraints: vec![Constraint {
                     predicates: vec![Predicate::InTenantSubtree(
-                        InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, uuid(T1))
-                            .tenant_status(vec!["active".to_owned()]),
+                        InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, uuid(T1)),
                     )],
                 }],
                 ..Default::default()

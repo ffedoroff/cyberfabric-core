@@ -1752,7 +1752,6 @@ dependencies = [
  "cf-modkit-security",
  "cf-resource-group-sdk",
  "cf-static-authz-plugin",
- "cf-tenant-resolver-sdk",
  "chrono",
  "http",
  "inventory",

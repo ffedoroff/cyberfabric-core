@@ -18,8 +18,8 @@ use uuid::Uuid;
 use crate::api::AuthZResolverClient;
 use crate::error::AuthZResolverError;
 use crate::models::{
-    Action, BarrierMode, Capability, EvaluationRequest, EvaluationRequestContext, Resource,
-    Subject, TenantContext, TenantMode,
+    Action, Capability, EvaluationRequest, EvaluationRequestContext, Resource, Subject,
+    TenantContext, TenantMode,
 };
 use crate::pep::compiler::{ConstraintCompileError, compile_to_access_scope};
 
@@ -46,7 +46,7 @@ pub enum EnforcerError {
 ///
 /// Used with [`PolicyEnforcer::access_scope_with()`] when the simple
 /// [`PolicyEnforcer::access_scope()`] defaults don't suffice (ABAC resource
-/// properties, custom tenant mode, barrier bypass, etc.).
+/// properties, custom tenant mode, etc.).
 ///
 /// All fields default to "not overridden" — only set what you need.
 ///
@@ -62,12 +62,6 @@ pub enum EnforcerError {
 ///         .context_tenant_id(target_tenant_id)
 ///         .tenant_mode(TenantMode::RootOnly)
 ///         .resource_property(pep_properties::OWNER_TENANT_ID, target_tenant_id),
-/// ).await?;
-///
-/// // Billing — ignore barriers (constrained scope)
-/// let scope = enforcer.access_scope_with(
-///     &ctx, &RESOURCE, "list", None,
-///     &AccessRequest::new().barrier_mode(BarrierMode::Ignore),
 /// ).await?;
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -114,20 +108,6 @@ impl AccessRequest {
     #[must_use]
     pub fn tenant_mode(mut self, mode: TenantMode) -> Self {
         self.tenant_context.get_or_insert_default().mode = mode;
-        self
-    }
-
-    /// Override the barrier enforcement mode (default: `Respect`).
-    #[must_use]
-    pub fn barrier_mode(mut self, mode: BarrierMode) -> Self {
-        self.tenant_context.get_or_insert_default().barrier_mode = mode;
-        self
-    }
-
-    /// Set a tenant status filter (e.g., `["active"]`).
-    #[must_use]
-    pub fn tenant_status(mut self, statuses: Vec<String>) -> Self {
-        self.tenant_context.get_or_insert_default().tenant_status = Some(statuses);
         self
     }
 
@@ -666,16 +646,12 @@ mod tests {
         let req = AccessRequest::new()
             .resource_property(pep_properties::OWNER_TENANT_ID, tid)
             .context_tenant_id(tid)
-            .tenant_mode(TenantMode::RootOnly)
-            .barrier_mode(BarrierMode::Ignore)
-            .tenant_status(vec!["active".to_owned()]);
+            .tenant_mode(TenantMode::RootOnly);
 
         assert_eq!(req.resource_properties.len(), 1);
         let tc = req.tenant_context.as_ref().expect("tenant context");
         assert_eq!(tc.root_id, Some(tid));
         assert_eq!(tc.mode, TenantMode::RootOnly);
-        assert_eq!(tc.barrier_mode, BarrierMode::Ignore);
-        assert_eq!(tc.tenant_status, Some(vec!["active".to_owned()]));
     }
 
     #[test]
@@ -684,13 +660,11 @@ mod tests {
         let req = AccessRequest::new().tenant_context(TenantContext {
             mode: TenantMode::RootOnly,
             root_id: Some(tid),
-            ..Default::default()
         });
 
         let tc = req.tenant_context.as_ref().expect("tenant context");
         assert_eq!(tc.root_id, Some(tid));
         assert_eq!(tc.mode, TenantMode::RootOnly);
-        assert_eq!(tc.barrier_mode, BarrierMode::Respect);
     }
 
     #[test]
@@ -756,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn build_request_with_applies_tenant_mode_and_barrier() {
+    fn build_request_with_applies_tenant_mode() {
         let e = enforcer(AllowAllMock);
         let ctx = test_ctx();
         let req = e.build_request_with(
@@ -765,16 +739,11 @@ mod tests {
             "list",
             None,
             true,
-            &AccessRequest::new()
-                .tenant_mode(TenantMode::RootOnly)
-                .barrier_mode(BarrierMode::Ignore)
-                .tenant_status(vec!["active".to_owned()]),
+            &AccessRequest::new().tenant_mode(TenantMode::RootOnly),
         );
 
         let tc = req.context.tenant_context.as_ref().expect("tenant context");
         assert_eq!(tc.mode, TenantMode::RootOnly);
-        assert_eq!(tc.barrier_mode, BarrierMode::Ignore);
-        assert_eq!(tc.tenant_status, Some(vec!["active".to_owned()]));
     }
 
     #[test]
@@ -963,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_tenant_mode_and_barrier_mode() {
+    fn applies_tenant_mode() {
         let tenant_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
         let ctx = SecurityContext::builder()
             .subject_id(Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap())
@@ -975,16 +944,12 @@ mod tests {
         let access_req = AccessRequest::new().tenant_context(TenantContext {
             mode: TenantMode::RootOnly,
             root_id: Some(tenant_id),
-            barrier_mode: BarrierMode::Ignore,
-            tenant_status: Some(vec!["active".to_owned()]),
         });
 
         let request = e.build_request_with(&ctx, &TEST_RESOURCE, "list", None, true, &access_req);
 
         let tc = request.context.tenant_context.as_ref().unwrap();
         assert_eq!(tc.mode, TenantMode::RootOnly);
-        assert_eq!(tc.barrier_mode, BarrierMode::Ignore);
-        assert_eq!(tc.tenant_status, Some(vec!["active".to_owned()]));
     }
 
     #[test]

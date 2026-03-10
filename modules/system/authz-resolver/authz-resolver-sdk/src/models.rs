@@ -21,26 +21,6 @@ pub enum TenantMode {
     Subtree,
 }
 
-/// Controls how barriers (self-managed tenants) are handled during `AuthZ` evaluation.
-///
-/// Consistent with `tenant_resolver_sdk::BarrierMode`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BarrierMode {
-    /// Respect all barriers — stop at barrier boundaries (default).
-    ///
-    /// Serializes as `"respect"`. Also accepts legacy alias `"all"` on deserialization
-    /// (used in architecture docs before SDK canonicalization).
-    #[default]
-    #[serde(alias = "all")]
-    Respect,
-    /// Ignore barriers — traverse through self-managed tenants.
-    ///
-    /// Serializes as `"ignore"`. Also accepts legacy alias `"none"` on deserialization.
-    #[serde(alias = "none")]
-    Ignore,
-}
-
 /// PEP-level capability declarations.
 ///
 /// Tells the PDP which advanced features the PEP can handle so the PDP
@@ -128,12 +108,6 @@ pub struct TenantContext {
     /// The context tenant ID (tenant being operated on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_id: Option<Uuid>,
-    /// Barrier enforcement mode (default: `Respect`).
-    #[serde(default)]
-    pub barrier_mode: BarrierMode,
-    /// Required tenant status filter (e.g., `["active"]`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_status: Option<Vec<String>>,
 }
 
 /// Additional evaluation request context.
@@ -198,39 +172,4 @@ pub struct EvaluationResponse {
 mod tests {
     use super::*;
 
-    #[test]
-    fn barrier_mode_serializes_as_snake_case() {
-        assert_eq!(
-            serde_json::to_string(&BarrierMode::Respect).unwrap(),
-            r#""respect""#
-        );
-        assert_eq!(
-            serde_json::to_string(&BarrierMode::Ignore).unwrap(),
-            r#""ignore""#
-        );
-    }
-
-    #[test]
-    fn barrier_mode_deserializes_canonical_values() {
-        assert_eq!(
-            serde_json::from_str::<BarrierMode>(r#""respect""#).unwrap(),
-            BarrierMode::Respect
-        );
-        assert_eq!(
-            serde_json::from_str::<BarrierMode>(r#""ignore""#).unwrap(),
-            BarrierMode::Ignore
-        );
-    }
-
-    #[test]
-    fn barrier_mode_deserializes_legacy_aliases() {
-        assert_eq!(
-            serde_json::from_str::<BarrierMode>(r#""all""#).unwrap(),
-            BarrierMode::Respect
-        );
-        assert_eq!(
-            serde_json::from_str::<BarrierMode>(r#""none""#).unwrap(),
-            BarrierMode::Ignore
-        );
-    }
 }

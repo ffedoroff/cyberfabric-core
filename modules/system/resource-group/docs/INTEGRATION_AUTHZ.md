@@ -21,27 +21,10 @@
 | Static plugin → `InTenantSubtree` | DONE | 0007 | Returns when `TenantHierarchy` capability declared |
 | Static plugin → `InGroupSubtree` | DONE | 0007 | Returns compound constraint: tenant + `InGroupSubtree` when `GroupHierarchy` + group_id validated |
 | PEP capabilities in RG module | DONE | 0007 | `TenantHierarchy` + `GroupHierarchy` declared in `module.rs` |
-| `tenant_closure` local projection | DONE | 0007 | Migration `m20260310_000002_tenant_closure_projection` (CDC from tenant-resolver) |
 | MTLS auth path | DEFERRED | 0006 | Blocked on platform MTLS infra |
 | Plugin gateway routing | DEFERRED | 0006 | Blocked on vendor plugin architecture |
 
 ## 2. Contradictions: Architecture Docs vs Code
-
-### C1: `barrier_mode` value naming — DONE
-
-**Severity**: HIGH — JSON contract mismatch between docs and wire format
-
-| Source | Values | Location |
-|--------|--------|----------|
-| `docs/arch/authorization/DESIGN.md` | `"all"` / `"none"` | Lines 807, 840, 881, 1114, 1138-1139 |
-| `docs/arch/authorization/TENANT_MODEL.md` | `"all"` / `"none"` | Line 190 |
-| `docs/arch/authorization/AUTHZ_USAGE_SCENARIOS.md` | `"all"` / `"none"` | Lines 200, 605 |
-| `authz-resolver-sdk/src/models.rs` `BarrierMode` | `"respect"` / `"ignore"` | `serde(rename_all = "snake_case")` |
-| `authz-resolver-sdk/src/constraints.rs` `PredicateBarrierMode` | `"respect"` / `"ignore"` | `serde(rename_all = "snake_case")` |
-
-Both `BarrierMode` (request-level) and `PredicateBarrierMode` (predicate-level) use `Respect`/`Ignore` with `serde(rename_all = "snake_case")`, serializing to `"respect"`/`"ignore"`. Architecture docs consistently use `"all"`/`"none"`.
-
-**Resolution**: Applied option (A) — `serde(alias = "all"/"none")` on both enums. Docs updated to canonical `"respect"`/`"ignore"` with legacy alias note.
 
 ### C2: RG module PEP capabilities — DONE
 
@@ -55,7 +38,7 @@ let enforcer = PolicyEnforcer::new(authz)
     .with_capabilities(vec![Capability::TenantHierarchy, Capability::GroupHierarchy]);
 ```
 
-**Prerequisite met**: `tenant_closure` local projection table created (see C4).
+**Prerequisite met**: `resource_group_closure` table already exists with tenant hierarchy data (tenants are resource groups with `group_type='tenant'`).
 
 ### C3: `resource_id` type — String vs UUID — DONE
 
@@ -63,17 +46,9 @@ let enforcer = PolicyEnforcer::new(authz)
 
 **Resolution**: DESIGN.md updated — `resource_id` is TEXT (polymorphic external identifier), not UUID.
 
-### C4: `tenant_closure` local projection — DONE
+### C4: `InTenantSubtree` uses `resource_group_closure` — DONE
 
-**Severity**: MEDIUM — `InTenantSubtree` SQL references non-existent table
-
-**Problem**: Feature 0007 describes SQL `SELECT descendant_id FROM tenant_closure WHERE ancestor_id = ?` but table didn't exist in RG migrations.
-
-**Resolution**: Applied option (A) — local projection migration `m20260310_000002_tenant_closure_projection.rs`:
-- PostgreSQL: `ancestor_id UUID`, `descendant_id UUID`, `barrier INT`, `descendant_status TEXT`
-- SQLite: `ancestor_id TEXT`, `descendant_id TEXT`, `barrier INT`, `descendant_status TEXT`
-- Indexes: `idx_tc_descendant_id`, `idx_tc_ancestor_barrier`
-- Populated by CDC from tenant-resolver module.
+**Resolution**: `InTenantSubtree` SQL uses `resource_group_closure` with a JOIN on `resource_group.group_type = 'tenant'`. No separate projection table needed — tenants ARE resource groups.
 
 ### C5: Static plugin `InGroupSubtree` — DONE
 
@@ -106,17 +81,11 @@ sub.cond_where(scope_cond);
 
 Required re-exporting `build_scope_condition` from `modkit_db::secure`.
 
-**Tests added**: `membership_list_with_in_tenant_subtree`, `membership_list_respects_barriers`.
+**Tests added**: `membership_list_with_in_tenant_subtree`.
 
-### C8: SQLite UUID storage format mismatch in tests
+### C8: Test data seeding — DONE
 
-**Severity**: LOW — test-only issue, no production impact
-
-**Problem**: `sqlx` encodes `uuid::Uuid` as 16-byte BLOB for SQLite, but raw SQL `INSERT` stores UUIDs as TEXT strings. SQLite's strict type comparison means BLOB ≠ TEXT, so `InTenantSubtree` subqueries on `tenant_closure` (seeded via raw SQL) fail to match `resource_group.tenant_id` (stored via SeaORM as BLOB).
-
-**Resolution**: `seed_tenant_closure` in tests uses BLOB hex literals `X'{uuid.simple()}'` instead of text strings `'{uuid}'` to match SeaORM's storage format.
-
-**Lesson**: Any test that seeds projection tables via raw SQL for SQLite must use BLOB hex format for UUID columns: `X'{uuid.simple()}'`.
+**Resolution**: Tests create actual resource group hierarchies using domain services. Closure table is auto-populated by hierarchy management code. No raw SQL seeding needed.
 
 ### C9: `EvaluationFailed` mapped to 500 instead of 503 — DONE
 
@@ -137,14 +106,6 @@ Required re-exporting `build_scope_condition` from `modkit_db::secure`.
 
 **Resolution**: Updated all 57 occurrences of `"resource_property"` → `"property"` in DESIGN.md and AUTHZ_USAGE_SCENARIOS.md JSON examples.
 
-### C11: Stale comment in `models.rs` barrier_mode default — DONE
-
-**Severity**: LOW — misleading doc comment
-
-**Problem**: `TenantContext.barrier_mode` field comment said "default: `All`" but actual default is `Respect`.
-
-**Resolution**: Updated comment to reference `Respect`.
-
 ### C12: `resource_group_closure.depth` column missing from RESOURCE_GROUP_MODEL.md — DONE
 
 **Severity**: MEDIUM — schema documentation gap
@@ -153,13 +114,7 @@ Required re-exporting `build_scope_condition` from `modkit_db::secure`.
 
 **Resolution**: Added `depth` column to documentation with semantics note (0=self, 1=direct, 2+=deeper).
 
-### C13: `tenant_closure` missing `descendant_status` index — DONE
-
-**Severity**: MEDIUM — performance issue with tenant_status filtering
-
-**Problem**: `InTenantSubtree` SQL filters by `descendant_status IN (?)` but no index covered this column. Only `(ancestor_id, barrier)` was indexed.
-
-**Resolution**: Added index `idx_tc_ancestor_status ON tenant_closure (ancestor_id, descendant_status)` to both Postgres and SQLite migrations.
+### C13: Removed — N/A (no separate projection table)
 
 ## 3. Dependency Matrix
 
@@ -171,7 +126,6 @@ Required re-exporting `build_scope_condition` from `modkit_db::secure`.
 | `resource_group_closure` | RG | — | RG, `InGroupSubtree` SQL | DONE |
 | `resource_group_membership` | RG | — | RG, `InGroup`/`InGroupSubtree` SQL | DONE |
 | `resource_group_type` | RG | — | RG | DONE |
-| `tenant_closure` | tenant-resolver | Yes (CDC) | `InTenantSubtree` SQL | DONE (migration), CDC pending |
 
 ### 3.2 SDK trait dependencies
 
@@ -191,6 +145,7 @@ Feature 1 (Domain Foundation)
             └→ Feature 5 (AuthZ Enforcement) ← DONE
                  ├→ Feature 6 (MTLS/Plugin Gateway) ← DEFERRED
                  └→ Feature 7 (Advanced Constraint Types) ← DONE
+
 ```
 
 ## 4. Integration Verification Plan
@@ -206,15 +161,13 @@ Coverage:
 - ReadHierarchy bypass (no enforcer loop)
 - Cross-module: static-authz-plugin → ResourceGroupReadHierarchy → real SQLite DB
 
-### Phase 2: Advanced Constraints (DONE — 6 tests)
+### Phase 2: Advanced Constraints (DONE — 4 tests)
 
 Coverage:
-- `InTenantSubtree` group listing with seeded `tenant_closure` data
-- Barrier mode `Respect` — excludes groups behind barrier
-- Barrier mode `Ignore` — includes all groups regardless of barrier
+- `InTenantSubtree` group listing via `resource_group_closure` + `group_type='tenant'` JOIN
+- Descendant tenant groups visible through subtree scope
 - Leaf tenant sees only own groups
 - Membership listing with `InTenantSubtree` — correct subtree visibility
-- Membership listing respects barriers — excluded from behind barrier
 
 ```bash
 cargo test -p cf-resource-group tenant_subtree_integration
@@ -244,19 +197,16 @@ Blocked on:
 
 | # | Contradiction | Resolution | Owner | Status |
 |---|--------------|------------|-------|--------|
-| C1 | `barrier_mode` naming | `serde(alias = "all"/"none")` + docs updated | authz-resolver-sdk + arch docs | DONE |
 | C2 | No PEP capabilities in RG | `with_capabilities(vec![TenantHierarchy, GroupHierarchy])` | cf-resource-group | DONE |
 | C3 | `resource_id` String vs UUID | DESIGN.md updated: TEXT | arch docs | DONE |
-| C4 | `tenant_closure` absent | Local projection migration created | cf-resource-group | DONE |
+| C4 | `InTenantSubtree` table | Uses `resource_group_closure` + `group_type='tenant'` JOIN | cf-resource-group | DONE |
 | C5 | No `InGroupSubtree` from plugin | Compound constraint in `evaluate_with_hierarchy` | cf-static-authz-plugin | DONE |
 | C6 | `require_constraints` undocumented | Design Notes in Feature 0005 | Feature 0005 doc | DONE |
 | C7 | Membership scoping broken with advanced filters | `build_scope_condition` replaces manual UUID extraction | cf-resource-group | DONE |
-| C8 | SQLite UUID BLOB/TEXT mismatch in tests | BLOB hex literals in `seed_tenant_closure` | cf-resource-group tests | DONE |
+| C8 | Test data seeding | Tests use domain services, auto-populated closure | cf-resource-group tests | DONE |
 | C9 | `EvaluationFailed` → 500 instead of 503 | Added `DomainError::ServiceUnavailable` → 503 | cf-resource-group | DONE |
 | C10 | Predicate JSON `"resource_property"` vs `"property"` | Updated 57 occurrences in DESIGN.md + AUTHZ_USAGE_SCENARIOS.md | arch docs | DONE |
-| C11 | Stale barrier_mode default comment ("All") | Updated to "Respect" in models.rs | authz-resolver-sdk | DONE |
 | C12 | `resource_group_closure.depth` missing from docs | Added to RESOURCE_GROUP_MODEL.md | arch docs | DONE |
-| C13 | `tenant_closure` missing `descendant_status` index | Added `idx_tc_ancestor_status` to migration | cf-resource-group | DONE |
 
 ## 6. Runtime Verification Checklist
 
@@ -269,20 +219,18 @@ When deploying the full AuthZ integration, verify:
 - [x] Group/membership endpoints filter by caller's tenant
 - [x] Cross-tenant GET returns 404 (not 403 — information hiding)
 - [x] Cross-tenant mutation rejected before DB write
-- [x] `tenant_closure` table exists (migration) — CDC population pending
 - [x] `resource_group_closure` table has correct depth entries
 - [x] Static plugin `evaluate()` latency < 10ms (no DB round-trip unless `GroupHierarchy`)
 - [x] No enforcer loop: `ReadHierarchy` calls bypass PolicyEnforcer
 - [x] Membership listing works with `InTenantSubtree` scope (C7 fix)
-- [ ] CDC pipeline: tenant-resolver → `tenant_closure` projection table — see Feature 0008 (`cpt-cf-resource-group-feature-tenant-closure-cdc`)
 
 ## 7. Test Summary
 
 ```bash
-# Full test suite (87 tests)
+# Full test suite (85 tests)
 cargo test -p cf-resource-group --lib
 
-# Advanced constraint tests only (6 tests)
+# Advanced constraint tests only (4 tests)
 cargo test -p cf-resource-group tenant_subtree_integration
 
 # Cross-module tests (5 tests)
@@ -299,6 +247,5 @@ cargo test -p cf-static-authz-plugin --lib
 | Feature 0005: AuthZ Enforcement | `features/0005-cpt-cf-resource-group-feature-authz-enforcement.md` | PolicyEnforcer integration, AccessScope, error mapping |
 | Feature 0006: MTLS & Plugin Gateway | `features/0006-cpt-cf-resource-group-feature-read-authz.md` | MTLS auth, plugin routing (DEFERRED) |
 | Feature 0007: Advanced Constraints | `features/0007-cpt-cf-resource-group-feature-authz-constraint-types.md` | InTenantSubtree, InGroup, InGroupSubtree + design notes on resource_type semantics |
-| Feature 0008: CDC Pipeline | `features/0008-cpt-cf-resource-group-feature-tenant-closure-cdc.md` | tenant_closure population via outbox CDC (PLANNED) |
 | ADR-0001: Graceful Degradation | `ADR/0001-graceful-degradation-authz-plugin-hierarchy.md` | Plugin fallback when group hierarchy unavailable |
-| DECOMPOSITION | `DECOMPOSITION.md` | Feature dependency graph (updated with Feature 8) |
+| DECOMPOSITION | `DECOMPOSITION.md` | Feature dependency graph (7 features) |

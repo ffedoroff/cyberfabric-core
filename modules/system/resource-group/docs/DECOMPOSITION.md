@@ -4,7 +4,7 @@
 
 ## 1. Overview
 
-The Resource Group (RG) DESIGN is decomposed into eight features organized as a linear chain with a terminal fork.
+The Resource Group (RG) DESIGN is decomposed into seven features organized as a linear chain with a terminal fork.
 
 **Decomposition strategy**: Features follow the natural dependency order of the RG architecture layers — persistence/SDK foundation first, then domain services (types → entities/hierarchy → memberships), then authorization enforcement, and finally the integration read contract for MTLS/plugin interop. Each feature maps to one or two DESIGN components with high cohesion and minimal cross-feature coupling.
 
@@ -17,7 +17,6 @@ The Resource Group (RG) DESIGN is decomposed into eight features organized as a 
 | 5 | AuthZ Enforcement | HIGH | module, all services | PolicyEnforcer, AccessScope, tenant isolation |
 | 6 | MTLS Auth & Plugin Gateway | MEDIUM | integration-read-service | MTLS auth, plugin gateway (DEFERRED) |
 | 7 | AuthZ Advanced Constraint Types | HIGH | authz-resolver-sdk, modkit-db, static-authz-plugin | `in_tenant_subtree`, `in_group`, `in_group_subtree` (DONE) |
-| 8 | Tenant Closure CDC Pipeline | MEDIUM | module, outbox handler | CDC from tenant-resolver → tenant_closure projection (PLANNED) |
 
 ---
 
@@ -405,45 +404,7 @@ The Resource Group (RG) DESIGN is decomposed into eight features organized as a 
   - `static-authz-plugin` service
 
 - **Data**:
-  - Local projections: `tenant_closure`, `resource_group_closure`, `resource_group_membership`
-
----
-
-### 8. Tenant Closure CDC Pipeline - MEDIUM (PLANNED)
-
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-feature-tenant-closure-cdc`
-
-**Status**: PLANNED — migration ready (Feature 7), CDC consumer pending
-
-- **Purpose**: Implement the CDC pipeline that populates and maintains the `tenant_closure` local projection table. This table is required by `InTenantSubtree` SQL subqueries but is currently empty — the schema exists from Feature 7's migration, this feature populates the data via transactional outbox events from the tenant-resolver module.
-
-- **Depends On**: `cpt-cf-resource-group-feature-authz-constraint-types` (Feature 7 — InTenantSubtree SQL reads tenant_closure)
-
-- **Scope**:
-  - CDC event producer in tenant-resolver (outbox enqueue on hierarchy mutations)
-  - CDC event consumer in resource-group (outbox handler updates tenant_closure)
-  - Full resync capability (initial seed / recovery)
-  - Event schema: `TenantHierarchyChanged` with change types (created, moved, deleted, status_changed, barrier_changed)
-  - Closure delta computation (incremental updates vs full recompute)
-
-- **Out of scope**:
-  - Tenant hierarchy CRUD — owned by tenant-resolver module
-  - InTenantSubtree SQL generation — done in Feature 7
-  - tenant_closure schema — done in Feature 7 migration
-
-- **Requirements Covered**:
-  - [ ] `p2` - Authorization architecture local projection data population (DESIGN.md §Table Schemas)
-
-- **Design Components**:
-  - `modkit-db` transactional outbox (existing infrastructure)
-  - `TenantClosureHandler` — new outbox consumer in RG module
-
-- **Data**:
-  - `tenant_closure` (data population via CDC)
-  - `modkit_outbox_*` tables (outbox infrastructure)
-
-- **ADR**:
-  - `cpt-cf-resource-group-adr-graceful-degradation-hierarchy` — defines behavior when projection is empty/stale
+  - `resource_group_closure`, `resource_group_membership` (used by InTenantSubtree/InGroup/InGroupSubtree SQL subqueries)
 
 ---
 
@@ -462,8 +423,6 @@ cpt-cf-resource-group-feature-domain-foundation
                                             |
                                             +---> cpt-cf-resource-group-feature-authz-constraint-types
                                             |         |
-                                            |         +---> cpt-cf-resource-group-feature-tenant-closure-cdc (PLANNED)
-                                            |         |
                                             |         +---> cpt-cf-resource-group-feature-mtls-plugin-gateway (DEFERRED)
                                             |
                                             +---> cpt-cf-resource-group-feature-mtls-plugin-gateway (DEFERRED)
@@ -476,5 +435,4 @@ cpt-cf-resource-group-feature-domain-foundation
 - `cpt-cf-resource-group-feature-membership` requires `cpt-cf-resource-group-feature-entity-hierarchy`: membership links reference groups that must exist; membership operations validate group existence
 - `cpt-cf-resource-group-feature-authz-enforcement` requires `cpt-cf-resource-group-feature-membership`: all domain features must be implemented before adding the authorization layer; PolicyEnforcer integration touches all service and handler code
 - `cpt-cf-resource-group-feature-authz-constraint-types` requires `cpt-cf-resource-group-feature-authz-enforcement`: advanced predicates build on the PolicyEnforcer pipeline established by Feature 5
-- `cpt-cf-resource-group-feature-tenant-closure-cdc` requires `cpt-cf-resource-group-feature-authz-constraint-types`: CDC pipeline populates the `tenant_closure` table that Feature 7 created and `InTenantSubtree` SQL reads
 - `cpt-cf-resource-group-feature-mtls-plugin-gateway` requires Features 5 and 7: MTLS transport and plugin routing build on top of established JWT + constraints pipeline; DEFERRED pending platform MTLS infrastructure

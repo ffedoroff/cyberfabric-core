@@ -1,4 +1,3 @@
-pub mod cdc;
 pub mod error;
 pub mod group_service;
 pub mod membership_service;

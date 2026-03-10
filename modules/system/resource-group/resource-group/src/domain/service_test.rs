@@ -1999,17 +1999,18 @@ mod tests {
     }
 
     // =========================================================================
-    // InTenantSubtree: tenant_closure projection integration
+    // InTenantSubtree: resource_group_closure integration
     // =========================================================================
 
-    /// Tests that `InTenantSubtree` predicate correctly queries the `tenant_closure`
-    /// local projection table. This validates the full path:
+    /// Tests that `InTenantSubtree` predicate correctly queries the
+    /// `resource_group_closure` table joined with `resource_group` on
+    /// `group_type = 'tenant'`. This validates the full path:
     /// MockResolver → `InTenantSubtree` predicate → compiler → `ScopeFilter` →
-    /// SecureORM → SQL subquery on `tenant_closure`.
+    /// SecureORM → SQL subquery on `resource_group_closure JOIN resource_group`.
     ///
     mod tenant_subtree_integration {
         use super::*;
-        use authz_resolver_sdk::constraints::{InTenantSubtreePredicate, PredicateBarrierMode};
+        use authz_resolver_sdk::constraints::InTenantSubtreePredicate;
 
         /// Mock resolver that returns `InTenantSubtree` predicate instead of flat `Eq`.
         struct SubtreeAuthZResolver;
@@ -2063,117 +2064,56 @@ mod tests {
             }
         }
 
-        /// Mock resolver returning `InTenantSubtree` with `barrier_mode: Ignore`.
-        struct SubtreeIgnoreBarrierResolver;
-
-        #[async_trait::async_trait]
-        impl AuthZResolverClient for SubtreeIgnoreBarrierResolver {
-            async fn evaluate(
-                &self,
-                request: EvaluationRequest,
-            ) -> Result<EvaluationResponse, AuthZResolverError> {
-                let subject_tenant_id = request
-                    .subject
-                    .properties
-                    .get("tenant_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok());
-
-                let supports_tenant = request
-                    .context
-                    .supported_properties
-                    .iter()
-                    .any(|p| p == pep_properties::OWNER_TENANT_ID);
-
-                if request.context.require_constraints && supports_tenant {
-                    if let Some(tid) = subject_tenant_id {
-                        let pred = InTenantSubtreePredicate::new(
-                            pep_properties::OWNER_TENANT_ID,
-                            tid,
-                        )
-                        .barrier_mode(PredicateBarrierMode::Ignore);
-                        Ok(EvaluationResponse {
-                            decision: true,
-                            context: EvaluationResponseContext {
-                                constraints: vec![Constraint {
-                                    predicates: vec![Predicate::InTenantSubtree(pred)],
-                                }],
-                                ..Default::default()
-                            },
-                        })
-                    } else {
-                        Ok(EvaluationResponse {
-                            decision: false,
-                            context: EvaluationResponseContext::default(),
-                        })
-                    }
-                } else {
-                    Ok(EvaluationResponse {
-                        decision: true,
-                        context: EvaluationResponseContext::default(),
-                    })
-                }
-            }
-        }
-
         fn subtree_enforcer() -> PolicyEnforcer {
             let authz: Arc<dyn AuthZResolverClient> = Arc::new(SubtreeAuthZResolver);
             PolicyEnforcer::new(authz)
                 .with_capabilities(vec![authz_resolver_sdk::Capability::TenantHierarchy])
         }
 
-        fn subtree_ignore_barrier_enforcer() -> PolicyEnforcer {
-            let authz: Arc<dyn AuthZResolverClient> = Arc::new(SubtreeIgnoreBarrierResolver);
-            PolicyEnforcer::new(authz)
-                .with_capabilities(vec![authz_resolver_sdk::Capability::TenantHierarchy])
+        /// Helper: create "tenant" type allowing nesting (tenant can be child of tenant).
+        async fn seed_nestable_tenant_type(svc: &RgService) {
+            svc.type_service()
+                .create_type(CreateTypeRequest {
+                    code: "tenant".into(),
+                    parents: vec![String::new(), "tenant".to_string()],
+                })
+                .await
+                .unwrap();
         }
 
-        /// Insert rows into `tenant_closure` using `Db::execute_raw` (requires `testing` feature).
-        ///
-        /// UUIDs are inserted as BLOB hex literals (`X'...'`) to match how SeaORM/sqlx
-        /// stores `uuid::Uuid` values in SQLite (16-byte BLOB, not TEXT).
-        async fn seed_tenant_closure(db: &Db, rows: &[(Uuid, Uuid, i32, &str)]) {
-            for (ancestor, descendant, barrier, status) in rows {
-                let sql = format!(
-                    "INSERT INTO tenant_closure (ancestor_id, descendant_id, barrier, descendant_status) \
-                     VALUES (X'{anc}', X'{desc}', {barrier}, '{status}')",
-                    anc = ancestor.simple(),
-                    desc = descendant.simple(),
-                );
-                db.execute_raw(&sql).await.unwrap();
-            }
-        }
-
-        /// Verifies that `execute_raw` + `InTenantSubtree` scope filter works end-to-end.
+        /// Verifies InTenantSubtree scope filter works via resource_group_closure.
         #[tokio::test]
-        async fn execute_raw_seeds_tenant_closure() {
+        async fn in_tenant_subtree_scope_filter_works() {
             let db = inmem_db().await;
-            let t1 = Uuid::new_v4();
-
-            // Seed tenant_closure
-            seed_tenant_closure(&db, &[(t1, t1, 0, "active")]).await;
-
-            // Verify: query via raw SQL (use BLOB hex literal to match stored format)
-            let result = db
-                .execute_raw(&format!(
-                    "SELECT COUNT(*) as cnt FROM tenant_closure WHERE ancestor_id = X'{}'",
-                    t1.simple()
-                ))
-                .await;
-            assert!(result.is_ok(), "execute_raw should work: {result:?}");
-
-            // Now test with a direct scope that uses InTenantSubtree
             let svc = build_service(db);
-            seed_tenant_type(&svc).await;
+            seed_nestable_tenant_type(&svc).await;
 
             let scope = allow_all_scope();
+
+            // Create root tenant group T1
+            let t1 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T1".into(),
+                        parent_id: None,
+                        tenant_id: Uuid::new_v4(),
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // Create a group belonging to T1's tenant
             svc.group_service()
                 .create_group(
                     CreateGroupRequest {
                         group_type: "tenant".into(),
                         name: "G1".into(),
                         parent_id: None,
-                        tenant_id: t1,
+                        tenant_id: t1.group_id,
                         external_id: None,
                     },
                     &scope,
@@ -2182,14 +2122,9 @@ mod tests {
                 .unwrap();
 
             // List with InTenantSubtree scope directly
-            use modkit_security::{ScopeBarrierMode, ScopeConstraint, ScopeFilter};
+            use modkit_security::{ScopeConstraint, ScopeFilter};
             let subtree_scope = AccessScope::single(ScopeConstraint::new(vec![
-                ScopeFilter::in_tenant_subtree(
-                    pep_properties::OWNER_TENANT_ID,
-                    t1,
-                    ScopeBarrierMode::Respect,
-                    None,
-                ),
+                ScopeFilter::in_tenant_subtree(pep_properties::OWNER_TENANT_ID, t1.group_id),
             ]));
             let page = svc
                 .group_service()
@@ -2199,189 +2134,181 @@ mod tests {
             assert_eq!(
                 page.items.len(),
                 1,
-                "InTenantSubtree scope should find the group via tenant_closure, got: {:?}",
+                "InTenantSubtree should find the group via resource_group_closure, got: {:?}",
                 page.items
             );
         }
 
-        /// Parent tenant T1 with children T2, T3.
-        /// T2 is self_managed (barrier=1 from T1's perspective).
+        /// Parent tenant T1 with child tenant T2.
+        /// T1 should see groups belonging to both T1 and T2.
         ///
         /// ```text
-        /// T1
-        /// ├── T2 (self_managed=true) → barrier
-        /// │   └── T3
-        /// └── T4
+        /// T1 (tenant group, root)
+        /// └── T2 (tenant group, child of T1)
+        /// G-T1 (belongs to T1.id)
+        /// G-T2 (belongs to T2.id)
         /// ```
         #[tokio::test]
-        async fn in_tenant_subtree_respects_barriers() {
+        async fn in_tenant_subtree_sees_descendant_tenant_groups() {
             let db = inmem_db().await;
-            let t1 = Uuid::new_v4();
-            let t2 = Uuid::new_v4();
-            let t3 = Uuid::new_v4();
-            let t4 = Uuid::new_v4();
-
-            seed_tenant_closure(
-                &db,
-                &[
-                    (t1, t1, 0, "active"),
-                    (t1, t2, 1, "active"), // barrier
-                    (t1, t3, 1, "active"), // behind barrier
-                    (t1, t4, 0, "active"),
-                    (t2, t2, 0, "active"),
-                    (t2, t3, 0, "active"),
-                    (t3, t3, 0, "active"),
-                    (t4, t4, 0, "active"),
-                ],
-            )
-            .await;
-
             let svc = build_service_with_enforcer(db, subtree_enforcer());
-            seed_tenant_type(&svc).await;
+            seed_nestable_tenant_type(&svc).await;
 
             let scope = allow_all_scope();
-            for (name, tid) in [("G-T1", t1), ("G-T2", t2), ("G-T3", t3), ("G-T4", t4)] {
-                svc.group_service()
-                    .create_group(
-                        CreateGroupRequest {
-                            group_type: "tenant".into(),
-                            name: name.into(),
-                            parent_id: None,
-                            tenant_id: tid,
-                            external_id: None,
-                        },
-                        &scope,
-                    )
-                    .await
-                    .unwrap();
-            }
 
-            // T1 with barrier_mode=Respect should see T1 + T4 (2 groups)
-            let ctx_t1 = test_security_ctx(t1);
+            // Create root tenant T1
+            let t1 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T1".into(),
+                        parent_id: None,
+                        tenant_id: Uuid::new_v4(),
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // Create child tenant T2 under T1
+            let t2 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T2".into(),
+                        parent_id: Some(t1.group_id),
+                        tenant_id: t1.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // Create groups belonging to each tenant
+            svc.group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T1".into(),
+                        parent_id: None,
+                        tenant_id: t1.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+            svc.group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T2".into(),
+                        parent_id: None,
+                        tenant_id: t2.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // T1 should see groups of both T1 and T2 (subtree includes T2)
+            let ctx_t1 = test_security_ctx(t1.group_id);
             let page = ResourceGroupClient::list_groups(&svc, &ctx_t1, ListQuery::default())
                 .await
                 .unwrap();
-            assert_eq!(
-                page.items.len(),
-                2,
-                "T1 with barrier_mode=Respect should see 2 groups (T1, T4), got: {:?}",
+            assert!(
+                page.items.len() >= 2,
+                "T1 should see groups for both T1 and T2 tenants, got: {:?}",
                 page.items.iter().map(|g| &g.name).collect::<Vec<_>>()
             );
+            let names: Vec<&str> = page.items.iter().map(|g| g.name.as_str()).collect();
+            assert!(names.contains(&"G-T1"), "Should see G-T1");
+            assert!(names.contains(&"G-T2"), "Should see G-T2");
+        }
 
-            // T2 should see T2 + T3 (no barrier between them)
-            let ctx_t2 = test_security_ctx(t2);
+        /// Leaf tenant T2 sees only groups belonging to itself, not the parent.
+        #[tokio::test]
+        async fn leaf_tenant_sees_only_own_groups() {
+            let db = inmem_db().await;
+            let svc = build_service_with_enforcer(db, subtree_enforcer());
+            seed_nestable_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+
+            let t1 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T1".into(),
+                        parent_id: None,
+                        tenant_id: Uuid::new_v4(),
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            let t2 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T2".into(),
+                        parent_id: Some(t1.group_id),
+                        tenant_id: t1.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            svc.group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T1".into(),
+                        parent_id: None,
+                        tenant_id: t1.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+            svc.group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T2".into(),
+                        parent_id: None,
+                        tenant_id: t2.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // T2 should see only G-T2 (not G-T1)
+            let ctx_t2 = test_security_ctx(t2.group_id);
             let page = ResourceGroupClient::list_groups(&svc, &ctx_t2, ListQuery::default())
                 .await
                 .unwrap();
             assert_eq!(
                 page.items.len(),
-                2,
-                "T2 should see 2 groups (T2, T3), got: {:?}",
+                1,
+                "T2 (leaf) should see only its own group, got: {:?}",
                 page.items.iter().map(|g| &g.name).collect::<Vec<_>>()
             );
-        }
-
-        /// Same hierarchy, but with `barrier_mode: Ignore`.
-        /// T1 should see all 4 groups.
-        #[tokio::test]
-        async fn in_tenant_subtree_ignores_barriers_when_requested() {
-            let db = inmem_db().await;
-            let t1 = Uuid::new_v4();
-            let t2 = Uuid::new_v4();
-            let t3 = Uuid::new_v4();
-            let t4 = Uuid::new_v4();
-
-            seed_tenant_closure(
-                &db,
-                &[
-                    (t1, t1, 0, "active"),
-                    (t1, t2, 1, "active"),
-                    (t1, t3, 1, "active"),
-                    (t1, t4, 0, "active"),
-                    (t2, t2, 0, "active"),
-                    (t2, t3, 0, "active"),
-                    (t3, t3, 0, "active"),
-                    (t4, t4, 0, "active"),
-                ],
-            )
-            .await;
-
-            let svc = build_service_with_enforcer(db, subtree_ignore_barrier_enforcer());
-            seed_tenant_type(&svc).await;
-
-            let scope = allow_all_scope();
-            for (name, tid) in [("G-T1", t1), ("G-T2", t2), ("G-T3", t3), ("G-T4", t4)] {
-                svc.group_service()
-                    .create_group(
-                        CreateGroupRequest {
-                            group_type: "tenant".into(),
-                            name: name.into(),
-                            parent_id: None,
-                            tenant_id: tid,
-                            external_id: None,
-                        },
-                        &scope,
-                    )
-                    .await
-                    .unwrap();
-            }
-
-            // T1 with barrier_mode=Ignore should see all 4 groups
-            let ctx_t1 = test_security_ctx(t1);
-            let page = ResourceGroupClient::list_groups(&svc, &ctx_t1, ListQuery::default())
-                .await
-                .unwrap();
-            assert_eq!(
-                page.items.len(),
-                4,
-                "T1 with barrier_mode=Ignore should see all 4 groups, got: {:?}",
-                page.items.iter().map(|g| &g.name).collect::<Vec<_>>()
-            );
-        }
-
-        /// Leaf tenant sees only its own group.
-        #[tokio::test]
-        async fn leaf_tenant_sees_only_own_group() {
-            let db = inmem_db().await;
-            let t1 = Uuid::new_v4();
-            let t3 = Uuid::new_v4();
-
-            seed_tenant_closure(
-                &db,
-                &[
-                    (t1, t1, 0, "active"),
-                    (t1, t3, 0, "active"),
-                    (t3, t3, 0, "active"),
-                ],
-            )
-            .await;
-
-            let svc = build_service_with_enforcer(db, subtree_enforcer());
-            seed_tenant_type(&svc).await;
-
-            let scope = allow_all_scope();
-            for (name, tid) in [("G-T1", t1), ("G-T3", t3)] {
-                svc.group_service()
-                    .create_group(
-                        CreateGroupRequest {
-                            group_type: "tenant".into(),
-                            name: name.into(),
-                            parent_id: None,
-                            tenant_id: tid,
-                            external_id: None,
-                        },
-                        &scope,
-                    )
-                    .await
-                    .unwrap();
-            }
-
-            let ctx_t3 = test_security_ctx(t3);
-            let page = ResourceGroupClient::list_groups(&svc, &ctx_t3, ListQuery::default())
-                .await
-                .unwrap();
-            assert_eq!(page.items.len(), 1);
-            assert_eq!(page.items[0].name, "G-T3");
+            assert_eq!(page.items[0].name, "G-T2");
         }
 
         /// Membership listing with `InTenantSubtree` scope must return memberships
@@ -2389,25 +2316,42 @@ mod tests {
         #[tokio::test]
         async fn membership_list_with_in_tenant_subtree() {
             let db = inmem_db().await;
-            let t1 = Uuid::new_v4();
-            let t2 = Uuid::new_v4();
-
-            seed_tenant_closure(
-                &db,
-                &[
-                    (t1, t1, 0, "active"),
-                    (t1, t2, 0, "active"),
-                    (t2, t2, 0, "active"),
-                ],
-            )
-            .await;
-
             let svc = build_service_with_enforcer(db, subtree_enforcer());
-            seed_tenant_type(&svc).await;
+            seed_nestable_tenant_type(&svc).await;
 
             let scope = allow_all_scope();
 
-            // Create group for T1 and T2
+            let t1 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T1".into(),
+                        parent_id: None,
+                        tenant_id: Uuid::new_v4(),
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            let t2 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "T2".into(),
+                        parent_id: Some(t1.group_id),
+                        tenant_id: t1.group_id,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // Create groups for each tenant
             let g1 = svc
                 .group_service()
                 .create_group(
@@ -2415,7 +2359,7 @@ mod tests {
                         group_type: "tenant".into(),
                         name: "G-T1".into(),
                         parent_id: None,
-                        tenant_id: t1,
+                        tenant_id: t1.group_id,
                         external_id: None,
                     },
                     &scope,
@@ -2429,7 +2373,7 @@ mod tests {
                         group_type: "tenant".into(),
                         name: "G-T2".into(),
                         parent_id: None,
-                        tenant_id: t2,
+                        tenant_id: t2.group_id,
                         external_id: None,
                     },
                     &scope,
@@ -2437,7 +2381,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Add memberships to both groups
+            // Add memberships
             svc.membership_service()
                 .add_membership(
                     AddMembershipRequest {
@@ -2461,8 +2405,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            // T1 sees memberships from both groups (T1 + T2 in subtree)
-            let ctx_t1 = test_security_ctx(t1);
+            // T1 sees memberships from both groups (subtree includes T2)
+            let ctx_t1 = test_security_ctx(t1.group_id);
             let page = ResourceGroupClient::list_memberships(
                 &svc,
                 &ctx_t1,
@@ -2478,7 +2422,7 @@ mod tests {
             );
 
             // T2 sees only its own memberships
-            let ctx_t2 = test_security_ctx(t2);
+            let ctx_t2 = test_security_ctx(t2.group_id);
             let page = ResourceGroupClient::list_memberships(
                 &svc,
                 &ctx_t2,
@@ -2492,99 +2436,6 @@ mod tests {
                 "T2 should see only its own membership, got: {:?}",
                 page.items
             );
-        }
-
-        /// Membership listing with barrier-blocked tenant should not show
-        /// memberships from groups behind the barrier.
-        #[tokio::test]
-        async fn membership_list_respects_barriers() {
-            let db = inmem_db().await;
-            let t1 = Uuid::new_v4();
-            let t2 = Uuid::new_v4();
-
-            seed_tenant_closure(
-                &db,
-                &[
-                    (t1, t1, 0, "active"),
-                    (t1, t2, 1, "active"), // barrier
-                    (t2, t2, 0, "active"),
-                ],
-            )
-            .await;
-
-            let svc = build_service_with_enforcer(db, subtree_enforcer());
-            seed_tenant_type(&svc).await;
-
-            let scope = allow_all_scope();
-
-            let g1 = svc
-                .group_service()
-                .create_group(
-                    CreateGroupRequest {
-                        group_type: "tenant".into(),
-                        name: "G-T1".into(),
-                        parent_id: None,
-                        tenant_id: t1,
-                        external_id: None,
-                    },
-                    &scope,
-                )
-                .await
-                .unwrap();
-            let g2 = svc
-                .group_service()
-                .create_group(
-                    CreateGroupRequest {
-                        group_type: "tenant".into(),
-                        name: "G-T2".into(),
-                        parent_id: None,
-                        tenant_id: t2,
-                        external_id: None,
-                    },
-                    &scope,
-                )
-                .await
-                .unwrap();
-
-            svc.membership_service()
-                .add_membership(
-                    AddMembershipRequest {
-                        group_id: g1.group_id,
-                        resource_type: "user".into(),
-                        resource_id: "user-1".into(),
-                    },
-                    &scope,
-                )
-                .await
-                .unwrap();
-            svc.membership_service()
-                .add_membership(
-                    AddMembershipRequest {
-                        group_id: g2.group_id,
-                        resource_type: "user".into(),
-                        resource_id: "user-2".into(),
-                    },
-                    &scope,
-                )
-                .await
-                .unwrap();
-
-            // T1 with barrier_mode=Respect sees only its own membership (T2 behind barrier)
-            let ctx_t1 = test_security_ctx(t1);
-            let page = ResourceGroupClient::list_memberships(
-                &svc,
-                &ctx_t1,
-                ListQuery::default(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(
-                page.items.len(),
-                1,
-                "T1 should see only own membership (T2 behind barrier), got: {:?}",
-                page.items
-            );
-            assert_eq!(page.items[0].resource_id, "user-1");
         }
     }
 

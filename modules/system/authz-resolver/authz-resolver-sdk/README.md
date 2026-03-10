@@ -41,7 +41,7 @@ let scope = enforcer.access_scope(&ctx, &USER, "create", None).await?;
 
 ### Advanced: AccessRequest Overrides
 
-For non-default scenarios (cross-tenant, barrier bypass, ABAC properties):
+For non-default scenarios (cross-tenant, ABAC properties):
 
 ```rust
 use authz_resolver_sdk::pep::AccessRequest;

@@ -483,7 +483,7 @@ impl Db {
 
     /// Execute raw SQL statement bypassing SecureORM.
     ///
-    /// Intended for seeding projection tables (e.g., `tenant_closure`) in integration tests.
+    /// Intended for seeding projection tables in integration tests.
     /// Gated behind `testing` feature to prevent accidental use in production code.
     ///
     /// # Errors

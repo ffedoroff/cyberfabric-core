@@ -128,7 +128,7 @@ pub use error::ScopeError;
 // Security types from modkit-security
 pub use modkit_security::{
     AccessScope, EqScopeFilter, InGroupScopeFilter, InGroupSubtreeScopeFilter, InScopeFilter,
-    InTenantSubtreeScopeFilter, ScopeBarrierMode, ScopeConstraint, ScopeFilter, ScopeValue,
+    InTenantSubtreeScopeFilter, ScopeConstraint, ScopeFilter, ScopeValue,
     pep_properties,
 };
 

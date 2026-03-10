@@ -37,7 +37,7 @@ pub enum Predicate {
     Eq(EqPredicate),
     /// Set membership: `resource_property IN (values)`
     In(InPredicate),
-    /// Tenant subtree: `property IN (SELECT descendant_id FROM tenant_closure WHERE ...)`
+    /// Tenant subtree: `property IN (SELECT descendant_id FROM resource_group_closure JOIN resource_group WHERE group_type = 'tenant')`
     InTenantSubtree(InTenantSubtreePredicate),
     /// Group membership: `property IN (SELECT resource_id FROM resource_group_membership WHERE ...)`
     InGroup(InGroupPredicate),
@@ -91,44 +91,13 @@ impl InPredicate {
     }
 }
 
-/// Barrier mode for tenant subtree predicates.
-///
-/// Mirrors `BarrierMode` from `models.rs` but lives in the constraint layer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PredicateBarrierMode {
-    /// Respect all barriers — `AND barrier = 0`.
-    ///
-    /// Serializes as `"respect"`. Also accepts legacy alias `"all"` on deserialization
-    /// (used in architecture docs before SDK canonicalization).
-    #[serde(alias = "all")]
-    Respect,
-    /// Ignore barriers — no barrier filter.
-    ///
-    /// Serializes as `"ignore"`. Also accepts legacy alias `"none"` on deserialization.
-    #[serde(alias = "none")]
-    Ignore,
-}
-
-impl Default for PredicateBarrierMode {
-    fn default() -> Self {
-        Self::Respect
-    }
-}
-
-/// Tenant subtree predicate: `property IN (SELECT descendant_id FROM tenant_closure WHERE ...)`.
+/// Tenant subtree predicate: `property IN (SELECT descendant_id FROM resource_group_closure JOIN resource_group ... WHERE group_type = 'tenant')`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InTenantSubtreePredicate {
     /// Resource property name (e.g., `pep_properties::OWNER_TENANT_ID`).
     pub property: String,
     /// Root tenant ID for the subtree query.
     pub root_tenant_id: Uuid,
-    /// Barrier enforcement mode (default: `Respect`).
-    #[serde(default)]
-    pub barrier_mode: PredicateBarrierMode,
-    /// Optional tenant status filter (e.g., `["active", "suspended"]`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_status: Option<Vec<String>>,
 }
 
 impl InTenantSubtreePredicate {
@@ -138,23 +107,7 @@ impl InTenantSubtreePredicate {
         Self {
             property: property.into(),
             root_tenant_id,
-            barrier_mode: PredicateBarrierMode::default(),
-            tenant_status: None,
         }
-    }
-
-    /// Set the barrier mode.
-    #[must_use]
-    pub fn barrier_mode(mut self, mode: PredicateBarrierMode) -> Self {
-        self.barrier_mode = mode;
-        self
-    }
-
-    /// Set the tenant status filter.
-    #[must_use]
-    pub fn tenant_status(mut self, statuses: Vec<String>) -> Self {
-        self.tenant_status = Some(statuses);
-        self
     }
 }
 
@@ -255,77 +208,16 @@ mod tests {
         let pred = Predicate::InTenantSubtree(InTenantSubtreePredicate {
             property: pep_properties::OWNER_TENANT_ID.to_owned(),
             root_tenant_id: tid,
-            barrier_mode: PredicateBarrierMode::Respect,
-            tenant_status: Some(vec!["active".to_owned(), "suspended".to_owned()]),
         });
 
         let json_str = serde_json::to_string(&pred).unwrap();
         assert!(json_str.contains(r#""op":"in_tenant_subtree""#));
         assert!(json_str.contains(r#""root_tenant_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa""#));
-        assert!(json_str.contains(r#""barrier_mode":"respect""#));
 
         let deserialized: Predicate = serde_json::from_str(&json_str).unwrap();
         match deserialized {
             Predicate::InTenantSubtree(p) => {
                 assert_eq!(p.root_tenant_id, tid);
-                assert_eq!(p.barrier_mode, PredicateBarrierMode::Respect);
-                assert_eq!(
-                    p.tenant_status,
-                    Some(vec!["active".to_owned(), "suspended".to_owned()])
-                );
-            }
-            other => panic!("Expected InTenantSubtree, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn in_tenant_subtree_without_optional_fields() {
-        let tid = uuid::Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
-        let pred = InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, tid);
-
-        let json_str = serde_json::to_string(&Predicate::InTenantSubtree(pred)).unwrap();
-        // barrier_mode defaults to "respect", tenant_status is skipped
-        assert!(!json_str.contains("tenant_status"));
-
-        let deserialized: Predicate = serde_json::from_str(&json_str).unwrap();
-        match deserialized {
-            Predicate::InTenantSubtree(p) => {
-                assert_eq!(p.barrier_mode, PredicateBarrierMode::Respect);
-                assert!(p.tenant_status.is_none());
-            }
-            other => panic!("Expected InTenantSubtree, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn in_tenant_subtree_ignore_barrier() {
-        let tid = uuid::Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
-        let pred = InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, tid)
-            .barrier_mode(PredicateBarrierMode::Ignore);
-
-        let json_str = serde_json::to_string(&Predicate::InTenantSubtree(pred)).unwrap();
-        assert!(json_str.contains(r#""barrier_mode":"ignore""#));
-    }
-
-    #[test]
-    fn barrier_mode_legacy_alias_all_deserializes_to_respect() {
-        let json = r#"{"op":"in_tenant_subtree","property":"owner_tenant_id","root_tenant_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","barrier_mode":"all"}"#;
-        let pred: Predicate = serde_json::from_str(json).unwrap();
-        match pred {
-            Predicate::InTenantSubtree(p) => {
-                assert_eq!(p.barrier_mode, PredicateBarrierMode::Respect);
-            }
-            other => panic!("Expected InTenantSubtree, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn barrier_mode_legacy_alias_none_deserializes_to_ignore() {
-        let json = r#"{"op":"in_tenant_subtree","property":"owner_tenant_id","root_tenant_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","barrier_mode":"none"}"#;
-        let pred: Predicate = serde_json::from_str(json).unwrap();
-        match pred {
-            Predicate::InTenantSubtree(p) => {
-                assert_eq!(p.barrier_mode, PredicateBarrierMode::Ignore);
             }
             other => panic!("Expected InTenantSubtree, got: {other:?}"),
         }
