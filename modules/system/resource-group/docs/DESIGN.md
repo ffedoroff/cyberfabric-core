@@ -330,20 +330,20 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct ResourceGroupType {
     pub code: String,
-    pub parents: Vec<String>,
+    pub allowed_parents: Vec<String>,
 }
 
 /// Matches REST `CreateTypeRequest` schema.
 #[derive(Debug, Clone)]
 pub struct CreateTypeRequest {
     pub code: String,
-    pub parents: Vec<String>,
+    pub allowed_parents: Vec<String>,
 }
 
 /// Matches REST `UpdateTypeRequest` schema.
 #[derive(Debug, Clone)]
 pub struct UpdateTypeRequest {
-    pub parents: Vec<String>,
+    pub allowed_parents: Vec<String>,
 }
 
 // ── Group ───────────────────────────────────────────────────────────────
@@ -1244,7 +1244,7 @@ In both cases, the AuthZ plugin uses `ResourceGroupReadHierarchy` trait. The tra
 | Column     | Type        | Description               |
 | ---------- | ----------- | ------------------------- |
 | `code`     | TEXT        | type code (PK)            |
-| `parents`  | TEXT[]      | allowed parent type codes (min 1 element); `''` (empty string) permits root placement; `[]` is invalid |
+| `allowed_parents` | TEXT[]      | allowed parent type codes (min 1 element); `''` (empty string) permits root placement; `[]` is invalid |
 | `created`  | TIMESTAMPTZ | creation time             |
 | `modified` | TIMESTAMPTZ | update time (nullable)    |
 

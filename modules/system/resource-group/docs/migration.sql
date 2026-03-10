@@ -3,7 +3,7 @@
 
 CREATE TABLE resource_group_type (
     code TEXT PRIMARY KEY,
-    parents TEXT[] NOT NULL CHECK (cardinality(parents) >= 1),
+    allowed_parents TEXT[] NOT NULL CHECK (cardinality(allowed_parents) >= 1),
     created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     modified TIMESTAMP WITH TIME ZONE DEFAULT NULL
 );

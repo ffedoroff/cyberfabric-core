@@ -181,7 +181,7 @@ The module **MUST** provide API operations to create, list, retrieve, update, an
 A type includes:
 
 - `code` (unique, case-insensitive)
-- `parents` (allowed parent type codes, **minItems: 1**; `''` empty-string code means the type permits root placement — no `parent_id`; `parents: []` is invalid — at least one element is required)
+- `allowed_parents` (allowed parent type codes, **minItems: 1**; `''` empty-string code means the type permits root placement — no `parent_id`; `allowed_parents: []` is invalid — at least one element is required)
 
 #### Validate Type Code Format
 
@@ -216,8 +216,8 @@ Type data seeding (populating type definitions) is **optional** and deployment-s
 AuthZ deployment determines which types are needed:
 
 - **AuthZ does not use RG** — no type seeding required.
-- **Flat tenants** — create type `tenant` with `parents: {''}` (root placement only, no nesting).
-- **Hierarchical tenants** — create type `tenant` with for example `parents: {'', 'tenant'}` (root placement or nested under another tenant).
+- **Flat tenants** — create type `tenant` with `allowed_parents: {''}` (root placement only, no nesting).
+- **Hierarchical tenants** — create type `tenant` with for example `allowed_parents: {'', 'tenant'}` (root placement or nested under another tenant).
 
 #### Delete Type Only If Unused
 
@@ -686,7 +686,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 #### Scenario: Create Type
 
-- **GIVEN** valid code `branch` and parents `["tenant", "department"]`
+- **GIVEN** valid code `branch` and allowed_parents `["tenant", "department"]`
 - **WHEN** caller creates type
 - **THEN** type is persisted with owner metadata
 
@@ -704,17 +704,17 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 #### Scenario: Update Type Parents (Compatible)
 
-- **GIVEN** type `branch` exists with parents `["tenant"]`
+- **GIVEN** type `branch` exists with allowed_parents `["tenant"]`
 - **AND** no existing `branch` groups have a parent of type `department`
-- **WHEN** caller updates parents to `["tenant", "department"]` (adds new allowed parent)
+- **WHEN** caller updates allowed_parents to `["tenant", "department"]` (adds new allowed parent)
 - **THEN** type definition is updated
 - **AND** existing groups remain valid
 
 #### Scenario: Reject Update Type Parents When Existing Groups Violate New Rules
 
-- **GIVEN** type `branch` exists with parents `["tenant", "department"]`
+- **GIVEN** type `branch` exists with allowed_parents `["tenant", "department"]`
 - **AND** group `B1` (type `branch`) has parent `D1` (type `department`)
-- **WHEN** caller updates `branch` parents to `["tenant"]` (removes `department`)
+- **WHEN** caller updates `branch` allowed_parents to `["tenant"]` (removes `department`)
 - **THEN** update is rejected with `conflict` — existing group `B1` would violate new parent type rules
 
 #### Scenario: Delete Unused Type
@@ -742,7 +742,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 #### Scenario: Create Root Entity
 
-- **GIVEN** type `tenant` exists with `parents: ['']` (empty-string code permits root placement)
+- **GIVEN** type `tenant` exists with `allowed_parents: ['']` (empty-string code permits root placement)
 - **WHEN** caller creates group with type `tenant`, name `"Acme Corp"`, no `parent_id`
 - **THEN** root entity is created with self-referencing closure row (depth 0)
 
@@ -761,10 +761,10 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 #### Scenario: Reject Invalid Parent Type
 
-- **GIVEN** type `team` allows parents `["branch"]` only
+- **GIVEN** type `team` allows allowed_parents `["branch"]` only
 - **AND** parent entity `D1` has type `department`
 - **WHEN** caller creates group of type `team` with `parent_id = D1`
-- **THEN** `InvalidParentType` — `department` is not in allowed parents for `team`
+- **THEN** `InvalidParentType` — `department` is not in allowed_parents for `team`
 
 #### Scenario: Move Subtree to Valid Parent
 

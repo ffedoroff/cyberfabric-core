@@ -22,9 +22,9 @@ info:
 
     Example types:
     ```text
-      tenant (parents: ["", tenant])
-      └── department (parents: [tenant])
-          └── branch (parents: [department])
+      tenant (allowed_parents: ["", tenant])
+      └── department (allowed_parents: [tenant])
+          └── branch (allowed_parents: [department])
     ```
 
     Example hierarchy:
@@ -93,11 +93,11 @@ paths:
                 $ref: '#/components/schemas/TypePage'
               example:
                 items:
-                  - parents: [department]
+                  - allowed_parents: [department]
                     code: branch
-                  - parents: [tenant]
+                  - allowed_parents: [tenant]
                     code: department
-                  - parents: ['', tenant]
+                  - allowed_parents: ['', tenant]
                     code: tenant
                 page_info:
                   limit: 25
@@ -112,7 +112,7 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateTypeRequest'
             example:
-              parents: [tenant]
+              allowed_parents: [tenant]
               code: department
       responses:
         '201':
@@ -122,7 +122,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Type'
               example:
-                parents: [tenant]
+                allowed_parents: [tenant]
                 code: department
   /api/resource-group/v1/types/{code}:
     parameters:
@@ -141,7 +141,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Type'
               example:
-                parents: [tenant]
+                allowed_parents: [tenant]
                 code: department
         '404':
           $ref: '#/components/responses/NotFound'
@@ -156,7 +156,7 @@ paths:
             schema:
               $ref: '#/components/schemas/UpdateTypeRequest'
             example:
-              parents: [tenant]
+              allowed_parents: [tenant]
       responses:
         '200':
           description: Type updated
@@ -165,7 +165,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Type'
               example:
-                parents: [tenant]
+                allowed_parents: [tenant]
                 code: department
     delete:
       operationId: deleteType
@@ -897,12 +897,12 @@ components:
 
     Type:
       type: object
-      required: [code, parents]
+      required: [code, allowed_parents]
       properties:
         code:
           type: string
           example: department
-        parents:
+        allowed_parents:
           type: array
           items:
             type: string
@@ -922,23 +922,23 @@ components:
           $ref: '#/components/schemas/PageInfo'
       example:
         items:
-          - parents: [department]
+          - allowed_parents: [department]
             code: branch
-          - parents: [tenant]
+          - allowed_parents: [tenant]
             code: department
-          - parents: ['', tenant]
+          - allowed_parents: ['', tenant]
             code: tenant
         page_info:
           limit: 25
 
     CreateTypeRequest:
       type: object
-      required: [code, parents]
+      required: [code, allowed_parents]
       properties:
         code:
           type: string
           example: department
-        parents:
+        allowed_parents:
           type: array
           items:
             type: string
@@ -947,9 +947,9 @@ components:
 
     UpdateTypeRequest:
       type: object
-      required: [parents]
+      required: [allowed_parents]
       properties:
-        parents:
+        allowed_parents:
           type: array
           items:
             type: string
