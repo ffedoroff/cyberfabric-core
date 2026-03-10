@@ -11,6 +11,20 @@ Updated:  2026-03-06 by Constructor Tech
 
 The RG module provides a generic hierarchy and membership engine for organizing resources.
 
+**Concrete use-cases the module is designed for:**
+
+| Domain | Use-case | How RG is used |
+|--------|----------|----------------|
+| **Organizational structure** | Model a multi-level institution: *University → Branch → Faculty → Department → Study Group*. | Each level is an RG Type; concrete units are RG Entities forming a tree. Admins manage sub-tenants, companies, regions, and divisions through a single tree view. |
+| **Student Management (SMS)** | List students of a single study group, all students of a faculty, all students across branches of one institute. | `User` resources (students) are members of leaf-level groups. Hierarchy traversal returns flat or tree-shaped views at any depth — from a single group up to the entire institution. |
+| **Learning Management (LMS)** | Organize courses and quizzes by department and program; assign the same course to multiple groups across faculties. | `Course` and `Quiz` resources are members of the relevant RG Entities. A course can appear in several groups within the same tenant, enabling per-program and per-branch listings. |
+| **Content Management (CMS)** | Categorize learning materials (documents, videos, SCORM packages) into a multi-level content library and expose per-department or per-branch views. | `Content` resources are members of category-type RG Entities. Hierarchy queries produce both flat catalogues and nested navigation trees. |
+| **Authorization context** | Derive "who can see what" from the organizational graph without hard-coding rules in each service. | AuthZ plugin reads the ownership graph produced by `ownership-graph` profile; RG itself makes no policy decisions. |
+
+**Tenant isolation convention.** Every resource (`User`, `Course`, `Content`, etc.) belongs to exactly one tenant. RG treats `resource_id` as an opaque identifier and has no awareness of which tenant the referenced resource originates from — therefore it cannot enforce tenant boundaries on its own. It is the caller's responsibility to ensure that memberships are not used to link resources across different tenants. Cross-tenant memberships are an architectural misuse of the module. Within its own tenant, a resource may be a member of multiple RG Entities simultaneously, enabling the platform to present the same data set in multiple organizational views depending on the business context.
+
+A parent tenant may *read* resources of its child tenants for analytical and reporting purposes (e.g. a university admin views course statistics of a branch), but must not establish cross-tenant memberships. For example, an admin of the parent tenant can browse a course catalogue of a child tenant but cannot enroll in that course or assign it to a group in the parent tenant, because the admin is not a user of the child tenant and the course is not a resource of the parent tenant.
+
 The module supports two usage profiles with one API surface:
 
 - `catalog` profile: store and query arbitrary resource group structures and memberships.
