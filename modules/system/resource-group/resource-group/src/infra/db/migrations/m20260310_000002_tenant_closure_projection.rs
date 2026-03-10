@@ -52,6 +52,7 @@ CREATE TABLE tenant_closure (
 
 CREATE INDEX idx_tc_descendant_id ON tenant_closure (descendant_id);
 CREATE INDEX idx_tc_ancestor_barrier ON tenant_closure (ancestor_id, barrier);
+CREATE INDEX idx_tc_ancestor_status ON tenant_closure (ancestor_id, descendant_status);
 ";
 
 const SQLITE_UP: &str = r"
@@ -65,9 +66,11 @@ CREATE TABLE tenant_closure (
 
 CREATE INDEX idx_tc_descendant_id ON tenant_closure (descendant_id);
 CREATE INDEX idx_tc_ancestor_barrier ON tenant_closure (ancestor_id, barrier);
+CREATE INDEX idx_tc_ancestor_status ON tenant_closure (ancestor_id, descendant_status);
 ";
 
 const DOWN: &str = r"
+DROP INDEX IF EXISTS idx_tc_ancestor_status;
 DROP INDEX IF EXISTS idx_tc_ancestor_barrier;
 DROP INDEX IF EXISTS idx_tc_descendant_id;
 DROP TABLE IF EXISTS tenant_closure;

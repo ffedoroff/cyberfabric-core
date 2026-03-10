@@ -216,7 +216,7 @@ Authorization: Bearer <token>
         "predicates": [
           {
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid",
             "barrier_mode": "respect"
           }
@@ -286,7 +286,7 @@ Authorization: Bearer <token>
         "predicates": [
           {
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid"
           }
         ]
@@ -363,7 +363,7 @@ Content-Type: application/json
         "predicates": [
           {
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid"
           }
         ]
@@ -466,7 +466,7 @@ Content-Type: application/json
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T2-uuid"
           }
         ]
@@ -544,7 +544,7 @@ The PEP reads `subject_tenant_id` (T1-uuid) from the `SecurityContext` produced 
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           }
         ]
@@ -621,7 +621,7 @@ Authorization: Bearer <token>
         "predicates": [
           {
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid",
             "barrier_mode": "ignore"
           }
@@ -714,7 +714,7 @@ PDP resolves the subtree internally and returns explicit IDs:
         "predicates": [
           {
             "type": "in",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "values": ["T1-uuid", "T2-uuid", "T3-uuid"]
           }
         ]
@@ -868,7 +868,7 @@ Result: `owner_tenant_id = 'T2-uuid'`
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T2-uuid"
           }
         ]
@@ -962,7 +962,7 @@ Authorization: Bearer <token>
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           }
         ]
@@ -1038,12 +1038,12 @@ Tenant constraint is always included — groups don't bypass tenant isolation:
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in_group",
-            "resource_property": "id",
+            "property": "id",
             "group_ids": ["ProjectA-uuid", "ProjectB-uuid"]
           }
         ]
@@ -1112,12 +1112,12 @@ Tenant constraint is always included:
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in_group_subtree",
-            "resource_property": "id",
+            "property": "id",
             "root_group_id": "FolderA-uuid"
           }
         ]
@@ -1195,12 +1195,12 @@ Tenant constraint is always included:
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in_group",
-            "resource_property": "id",
+            "property": "id",
             "group_ids": ["ProjectA-uuid", "ProjectB-uuid"]
           }
         ]
@@ -1281,12 +1281,12 @@ Tenant constraint is always included:
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in_group_subtree",
-            "resource_property": "id",
+            "property": "id",
             "root_group_id": "FolderA-uuid"
           }
         ]
@@ -1368,7 +1368,7 @@ PDP returns tenant constraint as defense in depth (group check already done):
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           }
         ]
@@ -1442,12 +1442,12 @@ PDP knows user has access to FolderA and its subfolders. Since PEP can't handle 
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in_group",
-            "resource_property": "id",
+            "property": "id",
             "group_ids": ["FolderA-uuid", "FolderASub1-uuid", "FolderASub2-uuid", "FolderASub1Deep-uuid"]
           }
         ]
@@ -1522,12 +1522,12 @@ Single constraint with multiple predicates (AND semantics):
         "predicates": [
           {
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid"
           },
           {
             "type": "in_group",
-            "resource_property": "id",
+            "property": "id",
             "group_ids": ["ProjectA-uuid"]
           }
         ]
@@ -1602,12 +1602,12 @@ Single constraint with two predicates (AND semantics):
         "predicates": [
           {
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid"
           },
           {
             "type": "in_group_subtree",
-            "resource_property": "id",
+            "property": "id",
             "root_group_id": "FolderA-uuid"
           }
         ]
@@ -1690,12 +1690,12 @@ Multiple constraints (OR semantics). Tenant constraint is included in each path:
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in_group",
-            "resource_property": "id",
+            "property": "id",
             "group_ids": ["ProjectA-uuid"]
           }
         ]
@@ -1704,12 +1704,12 @@ Multiple constraints (OR semantics). Tenant constraint is included in each path:
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "in",
-            "resource_property": "id",
+            "property": "id",
             "values": ["taskshared1-uuid", "taskshared2-uuid"]
           }
         ]
@@ -1853,12 +1853,12 @@ Single constraint with two predicates (AND semantics) — tenant isolation (defe
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "eq",
-            "resource_property": "owner_id",
+            "property": "owner_id",
             "value": "user123-uuid"
           }
         ]
@@ -1922,12 +1922,12 @@ Authorization: Bearer <token>
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "eq",
-            "resource_property": "owner_id",
+            "property": "owner_id",
             "value": "user123-uuid"
           }
         ]
@@ -1999,12 +1999,12 @@ Content-Type: application/json
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "eq",
-            "resource_property": "owner_id",
+            "property": "owner_id",
             "value": "user123-uuid"
           }
         ]
@@ -2106,12 +2106,12 @@ PEP reads `subject_id` (user123-uuid) and `subject_tenant_id` (T1-uuid) from `Se
         "predicates": [
           {
             "type": "eq",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "value": "T1-uuid"
           },
           {
             "type": "eq",
-            "resource_property": "owner_id",
+            "property": "owner_id",
             "value": "user123-uuid"
           }
         ]

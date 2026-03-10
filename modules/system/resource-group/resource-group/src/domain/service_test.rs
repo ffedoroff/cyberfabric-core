@@ -1703,14 +1703,14 @@ mod tests {
 
     #[tokio::test]
     async fn authz_enforcer_error_mapping_evaluation_failed() {
-        // EvaluationFailed should map to Database (500/503)
+        // EvaluationFailed should map to ServiceUnavailable (503)
         let err = authz_resolver_sdk::EnforcerError::EvaluationFailed(
             authz_resolver_sdk::AuthZResolverError::Internal("test error".into()),
         );
         let domain_err = DomainError::from(err);
         assert!(
-            matches!(domain_err, DomainError::Database { .. }),
-            "EvaluationFailed should map to Database, got: {domain_err:?}"
+            matches!(domain_err, DomainError::ServiceUnavailable { .. }),
+            "EvaluationFailed should map to ServiceUnavailable (503), got: {domain_err:?}"
         );
     }
 
@@ -2382,6 +2382,209 @@ mod tests {
                 .unwrap();
             assert_eq!(page.items.len(), 1);
             assert_eq!(page.items[0].name, "G-T3");
+        }
+
+        /// Membership listing with `InTenantSubtree` scope must return memberships
+        /// of groups within the tenant subtree only.
+        #[tokio::test]
+        async fn membership_list_with_in_tenant_subtree() {
+            let db = inmem_db().await;
+            let t1 = Uuid::new_v4();
+            let t2 = Uuid::new_v4();
+
+            seed_tenant_closure(
+                &db,
+                &[
+                    (t1, t1, 0, "active"),
+                    (t1, t2, 0, "active"),
+                    (t2, t2, 0, "active"),
+                ],
+            )
+            .await;
+
+            let svc = build_service_with_enforcer(db, subtree_enforcer());
+            seed_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+
+            // Create group for T1 and T2
+            let g1 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T1".into(),
+                        parent_id: None,
+                        tenant_id: t1,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+            let g2 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T2".into(),
+                        parent_id: None,
+                        tenant_id: t2,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // Add memberships to both groups
+            svc.membership_service()
+                .add_membership(
+                    AddMembershipRequest {
+                        group_id: g1.group_id,
+                        resource_type: "user".into(),
+                        resource_id: "user-1".into(),
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+            svc.membership_service()
+                .add_membership(
+                    AddMembershipRequest {
+                        group_id: g2.group_id,
+                        resource_type: "user".into(),
+                        resource_id: "user-2".into(),
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // T1 sees memberships from both groups (T1 + T2 in subtree)
+            let ctx_t1 = test_security_ctx(t1);
+            let page = ResourceGroupClient::list_memberships(
+                &svc,
+                &ctx_t1,
+                ListQuery::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                page.items.len(),
+                2,
+                "T1 should see memberships from both groups (subtree includes T2), got: {:?}",
+                page.items
+            );
+
+            // T2 sees only its own memberships
+            let ctx_t2 = test_security_ctx(t2);
+            let page = ResourceGroupClient::list_memberships(
+                &svc,
+                &ctx_t2,
+                ListQuery::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                page.items.len(),
+                1,
+                "T2 should see only its own membership, got: {:?}",
+                page.items
+            );
+        }
+
+        /// Membership listing with barrier-blocked tenant should not show
+        /// memberships from groups behind the barrier.
+        #[tokio::test]
+        async fn membership_list_respects_barriers() {
+            let db = inmem_db().await;
+            let t1 = Uuid::new_v4();
+            let t2 = Uuid::new_v4();
+
+            seed_tenant_closure(
+                &db,
+                &[
+                    (t1, t1, 0, "active"),
+                    (t1, t2, 1, "active"), // barrier
+                    (t2, t2, 0, "active"),
+                ],
+            )
+            .await;
+
+            let svc = build_service_with_enforcer(db, subtree_enforcer());
+            seed_tenant_type(&svc).await;
+
+            let scope = allow_all_scope();
+
+            let g1 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T1".into(),
+                        parent_id: None,
+                        tenant_id: t1,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+            let g2 = svc
+                .group_service()
+                .create_group(
+                    CreateGroupRequest {
+                        group_type: "tenant".into(),
+                        name: "G-T2".into(),
+                        parent_id: None,
+                        tenant_id: t2,
+                        external_id: None,
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            svc.membership_service()
+                .add_membership(
+                    AddMembershipRequest {
+                        group_id: g1.group_id,
+                        resource_type: "user".into(),
+                        resource_id: "user-1".into(),
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+            svc.membership_service()
+                .add_membership(
+                    AddMembershipRequest {
+                        group_id: g2.group_id,
+                        resource_type: "user".into(),
+                        resource_id: "user-2".into(),
+                    },
+                    &scope,
+                )
+                .await
+                .unwrap();
+
+            // T1 with barrier_mode=Respect sees only its own membership (T2 behind barrier)
+            let ctx_t1 = test_security_ctx(t1);
+            let page = ResourceGroupClient::list_memberships(
+                &svc,
+                &ctx_t1,
+                ListQuery::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                page.items.len(),
+                1,
+                "T1 should see only own membership (T2 behind barrier), got: {:?}",
+                page.items
+            );
+            assert_eq!(page.items[0].resource_id, "user-1");
         }
     }
 

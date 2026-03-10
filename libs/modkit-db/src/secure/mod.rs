@@ -121,6 +121,7 @@ mod tx_error;
 // Public API re-exports
 
 // Core types
+pub use cond::build_scope_condition;
 pub use entity_traits::ScopableEntity;
 pub use error::ScopeError;
 

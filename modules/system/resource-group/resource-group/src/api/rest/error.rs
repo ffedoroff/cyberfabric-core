@@ -104,6 +104,13 @@ impl From<DomainError> for Problem {
             )
             .with_trace_id(trace),
 
+            DomainError::ServiceUnavailable { message } => Problem::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service Unavailable",
+                message.clone(),
+            )
+            .with_trace_id(trace),
+
             DomainError::Database { .. } => {
                 tracing::error!(error = ?err, "Internal database error");
                 Problem::new(

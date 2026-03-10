@@ -128,7 +128,7 @@ pub struct TenantContext {
     /// The context tenant ID (tenant being operated on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_id: Option<Uuid>,
-    /// Barrier enforcement mode (default: `All`).
+    /// Barrier enforcement mode (default: `Respect`).
     #[serde(default)]
     pub barrier_mode: BarrierMode,
     /// Required tenant status filter (e.g., `["active"]`).

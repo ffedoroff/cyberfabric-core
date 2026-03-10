@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, secure_insert};
-use modkit_security::{AccessScope, pep_properties};
+use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, build_scope_condition, secure_insert};
+use modkit_security::AccessScope;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use sea_orm::sea_query::IntoColumnRef;
 use uuid::Uuid;
@@ -218,17 +218,18 @@ impl MembershipRepository for MembershipRepositoryImpl {
         let unrestricted_scope = unconstrained_scope();
         let mut query = resource_group_membership::Entity::find();
 
-        // Membership entity is unrestricted (no tenant_col). Scope via group's tenant_id.
+        // Membership entity is unrestricted (no tenant_col). Scope via group's tenant_id
+        // using the same scope condition that SecureORM applies to resource_group queries.
+        // This handles all scope filter types: Eq, In, InTenantSubtree, InGroup, etc.
+        if scope.is_deny_all() {
+            return Ok(vec![]);
+        }
         if !scope.is_unconstrained() {
-            let tenant_ids = scope.all_uuid_values_for(pep_properties::OWNER_TENANT_ID);
-            if tenant_ids.is_empty() {
-                return Ok(vec![]); // deny-all: no visible memberships
-            }
-            // group_id IN (SELECT id FROM resource_group WHERE tenant_id IN (?))
+            let scope_cond = build_scope_condition::<resource_group::Entity>(scope);
             let mut sub = sea_orm::sea_query::Query::select();
             sub.column(resource_group::Column::Id)
                 .from(resource_group::Entity)
-                .and_where(resource_group::Column::TenantId.is_in(tenant_ids));
+                .cond_where(scope_cond);
             query = query.filter(
                 sea_orm::sea_query::Expr::col(
                     resource_group_membership::Column::GroupId.into_column_ref(),

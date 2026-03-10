@@ -139,6 +139,7 @@ The `resource_group_closure` table is a denormalized representation of the group
 |--------|------|----------|-------------|
 | `ancestor_id` | UUID | No | Ancestor group |
 | `descendant_id` | UUID | No | Descendant group |
+| `depth` | INTEGER | No | 0 = self-reference, 1 = direct descendant, 2+ = deeper descendants |
 
 **Notes:**
 - Self-referential rows exist: each group has a row where `ancestor_id = descendant_id`

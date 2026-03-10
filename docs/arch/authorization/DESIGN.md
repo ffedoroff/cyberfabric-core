@@ -596,7 +596,7 @@ We extend AuthZEN's evaluation response with optional `context.constraints`. Ins
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenant123-uuid", "barrier_mode": "respect" }
+          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenant123-uuid", "barrier_mode": "respect" }
         ]
       }
     ]
@@ -835,7 +835,7 @@ The response contains a `decision` and, when `decision: true`, optional `context
           {
             // Tenant subtree predicate - uses local tenant_closure table
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "51f18034-3b2f-4bfa-bb99-22113bddee68",
             "barrier_mode": "respect",   // default: "respect" (legacy alias: "all")
             "tenant_status": ["active", "suspended"]
@@ -843,7 +843,7 @@ The response contains a `decision` and, when `decision: true`, optional `context
           {
             // Equality predicate
             "type": "eq",
-            "resource_property": "topic_id",
+            "property": "topic_id",
             "value": "gts.x.core.events.topic.v1~z.app._.some_topic.v1"
           }
         ]
@@ -914,7 +914,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
   "decision": true,
   "context": {
     "constraints": [
-      { "predicates": [{ "type": "eq", "resource_property": "owner_tenant_id", "value": "tenantB-uuid" }] }
+      { "predicates": [{ "type": "eq", "property": "owner_tenant_id", "value": "tenantB-uuid" }] }
     ]
   }
 }
@@ -939,7 +939,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
+          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
         ]
       }
     ]
@@ -965,7 +965,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
+          { "type": "in_tenant_subtree", "property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
         ]
       }
     ]
@@ -988,14 +988,14 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
           {
             // Tenant subtree predicate
             "type": "in_tenant_subtree",
-            "resource_property": "owner_tenant_id",
+            "property": "owner_tenant_id",
             "root_tenant_id": "tenantA-uuid",
             "barrier_mode": "respect"  // default: "respect"
           },
           {
             // Group subtree predicate - uses resource_group_membership + resource_group_closure tables
             "type": "in_group_subtree",
-            "resource_property": "id",
+            "property": "id",
             "root_group_id": "project-root-group-uuid"
           }
         ]
@@ -1060,7 +1060,7 @@ The Rust SQL compilation library supports **extensible predicate types**:
   3. Returning custom predicates from their AuthZ Resolver Plugin (PDP)
   4. Using custom predicates in their domain modules
 
-**Example use case:** A vendor with a custom geospatial authorization model could register a `within_geo_boundary` predicate type and implement its SQL compilation handler using PostGIS functions. Their PDP would return constraints like `{ "type": "within_geo_boundary", "resource_property": "location", "boundary": "...geojson..." }`, and the SQL compiler would generate the corresponding PostGIS query.
+**Example use case:** A vendor with a custom geospatial authorization model could register a `within_geo_boundary` predicate type and implement its SQL compilation handler using PostGIS functions. Their PDP would return constraints like `{ "type": "within_geo_boundary", "property": "location", "boundary": "...geojson..." }`, and the SQL compiler would generate the corresponding PostGIS query.
 
 **Standard Predicate Types:**
 
@@ -1082,7 +1082,7 @@ Compares resource property to a single value.
 - `value` (required): Single value to compare
 
 ```jsonc
-{ "type": "eq", "resource_property": "topic_id", "value": "uuid123-uuid" }
+{ "type": "eq", "property": "topic_id", "value": "uuid123-uuid" }
 // SQL: topic_id = 'uuid123-uuid'
 ```
 
@@ -1096,10 +1096,10 @@ Compares resource property to a list of values.
 - `values` (required): Array of values
 
 ```jsonc
-{ "type": "in", "resource_property": "owner_tenant_id", "values": ["tenant1-uuid", "tenant2-uuid"] }
+{ "type": "in", "property": "owner_tenant_id", "values": ["tenant1-uuid", "tenant2-uuid"] }
 // SQL: owner_tenant_id IN ('tenant1-uuid', 'tenant2-uuid')
 
-{ "type": "in", "resource_property": "status", "values": ["active", "pending"] }
+{ "type": "in", "property": "status", "values": ["active", "pending"] }
 // SQL: status IN ('active', 'pending')
 ```
 
@@ -1117,7 +1117,7 @@ Filters resources by tenant subtree using the closure table. The `resource_prope
 ```jsonc
 {
   "type": "in_tenant_subtree",
-  "resource_property": "owner_tenant_id",
+  "property": "owner_tenant_id",
   "root_tenant_id": "tenantA-uuid",
   "barrier_mode": "respect",  // default: "respect" (legacy alias: "all")
   "tenant_status": ["active", "suspended"]
@@ -1152,7 +1152,7 @@ Filters resources by explicit group membership. The `resource_property` specifie
 - `group_ids` (required): Array of group IDs
 
 ```jsonc
-{ "type": "in_group", "resource_property": "id", "group_ids": ["group1-uuid", "group2-uuid"] }
+{ "type": "in_group", "property": "id", "group_ids": ["group1-uuid", "group2-uuid"] }
 // SQL: id IN (
 //   SELECT resource_id FROM resource_group_membership
 //   WHERE group_id IN ('group1-uuid', 'group2-uuid')
@@ -1169,7 +1169,7 @@ Filters resources by group subtree using the closure table. The `resource_proper
 - `root_group_id` (required): Root of group subtree
 
 ```jsonc
-{ "type": "in_group_subtree", "resource_property": "id", "root_group_id": "rootgroup-uuid" }
+{ "type": "in_group_subtree", "property": "id", "root_group_id": "rootgroup-uuid" }
 // SQL: id IN (
 //   SELECT resource_id FROM resource_group_membership
 //   WHERE group_id IN (
@@ -1231,12 +1231,12 @@ Modules may also declare custom properties via `pep_prop(property_name = "column
 
 | Predicate | SQL |
 |-----------|-----|
-| `{ "type": "eq", "resource_property": "topic_id", "value": "v" }` | `events.topic_id = 'v'` |
-| `{ "type": "eq", "resource_property": "owner_id", "value": "user123-uuid" }` | `events.creator_id = 'user123-uuid'` |
-| `{ "type": "in", "resource_property": "owner_tenant_id", "values": ["t1-uuid", "t2-uuid"] }` | `events.tenant_id IN ('t1-uuid', 't2-uuid')` |
-| `{ "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", ... }` | `events.tenant_id IN (SELECT descendant_id FROM tenant_closure WHERE ...)` |
-| `{ "type": "in_group", "resource_property": "id", "group_ids": ["g1-uuid", "g2-uuid"] }` | `events.id IN (SELECT resource_id FROM resource_group_membership WHERE ...)` |
-| `{ "type": "in_group_subtree", "resource_property": "id", "root_group_id": "g1-uuid" }` | `events.id IN (SELECT ... FROM resource_group_membership WHERE group_id IN (SELECT ... FROM resource_group_closure ...))` |
+| `{ "type": "eq", "property": "topic_id", "value": "v" }` | `events.topic_id = 'v'` |
+| `{ "type": "eq", "property": "owner_id", "value": "user123-uuid" }` | `events.creator_id = 'user123-uuid'` |
+| `{ "type": "in", "property": "owner_tenant_id", "values": ["t1-uuid", "t2-uuid"] }` | `events.tenant_id IN ('t1-uuid', 't2-uuid')` |
+| `{ "type": "in_tenant_subtree", "property": "owner_tenant_id", ... }` | `events.tenant_id IN (SELECT descendant_id FROM tenant_closure WHERE ...)` |
+| `{ "type": "in_group", "property": "id", "group_ids": ["g1-uuid", "g2-uuid"] }` | `events.id IN (SELECT resource_id FROM resource_group_membership WHERE ...)` |
+| `{ "type": "in_group_subtree", "property": "id", "root_group_id": "g1-uuid" }` | `events.id IN (SELECT ... FROM resource_group_membership WHERE group_id IN (SELECT ... FROM resource_group_closure ...))` |
 
 ---
 

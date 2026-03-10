@@ -55,6 +55,9 @@ pub enum DomainError {
     #[error("Database error: {message}")]
     Database { message: String },
 
+    #[error("Service unavailable: {message}")]
+    ServiceUnavailable { message: String },
+
     #[error("Forbidden")]
     Forbidden,
 }
@@ -82,7 +85,7 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             }
             authz_resolver_sdk::EnforcerError::EvaluationFailed(ref err) => {
                 tracing::error!(error = %err, "AuthZ evaluation failed");
-                Self::Database {
+                Self::ServiceUnavailable {
                     message: format!("authorization service unavailable: {err}"),
                 }
             }
@@ -177,6 +180,7 @@ impl From<DomainError> for ResourceGroupError {
             // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-9
             // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-11
             DomainError::Forbidden => ResourceGroupError::Forbidden,
+            DomainError::ServiceUnavailable { .. } => ResourceGroupError::ServiceUnavailable,
             DomainError::Database { .. } => ResourceGroupError::Internal,
             // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-11
         }
