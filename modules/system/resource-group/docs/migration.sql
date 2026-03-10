@@ -2,14 +2,14 @@
 -- Updated:  2026-03-06 by Constructor Tech
 
 CREATE TABLE resource_group_type (
-    code TEXT PRIMARY KEY,
-    allowed_parents TEXT[] NOT NULL CHECK (cardinality(allowed_parents) >= 1),
+    code TEXT PRIMARY KEY CHECK (code = LOWER(code)),
+    can_be_root BOOLEAN NOT NULL DEFAULT false,
+    allowed_parents TEXT[] NOT NULL DEFAULT '{}',
     created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    modified TIMESTAMP WITH TIME ZONE DEFAULT NULL
+    modified TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+    CONSTRAINT chk_type_has_placement
+        CHECK (can_be_root OR cardinality(allowed_parents) >= 1)
 );
-
-CREATE UNIQUE INDEX idx_resource_group_type_code_lower
-    ON resource_group_type (LOWER(code));
 
 COMMENT ON TABLE resource_group_type
     IS 'Resource group type definitions with parent type relationships';
@@ -17,7 +17,7 @@ COMMENT ON TABLE resource_group_type
 CREATE TABLE resource_group (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID,
-    group_type TEXT NOT NULL,
+    group_type TEXT NOT NULL CHECK (group_type = LOWER(group_type)),
     name TEXT NOT NULL,
     tenant_id UUID NOT NULL,
     external_id TEXT,

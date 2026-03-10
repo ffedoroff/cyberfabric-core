@@ -22,7 +22,7 @@ info:
 
     Example types:
     ```text
-      tenant (allowed_parents: ["", tenant])
+      tenant (can_be_root: true, allowed_parents: [tenant])
       └── department (allowed_parents: [tenant])
           └── branch (allowed_parents: [department])
     ```
@@ -97,7 +97,8 @@ paths:
                     code: branch
                   - allowed_parents: [tenant]
                     code: department
-                  - allowed_parents: ['', tenant]
+                  - can_be_root: true
+                    allowed_parents: [tenant]
                     code: tenant
                 page_info:
                   limit: 25
@@ -897,17 +898,20 @@ components:
 
     Type:
       type: object
-      required: [code, allowed_parents]
+      required: [code, can_be_root, allowed_parents]
       properties:
         code:
           type: string
           example: department
+        can_be_root:
+          type: boolean
+          description: "Whether this type permits root placement (no parent_id)."
+          example: false
         allowed_parents:
           type: array
           items:
             type: string
-          minItems: 1
-          description: "Allowed parent type codes (min 1 element). Empty string '' permits root placement (no parent_id). Empty array [] is invalid."
+          description: "Allowed parent type codes. Empty array means no parent types allowed (type must be root-only if can_be_root is true)."
           example: [tenant]
 
     TypePage:
@@ -922,38 +926,45 @@ components:
           $ref: '#/components/schemas/PageInfo'
       example:
         items:
-          - allowed_parents: [department]
+          - can_be_root: false
+            allowed_parents: [department]
             code: branch
-          - allowed_parents: [tenant]
+          - can_be_root: false
+            allowed_parents: [tenant]
             code: department
-          - allowed_parents: ['', tenant]
+          - can_be_root: true
+            allowed_parents: [tenant]
             code: tenant
         page_info:
           limit: 25
 
     CreateTypeRequest:
       type: object
-      required: [code, allowed_parents]
+      required: [code, can_be_root, allowed_parents]
       properties:
         code:
           type: string
           example: department
+        can_be_root:
+          type: boolean
+          example: false
         allowed_parents:
           type: array
           items:
             type: string
-          minItems: 1
           example: [tenant]
 
     UpdateTypeRequest:
       type: object
-      required: [allowed_parents]
+      required: [can_be_root, allowed_parents]
       properties:
+        can_be_root:
+          type: boolean
+          example: false
         allowed_parents:
           type: array
           items:
             type: string
-          minItems: 1
           example: [tenant]
 
     Group:

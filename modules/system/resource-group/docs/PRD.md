@@ -21,7 +21,7 @@ The RG module provides a generic hierarchy and membership engine for organizing 
 | **Content Management (CMS)** | Categorize learning materials (documents, videos, SCORM packages) into a multi-level content library and expose per-department or per-branch views. | `Content` resources are members of category-type RG Entities. Hierarchy queries produce both flat catalogues and nested navigation trees. |
 | **Authorization context** | Derive "who can see what" from the organizational graph without hard-coding rules in each service. | AuthZ plugin reads the ownership graph produced by `ownership-graph` profile; RG itself makes no policy decisions. |
 
-**Tenant isolation convention.** Every resource (`User`, `Course`, `Content`, etc.) belongs to exactly one tenant. RG treats `resource_id` as an opaque identifier and has no awareness of which tenant the referenced resource originates from — therefore it cannot enforce tenant boundaries on its own. It is the caller's responsibility to ensure that memberships are not used to link resources across different tenants. Cross-tenant memberships are an architectural misuse of the module. Within its own tenant, a resource may be a member of multiple RG Entities simultaneously, enabling the platform to present the same data set in multiple organizational views depending on the business context.
+**Tenant isolation convention.** Every resource (`User`, `Course`, `Content`, etc.) belongs to exactly one tenant. RG treats `resource_id` as an opaque identifier and has no awareness of which tenant the referenced resource originates from. However, RG **does** enforce tenant consistency for memberships at the group level: when a resource already has memberships in groups belonging to tenant A, adding it to a group in an unrelated tenant B is rejected (see acceptance scenario "Reject Membership Add — Resource Already Linked in Incompatible Tenant"). This prevents a resource from spanning incompatible tenant scopes within RG, even though RG does not know the resource's "home" tenant. It is the caller's responsibility to ensure that the first membership correctly places the resource into a group of the resource's own tenant. Within its own tenant (or related tenants per hierarchy rules), a resource may be a member of multiple RG Entities simultaneously, enabling the platform to present the same data set in multiple organizational views depending on the business context.
 
 A parent tenant may *read* resources of its child tenants for analytical and reporting purposes (e.g. a university admin views course statistics of a branch), but must not establish cross-tenant memberships. For example, an admin of the parent tenant can browse a course catalogue of a child tenant but cannot enroll in that course or assign it to a group in the parent tenant, because the admin is not a user of the child tenant and the course is not a resource of the parent tenant.
 
@@ -181,7 +181,8 @@ The module **MUST** provide API operations to create, list, retrieve, update, an
 A type includes:
 
 - `code` (unique, case-insensitive)
-- `allowed_parents` (allowed parent type codes, **minItems: 1**; `''` empty-string code means the type permits root placement — no `parent_id`; `allowed_parents: []` is invalid — at least one element is required)
+- `can_be_root` (boolean; `true` means the type permits root placement — no `parent_id`)
+- `allowed_parents` (allowed parent type codes; may be empty if the type is root-only). Invariant: `can_be_root OR len(allowed_parents) >= 1` — a type must have at least one valid placement
 
 #### Validate Type Code Format
 
@@ -216,8 +217,8 @@ Type data seeding (populating type definitions) is **optional** and deployment-s
 AuthZ deployment determines which types are needed:
 
 - **AuthZ does not use RG** — no type seeding required.
-- **Flat tenants** — create type `tenant` with `allowed_parents: {''}` (root placement only, no nesting).
-- **Hierarchical tenants** — create type `tenant` with for example `allowed_parents: {'', 'tenant'}` (root placement or nested under another tenant).
+- **Flat tenants** — create type `tenant` with `can_be_root: true, allowed_parents: {}` (root placement only, no nesting).
+- **Hierarchical tenants** — create type `tenant` with for example `can_be_root: true, allowed_parents: {'tenant'}` (root placement or nested under another tenant).
 
 #### Delete Type Only If Unused
 
@@ -742,7 +743,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 
 #### Scenario: Create Root Entity
 
-- **GIVEN** type `tenant` exists with `allowed_parents: ['']` (empty-string code permits root placement)
+- **GIVEN** type `tenant` exists with `can_be_root: true` (permits root placement)
 - **WHEN** caller creates group with type `tenant`, name `"Acme Corp"`, no `parent_id`
 - **THEN** root entity is created with self-referencing closure row (depth 0)
 

@@ -330,6 +330,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct ResourceGroupType {
     pub code: String,
+    pub can_be_root: bool,
     pub allowed_parents: Vec<String>,
 }
 
@@ -337,12 +338,14 @@ pub struct ResourceGroupType {
 #[derive(Debug, Clone)]
 pub struct CreateTypeRequest {
     pub code: String,
+    pub can_be_root: bool,
     pub allowed_parents: Vec<String>,
 }
 
 /// Matches REST `UpdateTypeRequest` schema.
 #[derive(Debug, Clone)]
 pub struct UpdateTypeRequest {
+    pub can_be_root: bool,
     pub allowed_parents: Vec<String>,
 }
 
@@ -1244,7 +1247,8 @@ In both cases, the AuthZ plugin uses `ResourceGroupReadHierarchy` trait. The tra
 | Column     | Type        | Description               |
 | ---------- | ----------- | ------------------------- |
 | `code`     | TEXT        | type code (PK)            |
-| `allowed_parents` | TEXT[]      | allowed parent type codes (min 1 element); `''` (empty string) permits root placement; `[]` is invalid |
+| `can_be_root` | BOOLEAN     | whether this type permits root placement (no parent_id) |
+| `allowed_parents` | TEXT[]      | allowed parent type codes; may be empty if the type is root-only |
 | `created`  | TIMESTAMPTZ | creation time             |
 | `modified` | TIMESTAMPTZ | update time (nullable)    |
 
@@ -1252,7 +1256,8 @@ In both cases, the AuthZ plugin uses `ResourceGroupReadHierarchy` trait. The tra
 Constraints:
 
 - PK on `code`
-- unique functional index on `LOWER(code)` for case-insensitive uniqueness
+- `CHECK (code = LOWER(code))` — enforce lowercase at DB level
+- `CHECK (can_be_root OR cardinality(allowed_parents) >= 1)` — type must have at least one valid placement
 
 #### Table: `resource_group`
 
