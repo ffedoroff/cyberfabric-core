@@ -187,7 +187,7 @@ Cyber Fabric recommends **closure tables** for production deployments with hiera
 |-----------|---------|-------------|
 | `mode` | `"subtree"` | `"root_only"` (single tenant) or `"subtree"` (tenant + descendants) |
 | `root_id` | — | Root tenant. Optional — PDP can determine from `token_scopes` or `subject.properties.tenant_id` |
-| `barrier_mode` | `"all"` | `"all"` (respect barriers) or `"none"` (ignore). See [DESIGN.md](./DESIGN.md#3-tenant-subtree-predicate-type-in_tenant_subtree). |
+| `barrier_mode` | `"respect"` | `"respect"` (respect barriers) or `"ignore"` (ignore barriers). Legacy aliases `"all"`/`"none"` accepted. See [DESIGN.md](./DESIGN.md#3-tenant-subtree-predicate-type-in_tenant_subtree). |
 | `tenant_status` | all | Filter by tenant status (`active`, `suspended`) |
 
 ---
@@ -234,14 +234,14 @@ T1
 - `T1 → T3`: barrier = 1 because T2 is on the path from T1 to T3
 - `T2 → T2` and `T2 → T3`: barrier = 0 because T2 is the **ancestor**, not between T2 and its descendants
 
-**Query: "All tenants in T1's subtree, with `barrier_mode: "all"`"**
+**Query: "All tenants in T1's subtree, with `barrier_mode: "respect"`"**
 
 ```sql
--- barrier_mode: "all" (default) adds the barrier clause
+-- barrier_mode: "respect" (default) adds the barrier clause
 SELECT descendant_id FROM tenant_closure
 WHERE ancestor_id = 'T1'
   AND barrier = 0
--- barrier_mode: "none" omits the barrier clause
+-- barrier_mode: "ignore" omits the barrier clause
 ```
 
 Result: T1, T4 (T2 and T3 excluded due to barrier = 1)

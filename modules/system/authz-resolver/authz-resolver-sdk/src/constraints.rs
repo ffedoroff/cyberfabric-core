@@ -98,8 +98,15 @@ impl InPredicate {
 #[serde(rename_all = "snake_case")]
 pub enum PredicateBarrierMode {
     /// Respect all barriers — `AND barrier = 0`.
+    ///
+    /// Serializes as `"respect"`. Also accepts legacy alias `"all"` on deserialization
+    /// (used in architecture docs before SDK canonicalization).
+    #[serde(alias = "all")]
     Respect,
     /// Ignore barriers — no barrier filter.
+    ///
+    /// Serializes as `"ignore"`. Also accepts legacy alias `"none"` on deserialization.
+    #[serde(alias = "none")]
     Ignore,
 }
 
@@ -298,6 +305,30 @@ mod tests {
 
         let json_str = serde_json::to_string(&Predicate::InTenantSubtree(pred)).unwrap();
         assert!(json_str.contains(r#""barrier_mode":"ignore""#));
+    }
+
+    #[test]
+    fn barrier_mode_legacy_alias_all_deserializes_to_respect() {
+        let json = r#"{"op":"in_tenant_subtree","property":"owner_tenant_id","root_tenant_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","barrier_mode":"all"}"#;
+        let pred: Predicate = serde_json::from_str(json).unwrap();
+        match pred {
+            Predicate::InTenantSubtree(p) => {
+                assert_eq!(p.barrier_mode, PredicateBarrierMode::Respect);
+            }
+            other => panic!("Expected InTenantSubtree, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn barrier_mode_legacy_alias_none_deserializes_to_ignore() {
+        let json = r#"{"op":"in_tenant_subtree","property":"owner_tenant_id","root_tenant_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","barrier_mode":"none"}"#;
+        let pred: Predicate = serde_json::from_str(json).unwrap();
+        match pred {
+            Predicate::InTenantSubtree(p) => {
+                assert_eq!(p.barrier_mode, PredicateBarrierMode::Ignore);
+            }
+            other => panic!("Expected InTenantSubtree, got: {other:?}"),
+        }
     }
 
     // --- InGroup serialization ---

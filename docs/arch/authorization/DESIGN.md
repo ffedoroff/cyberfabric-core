@@ -596,7 +596,7 @@ We extend AuthZEN's evaluation response with optional `context.constraints`. Ins
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenant123-uuid", "barrier_mode": "all" }
+          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenant123-uuid", "barrier_mode": "respect" }
         ]
       }
     ]
@@ -753,7 +753,7 @@ All **core entity identifiers** in the authorization API are **UUIDs**:
 | `group_id` | UUID | Resource group identifier |
 | `tenant_closure` keys | UUID | `ancestor_id`, `descendant_id` |
 | `resource_group_closure` keys | UUID | `ancestor_id`, `descendant_id` |
-| `resource_group_membership` keys | UUID | `resource_id`, `group_id` |
+| `resource_group_membership` keys | UUID/TEXT | `resource_id` (TEXT — external identifier), `group_id` (UUID) |
 
 **Domain-specific identifiers** (e.g., `topic_id`) are **exceptions** — they are structured string identifiers from the Global Type System (e.g., `gts.x.core.events.topic.v1~`), not UUIDs. How a domain module stores GTS IDs internally is up to the module: either as a string as-is, or as a deterministic UUIDv5 computed from the GTS ID string. PDP may return GTS IDs in constraint values (e.g., `topic_id`); PEP is responsible for mapping them to the storage format used by the module.
 
@@ -804,7 +804,7 @@ Content-Type: application/json
     "tenant_context": {
       "mode": "subtree",           // "root_only" | "subtree", default: "subtree"
       "root_id": "51f18034-3b2f-4bfa-bb99-22113bddee68",  // optional - request param (URL query, header), handler can set
-      "barrier_mode": "all",       // default: "all"
+      "barrier_mode": "respect",   // default: "respect" (legacy alias: "all")
       "tenant_status": ["active", "suspended"]  // optional filter
     },
 
@@ -837,7 +837,7 @@ The response contains a `decision` and, when `decision: true`, optional `context
             "type": "in_tenant_subtree",
             "resource_property": "owner_tenant_id",
             "root_tenant_id": "51f18034-3b2f-4bfa-bb99-22113bddee68",
-            "barrier_mode": "all",       // default: "all"
+            "barrier_mode": "respect",   // default: "respect" (legacy alias: "all")
             "tenant_status": ["active", "suspended"]
           },
           {
@@ -878,7 +878,7 @@ The response contains a `decision` and, when `decision: true`, optional `context
 |-------|----------|---------|-------------|
 | `mode` | No | `"subtree"` | `"root_only"` (single tenant) or `"subtree"` (tenant + descendants) |
 | `root_id` | No | — | Root context tenant ID. If absent, PDP determines from `token_scopes`, `subject.properties.tenant_id`, or something else - it's fully up to the PDP implementation |
-| `barrier_mode` | No | `"all"` | `"all"` (respect barriers) or `"none"` (ignore barriers) |
+| `barrier_mode` | No | `"respect"` | `"respect"` (respect barriers) or `"ignore"` (ignore barriers). Legacy aliases `"all"`/`"none"` accepted on deserialization. |
 | `tenant_status` | No | — | Filter by tenant status (e.g., `["active", "suspended"]`) |
 
 The `barrier_mode` and `tenant_status` parameters apply to any scope source — whether explicitly provided via `root_id` or derived from the token/subject.
@@ -939,7 +939,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "all" }
+          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
         ]
       }
     ]
@@ -965,7 +965,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
     "constraints": [
       {
         "predicates": [
-          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "all" }
+          { "type": "in_tenant_subtree", "resource_property": "owner_tenant_id", "root_tenant_id": "tenantA-uuid", "barrier_mode": "respect" }
         ]
       }
     ]
@@ -990,7 +990,7 @@ The `barrier_mode` and `tenant_status` parameters apply to any scope source — 
             "type": "in_tenant_subtree",
             "resource_property": "owner_tenant_id",
             "root_tenant_id": "tenantA-uuid",
-            "barrier_mode": "all"  // default: "all"
+            "barrier_mode": "respect"  // default: "respect"
           },
           {
             // Group subtree predicate - uses resource_group_membership + resource_group_closure tables
@@ -1111,7 +1111,7 @@ Filters resources by tenant subtree using the closure table. The `resource_prope
 - `type` (required): `"in_tenant_subtree"`
 - `resource_property` (required): Property containing tenant ID (e.g., `owner_tenant_id`)
 - `root_tenant_id` (required): Root of tenant subtree
-- `barrier_mode` (optional): Barrier handling mode, default `"all"`. Values: `"all"` (respect all barriers), `"none"` (ignore barriers)
+- `barrier_mode` (optional): Barrier handling mode, default `"respect"`. Values: `"respect"` (respect all barriers), `"ignore"` (ignore barriers). Legacy aliases `"all"`/`"none"` accepted on deserialization.
 - `tenant_status` (optional): Filter by tenant status
 
 ```jsonc
@@ -1119,24 +1119,24 @@ Filters resources by tenant subtree using the closure table. The `resource_prope
   "type": "in_tenant_subtree",
   "resource_property": "owner_tenant_id",
   "root_tenant_id": "tenantA-uuid",
-  "barrier_mode": "all",  // default: "all"
+  "barrier_mode": "respect",  // default: "respect" (legacy alias: "all")
   "tenant_status": ["active", "suspended"]
 }
 // SQL: owner_tenant_id IN (
 //   SELECT descendant_id FROM tenant_closure
 //   WHERE ancestor_id = 'tenantA-uuid'
-//     AND barrier = 0  -- barrier_mode: "all"
+//     AND barrier = 0  -- barrier_mode: "respect"
 //     AND descendant_status IN ('active', 'suspended')
 // )
-// Note: barrier_mode: "none" omits the barrier clause
+// Note: barrier_mode: "ignore" omits the barrier clause
 ```
 
 **Barrier Modes:**
 
 | Mode | SQL Clause | Description |
 |------|------------|-------------|
-| `"all"` | `AND barrier = 0` | (default) Respect all barriers. Stops traversal at `self_managed` tenants. |
-| `"none"` | (omit clause) | Ignore barriers. Use for billing, tenant metadata, or other cross-barrier operations. |
+| `"respect"` (alias: `"all"`) | `AND barrier = 0` | (default) Respect all barriers. Stops traversal at `self_managed` tenants. |
+| `"ignore"` (alias: `"none"`) | (omit clause) | Ignore barriers. Use for billing, tenant metadata, or other cross-barrier operations. |
 
 **Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types. Future modes (e.g., `"data_sovereignty_only"`) can be added with selective checks like `(barrier & mask) = 0` without breaking existing consumers.
 
@@ -1305,7 +1305,7 @@ Denormalized closure table for tenant hierarchy. Enables efficient subtree queri
 **Notes:**
 - Status is denormalized into closure for query simplicity (avoids JOIN). When a tenant's status changes, all rows where it is `descendant_id` are updated.
 - **Barrier semantics:** The `barrier` column stores barriers **strictly between** ancestor and descendant, **not including the ancestor itself**. This means when T2 is self_managed, rows with `ancestor_id = T2` have `barrier = 0`, while rows with T2 on the path from another ancestor have `barrier = 1`.
-- The `barrier` column enables simple filtering: `barrier_mode: "all"` adds `AND barrier = 0`, `barrier_mode: "none"` omits the clause.
+- The `barrier` column enables simple filtering: `barrier_mode: "respect"` adds `AND barrier = 0`, `barrier_mode: "ignore"` omits the clause.
 - Self-referential rows exist: each tenant has a row where `ancestor_id = descendant_id`.
 - **Predicate mapping:** `in_tenant_subtree` predicate compiles to SQL using this closure table.
 - **Future extensibility:** The `barrier` column is INT to allow future use as a bitmask for multiple barrier types (e.g., `(barrier & mask) = 0` for selective enforcement).
@@ -1316,7 +1316,7 @@ SELECT * FROM events
 WHERE owner_tenant_id IN (
   SELECT descendant_id FROM tenant_closure
   WHERE ancestor_id = :root_tenant_id
-    AND barrier = 0  -- barrier_mode: "all"
+    AND barrier = 0  -- barrier_mode: "respect"
     AND descendant_status IN ('active', 'suspended')  -- tenant_status filter
 )
 ```
@@ -1340,7 +1340,7 @@ Association between resources and groups. A resource can belong to multiple grou
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
-| `resource_id` | UUID | No | ID of the resource (FK to resource table) |
+| `resource_id` | TEXT | No | External resource identifier (URN or string — polymorphic, not necessarily UUID) |
 | `group_id` | UUID | No | ID of the group (FK to resource_group_closure) |
 
 **Notes:**

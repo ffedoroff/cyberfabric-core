@@ -20,7 +20,7 @@
 | SecureORM SQL generation | DONE | 0007 | Subquery generation for all advanced predicates |
 | Static plugin → `InTenantSubtree` | DONE | 0007 | Returns when `TenantHierarchy` capability declared |
 | Static plugin → `InGroupSubtree` | NOT DONE | 0007 | Plugin does not yet return `InGroupSubtree` predicates |
-| PEP capabilities in RG module | NOT DONE | 0007 | `PolicyEnforcer::new(authz)` without `with_capabilities()` |
+| PEP capabilities in RG module | PARTIAL | 0007 | `GroupHierarchy` declared; `TenantHierarchy` deferred (needs `tenant_closure`) |
 | MTLS auth path | DEFERRED | 0006 | Blocked on platform MTLS infra |
 | Plugin gateway routing | DEFERRED | 0006 | Blocked on vendor plugin architecture |
 | `tenant_closure` local projection | NOT DONE | 0007 | Table does not exist in RG migrations |
@@ -221,12 +221,12 @@ Blocked on:
 
 | # | Contradiction | Resolution | Owner | Status |
 |---|--------------|------------|-------|--------|
-| C1 | `barrier_mode` naming | Add `serde(alias)` + update docs | authz-resolver-sdk + arch docs | TODO |
-| C2 | No PEP capabilities in RG | Add `with_capabilities()` in `module.rs` | cf-resource-group | TODO (blocked by C4) |
-| C3 | `resource_id` String vs UUID | Update DESIGN.md table schema | arch docs | TODO |
+| C1 | `barrier_mode` naming | Added `serde(alias = "all"/"none")` + updated all arch docs | authz-resolver-sdk + arch docs | DONE |
+| C2 | No PEP capabilities in RG | Added `with_capabilities(vec![GroupHierarchy])` in `module.rs`. `TenantHierarchy` deferred until C4 resolved. | cf-resource-group | PARTIAL |
+| C3 | `resource_id` String vs UUID | Updated DESIGN.md: `resource_id` is TEXT (polymorphic external identifier) | arch docs | DONE |
 | C4 | `tenant_closure` absent | Add local projection migration + CDC | cf-resource-group | TODO |
 | C5 | No `InGroupSubtree` from plugin | Plugin enhancement | cf-static-authz-plugin | PLANNED (Feature 0007) |
-| C6 | `require_constraints` undocumented | Add explicit note in docs | Feature 0005 doc | TODO |
+| C6 | `require_constraints` undocumented | Added "Design Notes" section to Feature 0005 doc | Feature 0005 doc | DONE |
 
 ## 6. Runtime Verification Checklist
 

@@ -6,7 +6,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
+use authz_resolver_sdk::{AuthZResolverClient, Capability, PolicyEnforcer};
 use modkit::api::OpenApiRegistry;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
 use resource_group_sdk::{ResourceGroupClient, ResourceGroupReadHierarchy};
@@ -66,7 +66,11 @@ impl Module for ResourceGroupModule {
             .client_hub()
             .get::<dyn AuthZResolverClient>()
             .map_err(|e| anyhow::anyhow!("failed to get AuthZ resolver: {e}"))?;
-        let enforcer = PolicyEnforcer::new(authz);
+        // Declare PEP capabilities so PDP can return advanced predicates.
+        // GroupHierarchy: plugin validates group ownership via ResourceGroupReadHierarchy.
+        // TenantHierarchy: omitted until `tenant_closure` local projection table exists.
+        let enforcer = PolicyEnforcer::new(authz)
+            .with_capabilities(vec![Capability::GroupHierarchy]);
 
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4

@@ -34,7 +34,7 @@ All examples use a Task Management domain:
       - [S04: DELETE, tenant subtree, PEP has tenant\_closure](#s04-delete-tenant-subtree-pep-has-tenant_closure)
       - [S05: CREATE, PEP-provided tenant context](#s05-create-pep-provided-tenant-context)
       - [S06: CREATE, subject tenant context (no explicit tenant in API)](#s06-create-subject-tenant-context-no-explicit-tenant-in-api)
-      - [S07: LIST, billing data, ignore barriers (barrier\_mode: "none")](#s07-list-billing-data-ignore-barriers-barrier_mode-none)
+      - [S07: LIST, billing data, ignore barriers (barrier\_mode: "ignore")](#s07-list-billing-data-ignore-barriers-barrier_mode-ignore)
     - [Without `tenant_closure`](#without-tenant_closure)
       - [S08: LIST, tenant subtree, PEP without tenant\_closure](#s08-list-tenant-subtree-pep-without-tenant_closure)
       - [S09: GET, tenant subtree, PEP without tenant\_closure](#s09-get-tenant-subtree-pep-without-tenant_closure)
@@ -197,7 +197,7 @@ Authorization: Bearer <token>
     "tenant_context": {
       "mode": "subtree",
       "root_id": "T1-uuid",
-      "barrier_mode": "all"
+      "barrier_mode": "respect"
     },
     "require_constraints": true,
     "capabilities": ["tenant_hierarchy"],
@@ -218,7 +218,7 @@ Authorization: Bearer <token>
             "type": "in_tenant_subtree",
             "resource_property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid",
-            "barrier_mode": "all"
+            "barrier_mode": "respect"
           }
         ]
       }
@@ -303,7 +303,7 @@ WHERE id = 'task456-uuid'
   AND owner_tenant_id IN (
     SELECT descendant_id FROM tenant_closure
     WHERE ancestor_id = 'T1-uuid'
-      AND barrier = 0  -- barrier_mode defaults to "all"
+      AND barrier = 0  -- barrier_mode defaults to "respect"
   )
 ```
 
@@ -381,7 +381,7 @@ WHERE id = 'task456-uuid'
   AND owner_tenant_id IN (
     SELECT descendant_id FROM tenant_closure
     WHERE ancestor_id = 'T1-uuid'
-      AND barrier = 0  -- barrier_mode defaults to "all"
+      AND barrier = 0  -- barrier_mode defaults to "respect"
   )
 ```
 
@@ -404,7 +404,7 @@ WHERE id = 'task456-uuid'
   AND owner_tenant_id IN (
     SELECT descendant_id FROM tenant_closure
     WHERE ancestor_id = 'T1-uuid'
-      AND barrier = 0  -- barrier_mode defaults to "all"
+      AND barrier = 0  -- barrier_mode defaults to "respect"
   )
 ```
 
@@ -568,7 +568,7 @@ VALUES ('tasknew-uuid', 'T1-uuid', 'New Task', 'pending')
 
 ---
 
-#### S07: LIST, billing data, ignore barriers (barrier_mode: "none")
+#### S07: LIST, billing data, ignore barriers (barrier_mode: "ignore")
 
 `GET /billing/usage?tenant_subtree=true&barrier_mode=none`
 
@@ -602,7 +602,7 @@ Authorization: Bearer <token>
     "tenant_context": {
       "mode": "subtree",
       "root_id": "T1-uuid",
-      "barrier_mode": "none"
+      "barrier_mode": "ignore"
     },
     "require_constraints": true,
     "capabilities": ["tenant_hierarchy"],
@@ -623,7 +623,7 @@ Authorization: Bearer <token>
             "type": "in_tenant_subtree",
             "resource_property": "owner_tenant_id",
             "root_tenant_id": "T1-uuid",
-            "barrier_mode": "none"
+            "barrier_mode": "ignore"
           }
         ]
       }
@@ -638,7 +638,7 @@ SELECT * FROM billing_usage
 WHERE owner_tenant_id IN (
   SELECT descendant_id FROM tenant_closure
   WHERE ancestor_id = 'T1-uuid'
-  -- no barrier clause because barrier_mode = "none"
+  -- no barrier clause because barrier_mode = "ignore"
 )
 ```
 
@@ -655,7 +655,7 @@ WHERE owner_tenant_id IN (
 | T2-uuid | T2-uuid | 0 |
 | T2-uuid | T3-uuid | 0 |
 
-When querying from T1 with `barrier_mode=all`, only rows where `barrier = 0` match → T1, T4.
+When querying from T1 with `barrier_mode=respect`, only rows where `barrier = 0` match → T1, T4.
 
 **Key insight:** T2 → T2 and T2 → T3 have `barrier = 0` because barriers are tracked **strictly between** ancestor and descendant, not including the ancestor itself. When T2 is the query root, its self_managed status doesn't block access to its own subtree.
 
@@ -1543,7 +1543,7 @@ SELECT * FROM tasks
 WHERE owner_tenant_id IN (
     SELECT descendant_id FROM tenant_closure
     WHERE ancestor_id = 'T1-uuid'
-      AND barrier = 0  -- barrier_mode defaults to "all"
+      AND barrier = 0  -- barrier_mode defaults to "respect"
   )
   AND id IN (
     SELECT resource_id FROM resource_group_membership

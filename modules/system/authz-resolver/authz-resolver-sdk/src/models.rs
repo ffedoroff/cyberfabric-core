@@ -28,9 +28,16 @@ pub enum TenantMode {
 #[serde(rename_all = "snake_case")]
 pub enum BarrierMode {
     /// Respect all barriers — stop at barrier boundaries (default).
+    ///
+    /// Serializes as `"respect"`. Also accepts legacy alias `"all"` on deserialization
+    /// (used in architecture docs before SDK canonicalization).
     #[default]
+    #[serde(alias = "all")]
     Respect,
     /// Ignore barriers — traverse through self-managed tenants.
+    ///
+    /// Serializes as `"ignore"`. Also accepts legacy alias `"none"` on deserialization.
+    #[serde(alias = "none")]
     Ignore,
 }
 
@@ -184,4 +191,46 @@ pub struct EvaluationResponse {
     /// Response context with constraints or deny reason.
     #[serde(default)]
     pub context: EvaluationResponseContext,
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn barrier_mode_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&BarrierMode::Respect).unwrap(),
+            r#""respect""#
+        );
+        assert_eq!(
+            serde_json::to_string(&BarrierMode::Ignore).unwrap(),
+            r#""ignore""#
+        );
+    }
+
+    #[test]
+    fn barrier_mode_deserializes_canonical_values() {
+        assert_eq!(
+            serde_json::from_str::<BarrierMode>(r#""respect""#).unwrap(),
+            BarrierMode::Respect
+        );
+        assert_eq!(
+            serde_json::from_str::<BarrierMode>(r#""ignore""#).unwrap(),
+            BarrierMode::Ignore
+        );
+    }
+
+    #[test]
+    fn barrier_mode_deserializes_legacy_aliases() {
+        assert_eq!(
+            serde_json::from_str::<BarrierMode>(r#""all""#).unwrap(),
+            BarrierMode::Respect
+        );
+        assert_eq!(
+            serde_json::from_str::<BarrierMode>(r#""none""#).unwrap(),
+            BarrierMode::Ignore
+        );
+    }
 }

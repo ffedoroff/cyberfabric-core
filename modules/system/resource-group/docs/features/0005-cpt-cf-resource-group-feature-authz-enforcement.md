@@ -258,7 +258,24 @@ The system **MUST** define two `ResourceType` descriptors: (1) `RESOURCE_GROUP` 
 - [x] `SecurityContext` is forwarded to PolicyEnforcer without modification by RG
 - [x] RG does not interpret AuthZ policy — only applies compiled `AccessScope`
 
-## 7. Non-Applicable Domains
+## 7. Design Notes
+
+### `require_constraints` contract for global vs tenant-scoped resources
+
+Type operations use `access_scope_with(AccessRequest::new().require_constraints(false))` because:
+- `RESOURCE_GROUP_TYPE` descriptor has `supported_properties: [RESOURCE_ID]` (no `OWNER_TENANT_ID`)
+- PDP returns empty constraints for resources without a tenant property
+- `require_constraints(true)` + empty constraints = `ConstraintsRequiredButAbsent` error from the compiler
+- Therefore type operations **MUST** use `require_constraints(false)` to avoid false 403s
+
+Group and membership operations use default `access_scope()` which implies `require_constraints(true)`:
+- `RESOURCE_GROUP` descriptor has `supported_properties: [OWNER_TENANT_ID, RESOURCE_ID]`
+- PDP returns `OWNER_TENANT_ID` constraints for tenant-scoped resources
+- Constraints are compiled to `AccessScope` with `ScopeConstraint` list
+
+This contract is implicit in the interaction between `ResourceType.supported_properties`, PDP constraint generation, and PEP `require_constraints` flag. If a new global resource type is added, it must also use `require_constraints(false)`.
+
+## 8. Non-Applicable Domains
 
 - **States (CDSL)**: Not applicable — authorization is stateless per-request evaluation.
 - **Usability (UX)**: Not applicable — backend API only.
