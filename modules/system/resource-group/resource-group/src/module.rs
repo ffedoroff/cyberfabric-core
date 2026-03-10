@@ -1,20 +1,26 @@
 // @cpt-req:cpt-cf-resource-group-dod-module-lifecycle:p1
 // @cpt-req:cpt-cf-resource-group-dod-init-order:p1
+// @cpt-req:cpt-cf-resource-group-dod-cdc-consumer:p2
 // @cpt-flow:cpt-cf-resource-group-flow-module-bootstrap:p1
+// @cpt-flow:cpt-cf-resource-group-flow-tenant-closure-cdc:p2
 // @cpt-algo:cpt-cf-resource-group-algo-phased-init:p1
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use authz_resolver_sdk::{AuthZResolverClient, Capability, PolicyEnforcer};
 use modkit::api::OpenApiRegistry;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
+use modkit_db::outbox::{Outbox, OutboxHandle, Partitions};
 use resource_group_sdk::{ResourceGroupClient, ResourceGroupReadHierarchy};
 use sea_orm_migration::MigrationTrait;
 use tracing::info;
 
 use crate::api::rest::routes;
 use crate::config::ResourceGroupConfig;
+use crate::domain::cdc::event::TENANT_HIERARCHY_QUEUE;
+use crate::domain::cdc::handler::TenantClosureCdcHandler;
 use crate::domain::service::RgService;
 
 /// Resource Group module: hierarchical group management with closure-table topology.
@@ -32,6 +38,7 @@ use crate::domain::service::RgService;
 pub struct ResourceGroupModule {
     service: OnceLock<Arc<RgService>>,
     url_prefix: OnceLock<String>,
+    outbox_handle: OnceLock<OutboxHandle>,
 }
 
 impl Default for ResourceGroupModule {
@@ -39,6 +46,7 @@ impl Default for ResourceGroupModule {
         Self {
             service: OnceLock::new(),
             url_prefix: OnceLock::new(),
+            outbox_handle: OnceLock::new(),
         }
     }
 }
@@ -72,6 +80,9 @@ impl Module for ResourceGroupModule {
         let enforcer = PolicyEnforcer::new(authz)
             .with_capabilities(vec![Capability::TenantHierarchy, Capability::GroupHierarchy]);
 
+        // Clone Db for outbox before db is moved into RgService
+        let outbox_db = db.as_db().clone();
+
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
         // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
@@ -98,6 +109,26 @@ impl Module for ResourceGroupModule {
         self.service
             .set(svc)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
+
+        // @cpt-begin:cpt-cf-resource-group-flow-tenant-closure-cdc:p2:inst-cdc-5
+        // Start CDC consumer for tenant_closure projection
+        let outbox_handle = Outbox::builder(outbox_db)
+            .poll_interval(Duration::from_secs(1))
+            .queue(TENANT_HIERARCHY_QUEUE, Partitions::of(4))
+            .lease_duration(Duration::from_secs(30))
+            .backoff_base(Duration::from_secs(1))
+            .backoff_max(Duration::from_secs(60))
+            .transactional(TenantClosureCdcHandler)
+            .start()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to start outbox CDC consumer: {e}"))?;
+
+        self.outbox_handle
+            .set(outbox_handle)
+            .map_err(|_| anyhow::anyhow!("{} outbox already initialized", Self::MODULE_NAME))?;
+
+        info!("{} CDC consumer started for tenant_closure projection", Self::MODULE_NAME);
+        // @cpt-end:cpt-cf-resource-group-flow-tenant-closure-cdc:p2:inst-cdc-5
 
         // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-1
         info!(

@@ -41,6 +41,15 @@ where
         }
     }
 
+    /// Access the underlying `Db` instance.
+    ///
+    /// Useful for infrastructure components (e.g. outbox) that require a `Db`
+    /// directly rather than going through `DBProvider`'s conn/transaction API.
+    #[must_use]
+    pub fn as_db(&self) -> &Db {
+        &self.db
+    }
+
     /// Create a non-transactional database runner.
     ///
     /// # Errors

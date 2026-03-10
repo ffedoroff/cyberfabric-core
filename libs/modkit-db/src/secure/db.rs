@@ -489,6 +489,16 @@ impl Db {
     /// # Errors
     ///
     /// Returns `DbError` if the SQL execution fails.
+    /// Return a clone of the raw `SeaORM` `DatabaseConnection` for test-only use.
+    ///
+    /// Useful when tests need a `&dyn ConnectionTrait` (e.g. testing
+    /// `TransactionalMessageHandler` implementations that operate on raw connections).
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn raw_conn_for_testing(&self) -> DatabaseConnection {
+        self.handle.sea_internal()
+    }
+
     #[cfg(feature = "testing")]
     pub async fn execute_raw(&self, sql: &str) -> Result<(), DbError> {
         use sea_orm::ConnectionTrait;

@@ -179,7 +179,48 @@ Static AuthZ plugin **SHOULD** return `InTenantSubtree` when `TenantHierarchy` c
 - SQL generation for `InGroupSubtree` produces correct nested subquery
 - Combined predicates (tenant + group) in same constraint
 
-## 6. Non-Applicable Domains
+## 6. Design Notes
+
+### InGroup / InGroupSubtree `resource_type` Filtering Semantics
+
+The `InGroup` and `InGroupSubtree` predicates filter resources via the `resource_group_membership` table which has a composite key: `(group_id, resource_type, resource_id)`. The generated SQL subqueries select `resource_id` from memberships matching the group constraint.
+
+**By design**, these predicates do **not** filter by `resource_type` in the SQL subquery:
+
+```sql
+-- InGroup SQL (current):
+col IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (?))
+
+-- InGroupSubtree SQL (current):
+col IN (SELECT resource_id FROM resource_group_membership
+        WHERE group_id IN (SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = ?))
+```
+
+**Rationale**: The `resource_type` column in `resource_group_membership` is a domain classification (e.g., `"user"`, `"device"`, `"license"`), not a security boundary. The PEP's `ResourceType` descriptor determines which entity table the query targets — the `col` in the outer query is already the correct entity's primary key. Adding `resource_type` filtering to the subquery would require the PDP to know the entity classification, coupling policy to domain semantics.
+
+**Consequence**: If the same `resource_id` value exists in multiple membership `resource_type`s within the same group, the subquery matches all of them. This is safe because:
+1. `resource_id` values are UUIDs (globally unique) — collision across types is practically impossible
+2. The outer query targets a specific entity table, providing implicit type filtering
+3. The PEP's `ResourceType.supported_properties` already defines which entity is being queried
+
+**Future consideration**: If non-UUID `resource_id` values are introduced (e.g., slugs that could collide across types), adding optional `resource_type` to `InGroup`/`InGroupSubtree` predicates with a `membership_resource_type` field should be considered. This would be a backward-compatible extension to the predicate schema.
+
+### Tenant Closure Data Dependency
+
+`InTenantSubtree` SQL reads from the `tenant_closure` local projection table. This table is created by migration `m20260310_000002_tenant_closure_projection` but is populated by the CDC pipeline (Feature 0008: `cpt-cf-resource-group-feature-tenant-closure-cdc`). Until the CDC pipeline is operational, `InTenantSubtree` queries will return empty results (no descendant tenants found), effectively behaving as `Eq(OWNER_TENANT_ID, root_tenant_id)` — only the root tenant itself is visible.
+
+This is safe because:
+- Empty `tenant_closure` means no subtree expansion — queries return a subset (not superset) of expected results
+- The root tenant's self-row (if seeded) would still match
+- No cross-tenant data leakage occurs from empty projection
+
+See: `cpt-cf-resource-group-feature-tenant-closure-cdc` for the data population plan.
+
+### ADR: Graceful Degradation for Group Hierarchy
+
+When `static-authz-plugin` cannot resolve group hierarchy data (runtime call failure or client unavailable), it falls back to tenant-scoped constraints instead of denying access or returning an error. See [ADR-0001: Graceful Degradation](../ADR/0001-graceful-degradation-authz-plugin-hierarchy.md) for the full decision record.
+
+## 7. Non-Applicable Domains
 
 - **MTLS / Plugin Gateway**: Covered by Feature 6 (DEFERRED)
 - **States (CDSL)**: Not applicable — constraint types are stateless evaluation artifacts

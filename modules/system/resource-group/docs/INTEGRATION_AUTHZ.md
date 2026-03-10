@@ -274,7 +274,7 @@ When deploying the full AuthZ integration, verify:
 - [x] Static plugin `evaluate()` latency < 10ms (no DB round-trip unless `GroupHierarchy`)
 - [x] No enforcer loop: `ReadHierarchy` calls bypass PolicyEnforcer
 - [x] Membership listing works with `InTenantSubtree` scope (C7 fix)
-- [ ] CDC pipeline: tenant-resolver → `tenant_closure` projection table (pending infra)
+- [ ] CDC pipeline: tenant-resolver → `tenant_closure` projection table — see Feature 0008 (`cpt-cf-resource-group-feature-tenant-closure-cdc`)
 
 ## 7. Test Summary
 
@@ -291,3 +291,14 @@ cargo test -p cf-resource-group cross_module_authz_rg
 # Static authz plugin tests
 cargo test -p cf-static-authz-plugin --lib
 ```
+
+## 8. Related Documentation
+
+| Document | Path | Content |
+|----------|------|---------|
+| Feature 0005: AuthZ Enforcement | `features/0005-cpt-cf-resource-group-feature-authz-enforcement.md` | PolicyEnforcer integration, AccessScope, error mapping |
+| Feature 0006: MTLS & Plugin Gateway | `features/0006-cpt-cf-resource-group-feature-read-authz.md` | MTLS auth, plugin routing (DEFERRED) |
+| Feature 0007: Advanced Constraints | `features/0007-cpt-cf-resource-group-feature-authz-constraint-types.md` | InTenantSubtree, InGroup, InGroupSubtree + design notes on resource_type semantics |
+| Feature 0008: CDC Pipeline | `features/0008-cpt-cf-resource-group-feature-tenant-closure-cdc.md` | tenant_closure population via outbox CDC (PLANNED) |
+| ADR-0001: Graceful Degradation | `ADR/0001-graceful-degradation-authz-plugin-hierarchy.md` | Plugin fallback when group hierarchy unavailable |
+| DECOMPOSITION | `DECOMPOSITION.md` | Feature dependency graph (updated with Feature 8) |
