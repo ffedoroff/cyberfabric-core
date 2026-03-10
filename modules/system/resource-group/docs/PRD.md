@@ -159,7 +159,7 @@ This aligns RG behavior with `docs/arch/authorization/RESOURCE_GROUP_MODEL.md`.
 - Membership lifecycle and lookup operations (qualified by `resource_type`).
 - Query profile constraints (`max_depth`, `max_width`) and enforcement behavior.
 - Generic read ports consumable by external modules/plugins.
-- REST API endpoints (`/api/resource-group/v1/...`) with OData query support (`$filter`, `$top`, `$skip`).
+- REST API endpoints (`/api/resource-group/v1/...`) with OData `$filter` and cursor-based pagination (`cursor`, `limit`).
 - Deterministic type seeding for bootstrapping.
 
 ### 4.2 Out of Scope
@@ -406,11 +406,13 @@ The module **MUST** expose REST API endpoints under `/api/resource-group/v1/` fo
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-odata-query`
 
-List endpoints **MUST** support OData v4.01 query options:
+List endpoints **MUST** support:
 
-- `$filter` with field-specific operators (eq, ne, in)
-- `$top` (page size, 1..300, default 50)
-- `$skip` (offset, default 0)
+- `$filter` (OData v4.01) with field-specific operators (eq, ne, in)
+- Cursor-based pagination per platform Cursor Pagination Spec (DNA/REST/QUERYING.md):
+  - `limit` — page size (1..200, default 25)
+  - `cursor` — opaque token from previous response for next/previous page
+- Ordering is undefined but consistent — the server guarantees deterministic, stable order across pages within a pagination session, but does not commit to a specific sort order in the public contract. No `$orderby` support.
 
 #### Group List with Hierarchy Depth
 

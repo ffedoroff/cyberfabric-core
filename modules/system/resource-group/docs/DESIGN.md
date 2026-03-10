@@ -45,7 +45,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | Requirement                                                   | Design Response                                                                                                                       |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `cpt-cf-resource-group-fr-rest-api`                           | REST API layer with OperationBuilder and OData query support.                                                                         |
-| `cpt-cf-resource-group-fr-odata-query`                        | OData `$filter`, `$top`, `$skip` on all list endpoints.                                                                               |
+| `cpt-cf-resource-group-fr-odata-query`                        | OData `$filter` and cursor-based pagination (`cursor`, `limit`) on all list endpoints. Ordering is undefined but consistent. No `$orderby`. |
 | `cpt-cf-resource-group-fr-list-groups-depth`                  | Dedicated depth endpoint (`/{group_id}/hierarchy`) returns hierarchy with relative depth and depth-based filtering.                       |
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
@@ -418,11 +418,12 @@ pub struct RemoveMembershipRequest {
 
 // ── Pagination ──────────────────────────────────────────────────────────
 
-/// Matches REST `PageInfo` schema.
+/// Cursor-based pagination metadata. Matches REST `PageInfo` schema.
 #[derive(Debug, Clone)]
 pub struct PageInfo {
-    pub top: i32,
-    pub skip: i32,
+    pub next_cursor: Option<String>,
+    pub prev_cursor: Option<String>,
+    pub limit: i32,
 }
 
 /// Generic paginated response. Matches REST `*Page` schemas.
@@ -530,11 +531,12 @@ Base path: `/api/resource-group/v1`
 | POST | `/memberships/{group_id}/{resource_type}/{resource_id}` | `addMembership` | Add membership |
 | DELETE | `/memberships/{group_id}/{resource_type}/{resource_id}` | `deleteMembership` | Remove membership |
 
-OData query support on all list endpoints:
+Query support on all list endpoints:
 
-- `$filter` — field-specific operators (eq, ne, in)
-- `$top` — page size (1..300, default 50)
-- `$skip` — offset (default 0)
+- `$filter` — OData field-specific operators (eq, ne, in)
+- `limit` — page size (1..200, default 25)
+- `cursor` — opaque token from previous response for next/previous page
+- Ordering is undefined but consistent — no `$orderby`
 
 Group list (`listGroups`) `$filter` fields: `group_type` (eq, ne, in), `parent_id` (eq, ne, in — filters by direct parent, depth=1 only; for ancestor traversal use `listGroupHierarchy`), `group_id` (eq, ne, in), `name` (eq, ne, in), `external_id` (eq, ne, in).
 
@@ -555,7 +557,7 @@ Type list `$filter` fields: `code` (eq, ne, in).
 
 | Trait | Method | Description |
 | ----- | ------ | ----------- |
-| `ResourceGroupReadHierarchy` | `list_group_depth(ctx, group_id, query)` | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/hierarchy` — supports OData `$filter` (depth, group_type), `$top`, `$skip` |
+| `ResourceGroupReadHierarchy` | `list_group_depth(ctx, group_id, query)` | hierarchy traversal with relative `depth`; matches REST `GET /groups/{group_id}/hierarchy` — supports OData `$filter` (depth, group_type), cursor-based pagination (`cursor`, `limit`) |
 
 Integration read models reuse the same SDK structs defined above:
 
@@ -658,7 +660,7 @@ The integration read contract returns **data rows only** (no policy/decision fie
 | `external_id` | string / null | No     | Optional external ID                                                         |
 | `depth`       | INT         | Yes      | Relative distance from reference group (`0` = self, positive = descendants, negative = ancestors) |
 
-OData filters for `list_group_depth`: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in). Pagination: `$top`, `$skip`.
+OData filters for `list_group_depth`: `depth` (eq, ne, gt, ge, lt, le), `group_type` (eq, ne, in). Pagination: `cursor`, `limit`.
 
 `list_memberships(ctx, query)` returns `Page<ResourceGroupMembership>` (matches REST `GET /memberships` → `MembershipPage`):
 
@@ -669,7 +671,7 @@ OData filters for `list_group_depth`: `depth` (eq, ne, gt, ge, lt, le), `group_t
 | `resource_type` | string | Yes      | Resource type classification          |
 | `resource_id`   | string | Yes      | Resource identifier                   |
 
-OData filters for `list_memberships`: `group_id` (eq, ne, in), `resource_type` (eq, ne, in), `resource_id` (eq, ne, in). Pagination: `$top`, `$skip`.
+OData filters for `list_memberships`: `group_id` (eq, ne, in), `resource_type` (eq, ne, in), `resource_id` (eq, ne, in). Pagination: `cursor`, `limit`.
 
 Membership rows do not include `tenant_id`. Callers derive tenant scope from group data obtained via `list_group_depth`.
 
@@ -755,7 +757,7 @@ let page = rg
       "depth": 1
     }
   ],
-  "page_info": { "top": 50, "skip": 0 }
+  "page_info": { "limit": 25 }
 }
 ```
 
@@ -804,7 +806,7 @@ Returns ancestry chain for the requested node (`T1 → D2 → B3`).
       "depth": 0
     }
   ],
-  "page_info": { "top": 50, "skip": 0 }
+  "page_info": { "limit": 25 }
 }
 ```
 
@@ -845,7 +847,7 @@ let page = rg
       "resource_id": "R8"
     }
   ],
-  "page_info": { "top": 50, "skip": 0 }
+  "page_info": { "limit": 25 }
 }
 ```
 
