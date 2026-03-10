@@ -4,9 +4,9 @@
 
 ## 1. Overview
 
-The Resource Group (RG) DESIGN is decomposed into five features organized as a linear chain with a terminal fork.
+The Resource Group (RG) DESIGN is decomposed into six features organized as a linear chain with a terminal fork.
 
-**Decomposition strategy**: Features follow the natural dependency order of the RG architecture layers — persistence/SDK foundation first, then domain services (types → entities/hierarchy → memberships), and finally the integration read contract for AuthZ interop. Each feature maps to one or two DESIGN components with high cohesion and minimal cross-feature coupling.
+**Decomposition strategy**: Features follow the natural dependency order of the RG architecture layers — persistence/SDK foundation first, then domain services (types → entities/hierarchy → memberships), then authorization enforcement, and finally the integration read contract for MTLS/plugin interop. Each feature maps to one or two DESIGN components with high cohesion and minimal cross-feature coupling.
 
 | # | Feature | Priority | Components | Key Concern |
 |---|---------|----------|------------|-------------|
@@ -14,7 +14,9 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 | 2 | Type Management | HIGH | type-service | Type lifecycle and validation |
 | 3 | Entity & Hierarchy | HIGH | entity-service, hierarchy-service | Forest topology, closure table |
 | 4 | Membership Management | MEDIUM | membership-service | Membership CRUD, tenant scope |
-| 5 | Integration Read & AuthZ Interop | MEDIUM | integration-read-service | Read contracts, JWT/MTLS auth |
+| 5 | AuthZ Enforcement | HIGH | module, all services | PolicyEnforcer, AccessScope, tenant isolation |
+| 6 | MTLS Auth & Plugin Gateway | MEDIUM | integration-read-service | MTLS auth, plugin gateway (DEFERRED) |
+| 7 | AuthZ Advanced Constraint Types | HIGH | authz-resolver-sdk, modkit-db, static-authz-plugin | `in_tenant_subtree`, `in_group`, `in_group_subtree` (DONE) |
 
 ---
 
@@ -39,7 +41,8 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 - **Out of scope**:
   - Domain logic (type validation, forest invariants, closure maintenance) — covered by Features 2–4
-  - Integration read routing and MTLS endpoint allowlist — covered by Feature 5
+  - Integration read routing and MTLS endpoint allowlist — covered by Feature 6
+  - PolicyEnforcer integration and AccessScope — covered by Feature 5
 
 - **Requirements Covered**:
   - [x] `p1` - `cpt-cf-resource-group-fr-rest-api`
@@ -164,7 +167,8 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 - **Out of scope**:
   - Membership link management — covered by Feature 4
-  - Integration read routing and AuthZ interop — covered by Feature 5
+  - Integration read routing and MTLS — covered by Feature 6
+  - AuthZ enforcement — covered by Feature 5
   - Type lifecycle management — covered by Feature 2
 
 - **Requirements Covered**:
@@ -236,7 +240,8 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 - **Out of scope**:
   - Group/entity CRUD — covered by Feature 3
-  - Integration read contract exposure — covered by Feature 5
+  - Integration read contract exposure — covered by Feature 6
+  - AuthZ enforcement — covered by Feature 5
 
 - **Requirements Covered**:
   - [x] `p1` - `cpt-cf-resource-group-fr-manage-membership`
@@ -270,61 +275,136 @@ The Resource Group (RG) DESIGN is decomposed into five features organized as a l
 
 ---
 
-### 5. Integration Read & AuthZ Interop - MEDIUM
+### 5. AuthZ Enforcement - HIGH
 
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-feature-integration-read`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-authz-enforcement`
 
-- **Purpose**: Expose the read-only `ResourceGroupReadHierarchy` contract for AuthZ plugin consumption, implement plugin gateway routing (built-in vs vendor-specific provider), and enforce JWT/MTLS dual authentication with endpoint-level allowlisting.
+- **Purpose**: Integrate PolicyEnforcer into all RG REST handlers to enforce authorization on every request. Group and membership endpoints receive tenant-scoped `AccessScope`; type endpoints require authentication but operate on global data. All repository queries execute through SecureORM with the resolved `AccessScope`.
 
-- **Depends On**: `cpt-cf-resource-group-feature-entity-hierarchy` (hierarchy data must be available for reads)
+- **Depends On**: `cpt-cf-resource-group-feature-membership` (all domain features must be implemented before adding authorization layer)
 
 - **Scope**:
-  - `ResourceGroupReadHierarchy` trait implementation (hierarchy-only reads for AuthZ plugin)
-  - `ResourceGroupReadPluginClient` trait for vendor-specific provider delegation
-  - Plugin gateway routing (built-in provider: local data path; vendor: resolve scoped plugin instance)
-  - MTLS authentication path (certificate verification, endpoint allowlist, system SecurityContext)
-  - JWT authentication path (AuthZ evaluation via PolicyEnforcer, AccessScope application)
-  - MTLS endpoint allowlist enforcement (only `/groups/{id}/depth` reachable via MTLS)
-  - Tenant projection rules (hierarchy reads include `tenant_id`; membership reads derive it)
-  - Caller identity propagation (`SecurityContext` forwarded without policy interpretation)
+  - PolicyEnforcer instantiation in module init (resolve `AuthZResolverClient` from ClientHub)
+  - `ResourceType` descriptor definitions for groups and types
+  - `access_scope()` calls in all REST handlers before domain logic
+  - `AccessScope` propagation through domain services to repository queries
+  - SecureORM tenant scoping on group and membership queries
+  - EnforcerError to HTTP response mapping (403, 503, 500)
+  - Type endpoints: authorized but no tenant constraints (global resource)
+  - In-process `ResourceGroupReadHierarchy` access with system `SecurityContext` (AuthZ plugin bypass)
 
 - **Out of scope**:
-  - AuthZ policy evaluation logic — owned by AuthZ module
-  - SQL filter generation — owned by PEP/compiler
-  - Hierarchy/membership data mutations — covered by Features 3–4
+  - MTLS authentication path — covered by Feature 6
+  - Plugin gateway routing — covered by Feature 6
+  - AuthZ policy logic — owned by AuthZ module
+  - SQL filter generation — owned by PEP/compiler (SecureORM)
 
 - **Requirements Covered**:
-  - [ ] `p1` - `cpt-cf-resource-group-fr-integration-read-port`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-dual-auth-modes`
+  - [x] `p1` - `cpt-cf-resource-group-fr-dual-auth-modes` (JWT path only; MTLS path deferred to Feature 6)
 
 - **Design Principles Covered**:
   - [x] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
-  - [x] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
 - **Design Constraints Covered**:
   - [x] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
   - [x] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
 - **Domain Model Entities**:
-  - `ResourceGroupWithDepth`
+  - None (uses existing entities from Features 1-4)
+
+- **Design Components**:
+  - [x] `p1` - `cpt-cf-resource-group-component-module` (enhanced with PolicyEnforcer)
+
+- **API**:
+  - All existing endpoints (authorization layer added)
+
+- **Sequences**:
+  - `cpt-cf-resource-group-seq-jwt-rg-request`
+  - `cpt-cf-resource-group-seq-e2e-authz-flow`
+
+- **Data**:
+  - None (queries existing data with AccessScope filtering)
+
+---
+
+### 6. MTLS Auth & Plugin Gateway - MEDIUM (DEFERRED)
+
+- [ ] `p2` - **ID**: `cpt-cf-resource-group-feature-mtls-plugin-gateway`
+
+**Status**: DEFERRED — blocked on platform MTLS infrastructure and plugin architecture readiness
+
+- **Purpose**: Add MTLS authentication path for out-of-process AuthZ plugin consumption, implement plugin gateway routing (built-in vs vendor-specific provider), and enforce MTLS endpoint allowlisting.
+
+- **Depends On**: `cpt-cf-resource-group-feature-authz-enforcement`, `cpt-cf-resource-group-feature-authz-constraint-types`
+
+- **Scope**:
+  - MTLS authentication path (certificate verification, endpoint allowlist, system SecurityContext)
+  - MTLS endpoint allowlist enforcement (only `/groups/{id}/depth` reachable via MTLS)
+  - `ResourceGroupReadPluginClient` trait for vendor-specific provider delegation
+  - Plugin gateway routing (built-in provider: local data path; vendor: resolve scoped plugin instance)
+
+- **Out of scope**:
+  - JWT auth path — done in Feature 5
+  - In-process ClientHub path — done in Feature 5
+  - Advanced constraint types — done in Feature 7
+  - AuthZ policy evaluation — owned by AuthZ module
+
+- **Requirements Covered**:
+  - [ ] `p1` - `cpt-cf-resource-group-fr-integration-read-port`
+  - [ ] `p1` - `cpt-cf-resource-group-fr-dual-auth-modes` (MTLS path)
 
 - **Design Components**:
   - [ ] `p1` - `cpt-cf-resource-group-component-integration-read-service`
 
 - **API**:
   - GET /api/resource-group/v1/groups/{group_id}/depth (MTLS path)
-  - SDK: `ResourceGroupReadHierarchy.list_group_depth()`
   - SDK: `ResourceGroupReadPluginClient` (plugin delegation)
-
-- **Sequences**:
-  - `cpt-cf-resource-group-seq-authz-rg-sql-split`
-  - `cpt-cf-resource-group-seq-e2e-authz-flow`
-  - `cpt-cf-resource-group-seq-auth-modes`
-  - `cpt-cf-resource-group-seq-mtls-authz-read`
-  - `cpt-cf-resource-group-seq-jwt-rg-request`
 
 - **Data**:
   - None (reads existing data from Features 1, 3, 4)
+
+---
+
+### 7. AuthZ Advanced Constraint Types - HIGH
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-authz-constraint-types`
+
+- **Purpose**: Extend the constraint model with `in_tenant_subtree`, `in_group`, `in_group_subtree` predicate types. Implement PEP compiler and SecureORM support for SQL subquery generation using local projection tables. Enhance static-authz-plugin to return advanced predicates based on PEP capabilities.
+
+- **Depends On**: `cpt-cf-resource-group-feature-authz-enforcement` (PolicyEnforcer pipeline must exist)
+
+- **Scope**:
+  - New predicate types in `authz-resolver-sdk/constraints.rs`
+  - Constraint compiler extension in `authz-resolver-sdk/pep/compiler.rs`
+  - SecureORM subquery filter support in `modkit-db/secure/`
+  - Static-authz-plugin: return `InTenantSubtree` / `InGroupSubtree` when capabilities declared
+  - PEP capability declaration in PolicyEnforcer calls
+
+- **Out of scope**:
+  - MTLS authentication — covered by Feature 6
+  - Plugin gateway routing — covered by Feature 6
+  - Local projection sync — future infrastructure work
+
+- **Requirements Covered**:
+  - [x] `p1` - Authorization architecture predicate types (DESIGN.md §Predicate Types Reference)
+
+- **Design Principles Covered**:
+  - [x] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
+
+- **Design Constraints Covered**:
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+
+- **Domain Model Entities**:
+  - `InTenantSubtreePredicate`, `InGroupPredicate`, `InGroupSubtreePredicate`
+
+- **Design Components**:
+  - `authz-resolver-sdk` constraints and compiler
+  - `modkit-db` SecureORM scope filters
+  - `static-authz-plugin` service
+
+- **Data**:
+  - Local projections: `tenant_closure`, `resource_group_closure`, `resource_group_membership`
 
 ---
 
@@ -338,8 +418,14 @@ cpt-cf-resource-group-feature-domain-foundation
               +---> cpt-cf-resource-group-feature-entity-hierarchy
                         |
                         +---> cpt-cf-resource-group-feature-membership
-                        |
-                        +---> cpt-cf-resource-group-feature-integration-read
+                                  |
+                                  +---> cpt-cf-resource-group-feature-authz-enforcement
+                                            |
+                                            +---> cpt-cf-resource-group-feature-authz-constraint-types
+                                            |         |
+                                            |         +---> cpt-cf-resource-group-feature-mtls-plugin-gateway (DEFERRED)
+                                            |
+                                            +---> cpt-cf-resource-group-feature-mtls-plugin-gateway (DEFERRED)
 ```
 
 **Dependency Rationale**:
@@ -347,5 +433,6 @@ cpt-cf-resource-group-feature-domain-foundation
 - `cpt-cf-resource-group-feature-type-management` requires `cpt-cf-resource-group-feature-domain-foundation`: type service needs SDK models, module shell, persistence adapter, and DB schema to operate
 - `cpt-cf-resource-group-feature-entity-hierarchy` requires `cpt-cf-resource-group-feature-type-management`: entities reference types for parent-child compatibility validation; types must be created before entities
 - `cpt-cf-resource-group-feature-membership` requires `cpt-cf-resource-group-feature-entity-hierarchy`: membership links reference groups that must exist; membership operations validate group existence
-- `cpt-cf-resource-group-feature-integration-read` requires `cpt-cf-resource-group-feature-entity-hierarchy`: integration read contract serves hierarchy data that must be populated by entity/hierarchy management
-- `cpt-cf-resource-group-feature-membership` and `cpt-cf-resource-group-feature-integration-read` are independent of each other and can be developed in parallel
+- `cpt-cf-resource-group-feature-authz-enforcement` requires `cpt-cf-resource-group-feature-membership`: all domain features must be implemented before adding the authorization layer; PolicyEnforcer integration touches all service and handler code
+- `cpt-cf-resource-group-feature-authz-constraint-types` requires `cpt-cf-resource-group-feature-authz-enforcement`: advanced predicates build on the PolicyEnforcer pipeline established by Feature 5
+- `cpt-cf-resource-group-feature-mtls-plugin-gateway` requires Features 5 and 7: MTLS transport and plugin routing build on top of established JWT + constraints pipeline; DEFERRED pending platform MTLS infrastructure

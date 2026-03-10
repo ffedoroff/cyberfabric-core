@@ -102,6 +102,18 @@ pub mod pep_properties {
     pub const OWNER_ID: &str = "owner_id";
 }
 
+/// Barrier enforcement mode for tenant subtree queries.
+///
+/// Determines whether tenant barriers (self-managed tenants) are respected
+/// during hierarchy traversal.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ScopeBarrierMode {
+    /// Respect barriers — add `AND barrier = 0` clause (default).
+    Respect,
+    /// Ignore barriers — no barrier filtering (for billing, metadata, etc.).
+    Ignore,
+}
+
 /// A single scope filter — a typed predicate on a named resource property.
 ///
 /// The property name (e.g., `"owner_tenant_id"`, `"id"`) is an authorization
@@ -110,18 +122,21 @@ pub mod pep_properties {
 /// Variants mirror the predicate types from the PDP response:
 /// - [`ScopeFilter::Eq`] — equality (`property = value`)
 /// - [`ScopeFilter::In`] — set membership (`property IN (values)`)
-///
-/// ## Future extensions
-///
-/// Additional filter types (`in_tenant_subtree`, `in_group`,
-/// `in_group_subtree`) are planned. See the authorization design document
-/// (`docs/arch/authorization/DESIGN.md`) for the full predicate taxonomy.
+/// - [`ScopeFilter::InTenantSubtree`] — tenant hierarchy via closure table
+/// - [`ScopeFilter::InGroup`] — flat group membership
+/// - [`ScopeFilter::InGroupSubtree`] — group hierarchy via closure + membership
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopeFilter {
     /// Equality: `property = value`.
     Eq(EqScopeFilter),
     /// Set membership: `property IN (values)`.
     In(InScopeFilter),
+    /// Tenant subtree: `property IN (SELECT descendant_id FROM tenant_closure WHERE ...)`.
+    InTenantSubtree(InTenantSubtreeScopeFilter),
+    /// Group membership: `property IN (SELECT resource_id FROM resource_group_membership WHERE ...)`.
+    InGroup(InGroupScopeFilter),
+    /// Group subtree: `property IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (SELECT descendant_id FROM resource_group_closure WHERE ...))`.
+    InGroupSubtree(InGroupSubtreeScopeFilter),
 }
 
 /// Equality scope filter: `property = value`.
@@ -204,6 +219,139 @@ impl InScopeFilter {
     }
 }
 
+/// Tenant subtree scope filter.
+///
+/// Compiles to: `property IN (SELECT descendant_id FROM tenant_closure WHERE ancestor_id = ? [AND barrier = 0] [AND descendant_status IN (?)])`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InTenantSubtreeScopeFilter {
+    /// Authorization property name (e.g., `pep_properties::OWNER_TENANT_ID`).
+    property: String,
+    /// Root tenant ID for the subtree query.
+    root_tenant_id: Uuid,
+    /// Whether to respect barriers in the closure table.
+    barrier_mode: ScopeBarrierMode,
+    /// Optional tenant status filter (e.g., `["active"]`).
+    tenant_status: Option<Vec<String>>,
+}
+
+impl InTenantSubtreeScopeFilter {
+    /// Create a new tenant subtree scope filter.
+    #[must_use]
+    pub fn new(
+        property: impl Into<String>,
+        root_tenant_id: Uuid,
+        barrier_mode: ScopeBarrierMode,
+        tenant_status: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            property: property.into(),
+            root_tenant_id,
+            barrier_mode,
+            tenant_status,
+        }
+    }
+
+    /// The authorization property name.
+    #[inline]
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// The root tenant ID.
+    #[inline]
+    #[must_use]
+    pub fn root_tenant_id(&self) -> Uuid {
+        self.root_tenant_id
+    }
+
+    /// The barrier enforcement mode.
+    #[inline]
+    #[must_use]
+    pub fn barrier_mode(&self) -> &ScopeBarrierMode {
+        &self.barrier_mode
+    }
+
+    /// Optional tenant status filter.
+    #[inline]
+    #[must_use]
+    pub fn tenant_status(&self) -> Option<&[String]> {
+        self.tenant_status.as_deref()
+    }
+}
+
+/// Group membership scope filter.
+///
+/// Compiles to: `property IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (?))`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InGroupScopeFilter {
+    /// Authorization property name (e.g., `pep_properties::RESOURCE_ID`).
+    property: String,
+    /// Group IDs to check membership against.
+    group_ids: Vec<Uuid>,
+}
+
+impl InGroupScopeFilter {
+    /// Create a new group membership scope filter.
+    #[must_use]
+    pub fn new(property: impl Into<String>, group_ids: Vec<Uuid>) -> Self {
+        Self {
+            property: property.into(),
+            group_ids,
+        }
+    }
+
+    /// The authorization property name.
+    #[inline]
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// The group IDs.
+    #[inline]
+    #[must_use]
+    pub fn group_ids(&self) -> &[Uuid] {
+        &self.group_ids
+    }
+}
+
+/// Group subtree scope filter.
+///
+/// Compiles to: `property IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = ?))`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InGroupSubtreeScopeFilter {
+    /// Authorization property name (e.g., `pep_properties::RESOURCE_ID`).
+    property: String,
+    /// Root group ID for the subtree query.
+    root_group_id: Uuid,
+}
+
+impl InGroupSubtreeScopeFilter {
+    /// Create a new group subtree scope filter.
+    #[must_use]
+    pub fn new(property: impl Into<String>, root_group_id: Uuid) -> Self {
+        Self {
+            property: property.into(),
+            root_group_id,
+        }
+    }
+
+    /// The authorization property name.
+    #[inline]
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// The root group ID.
+    #[inline]
+    #[must_use]
+    pub fn root_group_id(&self) -> Uuid {
+        self.root_group_id
+    }
+}
+
 impl ScopeFilter {
     /// Create an equality filter (`property = value`).
     #[must_use]
@@ -226,23 +374,59 @@ impl ScopeFilter {
         ))
     }
 
+    /// Create a tenant subtree filter.
+    #[must_use]
+    pub fn in_tenant_subtree(
+        property: impl Into<String>,
+        root_tenant_id: Uuid,
+        barrier_mode: ScopeBarrierMode,
+        tenant_status: Option<Vec<String>>,
+    ) -> Self {
+        Self::InTenantSubtree(InTenantSubtreeScopeFilter::new(
+            property,
+            root_tenant_id,
+            barrier_mode,
+            tenant_status,
+        ))
+    }
+
+    /// Create a group membership filter.
+    #[must_use]
+    pub fn in_group(property: impl Into<String>, group_ids: Vec<Uuid>) -> Self {
+        Self::InGroup(InGroupScopeFilter::new(property, group_ids))
+    }
+
+    /// Create a group subtree filter.
+    #[must_use]
+    pub fn in_group_subtree(property: impl Into<String>, root_group_id: Uuid) -> Self {
+        Self::InGroupSubtree(InGroupSubtreeScopeFilter::new(property, root_group_id))
+    }
+
     /// The authorization property name.
     #[must_use]
     pub fn property(&self) -> &str {
         match self {
             Self::Eq(f) => f.property(),
             Self::In(f) => f.property(),
+            Self::InTenantSubtree(f) => f.property(),
+            Self::InGroup(f) => f.property(),
+            Self::InGroupSubtree(f) => f.property(),
         }
     }
 
     /// Collect all values as a slice-like view for iteration.
     ///
     /// For `Eq`, returns a single-element slice; for `In`, returns the values slice.
+    /// Subquery-based filters (`InTenantSubtree`, `InGroup`, `InGroupSubtree`)
+    /// return empty — their values are determined at SQL execution time.
     #[must_use]
     pub fn values(&self) -> ScopeFilterValues<'_> {
         match self {
             Self::Eq(f) => ScopeFilterValues::Single(&f.value),
             Self::In(f) => ScopeFilterValues::Multiple(&f.values),
+            Self::InTenantSubtree(_) | Self::InGroup(_) | Self::InGroupSubtree(_) => {
+                ScopeFilterValues::Multiple(&[])
+            }
         }
     }
 

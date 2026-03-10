@@ -53,10 +53,6 @@ fn unwrap_domain(e: modkit_db::DbError) -> DomainError {
     }
 }
 
-fn scope() -> AccessScope {
-    AccessScope::allow_all()
-}
-
 fn clamp_top(top: Option<i32>) -> i32 {
     match top {
         Some(t) if t < 1 => DEFAULT_TOP,
@@ -115,9 +111,11 @@ where
     pub async fn add_membership(
         &self,
         request: AddMembershipRequest,
+        scope: &AccessScope,
     ) -> Result<ResourceGroupMembership, DomainError> {
         let group_repo = self.group_repo.clone();
         let membership_repo = self.membership_repo.clone();
+        let scope = scope.clone();
 
         let group_id = request.group_id;
         let resource_type = request.resource_type;
@@ -132,7 +130,7 @@ where
 
                     // inst-mbr-add-2: verify group exists and load tenant_id
                     let group = group_repo
-                        .find_by_id(tx, &scope(), group_id)
+                        .find_by_id(tx, &scope, group_id)
                         .await
                         .map_err(d)?
                         .ok_or_else(|| {
@@ -179,9 +177,11 @@ where
     pub async fn remove_membership(
         &self,
         request: RemoveMembershipRequest,
+        scope: &AccessScope,
     ) -> Result<(), DomainError> {
         let group_repo = self.group_repo.clone();
         let membership_repo = self.membership_repo.clone();
+        let scope = scope.clone();
 
         let group_id = request.group_id;
         let resource_type = request.resource_type;
@@ -209,7 +209,7 @@ where
 
                     // inst-mbr-remove-4: load group tenant for scope check
                     let group = group_repo
-                        .find_by_id(tx, &scope(), group_id)
+                        .find_by_id(tx, &scope, group_id)
                         .await
                         .map_err(d)?
                         .ok_or_else(|| d(DomainError::GroupNotFound { id: group_id }))?;
@@ -236,6 +236,7 @@ where
     pub async fn list_memberships(
         &self,
         query: ListQuery,
+        scope: &AccessScope,
     ) -> Result<Page<ResourceGroupMembership>, DomainError> {
         let conn = self.conn()?;
 
@@ -243,9 +244,10 @@ where
         let skip = query.skip.unwrap_or(0).max(0);
 
         // inst-mbr-list-4: query with filter, order, pagination
+        // Membership is scoped via group's tenant_id (JOIN subquery in repo).
         let models = self
             .membership_repo
-            .list_filtered(&conn, query.filter.as_deref(), top, skip)
+            .list_filtered(&conn, scope, query.filter.as_deref(), top, skip)
             .await?;
 
         // inst-mbr-list-5: return page
@@ -262,13 +264,15 @@ where
         &self,
         memberships: Vec<AddMembershipRequest>,
     ) -> Result<(), DomainError> {
+        let seed_scope = AccessScope::allow_all();
+
         // inst-mbr-seed-2: for each membership definition
         for mbr_def in memberships {
             let conn = self.conn()?;
 
             // inst-mbr-seed-2a: verify group exists
             self.group_repo
-                .find_by_id(&conn, &scope(), mbr_def.group_id)
+                .find_by_id(&conn, &seed_scope, mbr_def.group_id)
                 .await?
                 .ok_or(
                     // inst-mbr-seed-2b: group not found — abort

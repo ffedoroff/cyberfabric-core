@@ -13,7 +13,7 @@ impl AuthZResolverPluginClient for Service {
         &self,
         request: EvaluationRequest,
     ) -> Result<EvaluationResponse, AuthZResolverError> {
-        Ok(self.evaluate(&request))
+        Ok(self.evaluate(&request).await)
     }
 }
 

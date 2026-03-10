@@ -18,9 +18,9 @@
 //! `require_constraints=true`, empty constraints are an error (fail-closed).
 //! If the PDP returns constraints regardless of the flag, they are compiled.
 
-use modkit_security::{AccessScope, ScopeConstraint, ScopeFilter, ScopeValue};
+use modkit_security::{AccessScope, ScopeBarrierMode, ScopeConstraint, ScopeFilter, ScopeValue};
 
-use crate::constraints::{Constraint, Predicate};
+use crate::constraints::{Constraint, Predicate, PredicateBarrierMode};
 use crate::models::EvaluationResponse;
 
 /// Error during constraint compilation.
@@ -128,6 +128,29 @@ fn compile_constraint(
                     .collect::<Result<_, _>>()?;
                 (p.property.as_str(), ScopeFilter::r#in(&p.property, values))
             }
+            Predicate::InTenantSubtree(p) => {
+                let barrier_mode = match p.barrier_mode {
+                    PredicateBarrierMode::Respect => ScopeBarrierMode::Respect,
+                    PredicateBarrierMode::Ignore => ScopeBarrierMode::Ignore,
+                };
+                (
+                    p.property.as_str(),
+                    ScopeFilter::in_tenant_subtree(
+                        &p.property,
+                        p.root_tenant_id,
+                        barrier_mode,
+                        p.tenant_status.clone(),
+                    ),
+                )
+            }
+            Predicate::InGroup(p) => (
+                p.property.as_str(),
+                ScopeFilter::in_group(&p.property, p.group_ids.clone()),
+            ),
+            Predicate::InGroupSubtree(p) => (
+                p.property.as_str(),
+                ScopeFilter::in_group_subtree(&p.property, p.root_group_id),
+            ),
         };
 
         if !supported_properties.contains(&property) {
@@ -479,6 +502,135 @@ mod tests {
         // First constraint has 2 filters (AND), second has 1 filter
         assert_eq!(scope.constraints()[0].filters().len(), 2);
         assert_eq!(scope.constraints()[1].filters().len(), 1);
+    }
+
+    // === New predicate type compilation ===
+
+    #[test]
+    fn in_tenant_subtree_compiles_to_scope_filter() {
+        use crate::constraints::InTenantSubtreePredicate;
+
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::InTenantSubtree(
+                        InTenantSubtreePredicate::new(pep_properties::OWNER_TENANT_ID, uuid(T1))
+                            .tenant_status(vec!["active".to_owned()]),
+                    )],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        assert_eq!(scope.constraints().len(), 1);
+        let filter = &scope.constraints()[0].filters()[0];
+        assert!(matches!(filter, ScopeFilter::InTenantSubtree(_)));
+        assert_eq!(filter.property(), pep_properties::OWNER_TENANT_ID);
+    }
+
+    #[test]
+    fn in_group_compiles_to_scope_filter() {
+        use crate::constraints::InGroupPredicate;
+
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::InGroup(InGroupPredicate::new(
+                        pep_properties::RESOURCE_ID,
+                        vec![uuid(T1), uuid(T2)],
+                    ))],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        let filter = &scope.constraints()[0].filters()[0];
+        assert!(matches!(filter, ScopeFilter::InGroup(_)));
+        assert_eq!(filter.property(), pep_properties::RESOURCE_ID);
+    }
+
+    #[test]
+    fn in_group_subtree_compiles_to_scope_filter() {
+        use crate::constraints::InGroupSubtreePredicate;
+
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::InGroupSubtree(InGroupSubtreePredicate::new(
+                        pep_properties::RESOURCE_ID,
+                        uuid(R1),
+                    ))],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        let filter = &scope.constraints()[0].filters()[0];
+        assert!(matches!(filter, ScopeFilter::InGroupSubtree(_)));
+    }
+
+    #[test]
+    fn mixed_old_and_new_predicates_compile() {
+        use crate::constraints::InTenantSubtreePredicate;
+
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![
+                        Predicate::InTenantSubtree(InTenantSubtreePredicate::new(
+                            pep_properties::OWNER_TENANT_ID,
+                            uuid(T1),
+                        )),
+                        Predicate::Eq(EqPredicate {
+                            property: pep_properties::RESOURCE_ID.to_owned(),
+                            value: jid(R1),
+                        }),
+                    ],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        assert_eq!(scope.constraints()[0].filters().len(), 2);
+        assert!(matches!(
+            &scope.constraints()[0].filters()[0],
+            ScopeFilter::InTenantSubtree(_)
+        ));
+        assert!(matches!(
+            &scope.constraints()[0].filters()[1],
+            ScopeFilter::Eq(_)
+        ));
+    }
+
+    #[test]
+    fn new_predicate_unsupported_property_fails() {
+        use crate::constraints::InTenantSubtreePredicate;
+
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::InTenantSubtree(
+                        InTenantSubtreePredicate::new("unknown_prop", uuid(T1)),
+                    )],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let result = compile_to_access_scope(&response, true, DEFAULT_PROPS);
+        assert!(matches!(
+            result,
+            Err(ConstraintCompileError::AllConstraintsFailed { .. })
+        ));
     }
 
     #[test]

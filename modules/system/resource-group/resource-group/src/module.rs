@@ -6,6 +6,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
 use modkit::api::OpenApiRegistry;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
 use resource_group_sdk::{ResourceGroupClient, ResourceGroupReadHierarchy};
@@ -25,6 +26,7 @@ use crate::domain::service::RgService;
 /// has completed its init.
 #[modkit::module(
     name = "resource-group",
+    deps = ["authz-resolver"],
     capabilities = [db, rest],
 )]
 pub struct ResourceGroupModule {
@@ -59,10 +61,17 @@ impl Module for ResourceGroupModule {
         let db = Arc::new(ctx.db_required()?);
         // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-2
 
+        // Resolve AuthZ resolver for PolicyEnforcer (PEP flow)
+        let authz = ctx
+            .client_hub()
+            .get::<dyn AuthZResolverClient>()
+            .map_err(|e| anyhow::anyhow!("failed to get AuthZ resolver: {e}"))?;
+        let enforcer = PolicyEnforcer::new(authz);
+
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3
         // @cpt-begin:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
         // @cpt-begin:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
-        let svc = Arc::new(RgService::new(db, cfg.max_depth, cfg.max_width));
+        let svc = Arc::new(RgService::new(db, cfg.max_depth, cfg.max_width, enforcer));
         // @cpt-end:cpt-cf-resource-group-flow-module-bootstrap:p1:inst-bootstrap-3b
         // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-4
         // @cpt-end:cpt-cf-resource-group-algo-phased-init:p1:inst-init-3

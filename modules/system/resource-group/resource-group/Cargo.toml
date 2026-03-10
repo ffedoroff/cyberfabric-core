@@ -55,3 +55,6 @@ modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-odata = { workspace = true, features = ["with-utoipa"] }
+
+[dev-dependencies]
+static-authz-plugin = { package = "cf-static-authz-plugin", path = "../../authz-resolver/plugins/static-authz-plugin" }

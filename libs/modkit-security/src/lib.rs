@@ -6,7 +6,8 @@ pub mod context;
 pub mod prelude;
 
 pub use access_scope::{
-    AccessScope, EqScopeFilter, InScopeFilter, ScopeConstraint, ScopeFilter, ScopeValue,
+    AccessScope, EqScopeFilter, InGroupScopeFilter, InGroupSubtreeScopeFilter, InScopeFilter,
+    InTenantSubtreeScopeFilter, ScopeBarrierMode, ScopeConstraint, ScopeFilter, ScopeValue,
     pep_properties,
 };
 pub use context::{SecurityContext, SecurityContextBuildError};

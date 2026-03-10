@@ -54,6 +54,10 @@ pub enum ResourceGroupError {
     #[error("Tenant incompatibility: {message}")]
     TenantIncompatibility { message: String },
 
+    /// Access denied by authorization policy.
+    #[error("Forbidden")]
+    Forbidden,
+
     /// Infrastructure timeout or service unavailability.
     #[error("Service unavailable")]
     ServiceUnavailable,

@@ -67,6 +67,29 @@ impl From<modkit_db::DbError> for DomainError {
     }
 }
 
+impl From<authz_resolver_sdk::EnforcerError> for DomainError {
+    fn from(e: authz_resolver_sdk::EnforcerError) -> Self {
+        match e {
+            authz_resolver_sdk::EnforcerError::Denied { ref deny_reason } => {
+                tracing::warn!(deny_reason = ?deny_reason, "AuthZ denied access");
+                Self::Forbidden
+            }
+            authz_resolver_sdk::EnforcerError::CompileFailed(ref err) => {
+                tracing::error!(error = %err, "AuthZ constraint compile failed");
+                Self::Database {
+                    message: format!("authorization constraint compilation failed: {err}"),
+                }
+            }
+            authz_resolver_sdk::EnforcerError::EvaluationFailed(ref err) => {
+                tracing::error!(error = %err, "AuthZ evaluation failed");
+                Self::Database {
+                    message: format!("authorization service unavailable: {err}"),
+                }
+            }
+        }
+    }
+}
+
 impl DomainError {
     pub fn validation(message: impl Into<String>) -> Self {
         Self::Validation {
@@ -153,7 +176,8 @@ impl From<DomainError> for ResourceGroupError {
             }
             // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-9
             // @cpt-begin:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-11
-            DomainError::Database { .. } | DomainError::Forbidden => ResourceGroupError::Internal,
+            DomainError::Forbidden => ResourceGroupError::Forbidden,
+            DomainError::Database { .. } => ResourceGroupError::Internal,
             // @cpt-end:cpt-cf-resource-group-algo-error-mapping:p1:inst-errmap-11
         }
     }

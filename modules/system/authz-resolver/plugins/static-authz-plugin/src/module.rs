@@ -8,6 +8,7 @@ use modkit::Module;
 use modkit::client_hub::ClientScope;
 use modkit::context::ModuleCtx;
 use modkit::gts::BaseModkitPluginV1;
+use resource_group_sdk::ResourceGroupReadHierarchy;
 use tracing::info;
 use types_registry_sdk::{RegisterResult, TypesRegistryClient};
 
@@ -15,9 +16,12 @@ use crate::config::StaticAuthZPluginConfig;
 use crate::domain::Service;
 
 /// Static `AuthZ` resolver plugin module.
+///
+/// Depends on `resource-group` to access group hierarchy for group-aware authorization.
+/// Init order: `types-registry` → `authz-resolver` → `resource-group` → `static-authz-plugin`.
 #[modkit::module(
     name = "static-authz-plugin",
-    deps = ["types-registry"]
+    deps = ["types-registry", "resource-group"]
 )]
 pub struct StaticAuthZPlugin {
     service: OnceLock<Arc<Service>>,
@@ -59,8 +63,16 @@ impl Module for StaticAuthZPlugin {
         let results = registry.register(vec![instance_json]).await?;
         RegisterResult::ensure_all_ok(&results)?;
 
-        // Create service
-        let service = Arc::new(Service::new());
+        // Resolve ResourceGroupReadHierarchy for group-aware authorization
+        let hierarchy = ctx
+            .client_hub()
+            .get::<dyn ResourceGroupReadHierarchy>()
+            .map_err(|e| {
+                anyhow::anyhow!("failed to get ResourceGroupReadHierarchy: {e}")
+            })?;
+
+        // Create service with hierarchy client
+        let service = Arc::new(Service::with_hierarchy(hierarchy));
         self.service
             .set(service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
@@ -73,7 +85,7 @@ impl Module for StaticAuthZPlugin {
                 api,
             );
 
-        info!(instance_id = %instance_id);
+        info!(instance_id = %instance_id, "Static AuthZ plugin initialized with RG hierarchy");
         Ok(())
     }
 }

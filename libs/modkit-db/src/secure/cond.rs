@@ -1,7 +1,8 @@
 use sea_orm::{ColumnTrait, Condition, EntityTrait, sea_query::Expr};
+use sea_orm::sea_query::{Alias, IntoColumnRef, Query};
 
 use crate::secure::{AccessScope, ScopableEntity};
-use modkit_security::access_scope::{ScopeConstraint, ScopeFilter, ScopeValue};
+use modkit_security::access_scope::{ScopeBarrierMode, ScopeConstraint, ScopeFilter, ScopeValue};
 
 /// Convert a [`ScopeValue`] to a `sea_query::SimpleExpr` for SQL binding.
 fn scope_value_to_sea_expr(v: &ScopeValue) -> sea_orm::sea_query::SimpleExpr {
@@ -102,9 +103,84 @@ where
                 let sea_values = scope_values_to_sea_values(inf.values());
                 and_cond = and_cond.add(col.is_in(sea_values));
             }
+            ScopeFilter::InTenantSubtree(f) => {
+                and_cond = and_cond.add(
+                    Expr::col(col.into_column_ref()).in_subquery(
+                        build_tenant_subtree_subquery(
+                            f.root_tenant_id(),
+                            f.barrier_mode(),
+                            f.tenant_status(),
+                        ),
+                    ),
+                );
+            }
+            ScopeFilter::InGroup(f) => {
+                and_cond = and_cond.add(
+                    Expr::col(col.into_column_ref())
+                        .in_subquery(build_group_membership_subquery(f.group_ids())),
+                );
+            }
+            ScopeFilter::InGroupSubtree(f) => {
+                and_cond = and_cond.add(
+                    Expr::col(col.into_column_ref())
+                        .in_subquery(build_group_subtree_subquery(f.root_group_id())),
+                );
+            }
         }
     }
     Some(and_cond)
+}
+
+/// Build subquery: `SELECT descendant_id FROM tenant_closure WHERE ancestor_id = ? [AND barrier = 0] [AND descendant_status IN (?)]`.
+fn build_tenant_subtree_subquery(
+    root_tenant_id: uuid::Uuid,
+    barrier_mode: &ScopeBarrierMode,
+    tenant_status: Option<&[String]>,
+) -> sea_orm::sea_query::SelectStatement {
+    let mut q = Query::select();
+    q.column(Alias::new("descendant_id"))
+        .from(Alias::new("tenant_closure"))
+        .and_where(Expr::col(Alias::new("ancestor_id")).eq(root_tenant_id));
+
+    if *barrier_mode == ScopeBarrierMode::Respect {
+        q.and_where(Expr::col(Alias::new("barrier")).eq(0));
+    }
+
+    if let Some(statuses) = tenant_status {
+        let values: Vec<sea_orm::Value> = statuses.iter().map(|s| s.clone().into()).collect();
+        q.and_where(Expr::col(Alias::new("descendant_status")).is_in(values));
+    }
+
+    q.to_owned()
+}
+
+/// Build subquery: `SELECT resource_id FROM resource_group_membership WHERE group_id IN (?)`.
+fn build_group_membership_subquery(
+    group_ids: &[uuid::Uuid],
+) -> sea_orm::sea_query::SelectStatement {
+    let values: Vec<sea_orm::Value> = group_ids.iter().map(|id| (*id).into()).collect();
+    Query::select()
+        .column(Alias::new("resource_id"))
+        .from(Alias::new("resource_group_membership"))
+        .and_where(Expr::col(Alias::new("group_id")).is_in(values))
+        .to_owned()
+}
+
+/// Build subquery: `SELECT resource_id FROM resource_group_membership WHERE group_id IN (SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = ?)`.
+fn build_group_subtree_subquery(
+    root_group_id: uuid::Uuid,
+) -> sea_orm::sea_query::SelectStatement {
+    let inner = Query::select()
+        .column(Alias::new("descendant_id"))
+        .from(Alias::new("resource_group_closure"))
+        .and_where(Expr::col(Alias::new("ancestor_id")).eq(root_group_id))
+        .to_owned();
+
+    Query::select()
+        .column(Alias::new("resource_id"))
+        .from(Alias::new("resource_group_membership"))
+        .and_where(Expr::col(Alias::new("group_id")).in_subquery(inner))
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -264,6 +340,131 @@ mod tests {
         assert!(
             !cond_str.contains("Value(Bool(Some(false)))"),
             "Expected a real condition, got deny-all: {cond_str}"
+        );
+    }
+
+    // --- Subquery scope filter tests ---
+
+    #[test]
+    fn test_in_tenant_subtree_produces_subquery_condition() {
+        use modkit_security::access_scope::ScopeBarrierMode;
+
+        let tid = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_tenant_subtree(
+                pep_properties::OWNER_TENANT_ID,
+                tid,
+                ScopeBarrierMode::Respect,
+                Some(vec!["active".to_owned()]),
+            ),
+        ])]);
+
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        // Should NOT be deny-all — property resolves successfully
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "Expected subquery condition, got deny-all: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_in_tenant_subtree_ignore_barrier() {
+        use modkit_security::access_scope::ScopeBarrierMode;
+
+        let tid = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_tenant_subtree(
+                pep_properties::OWNER_TENANT_ID,
+                tid,
+                ScopeBarrierMode::Ignore,
+                None,
+            ),
+        ])]);
+
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "Expected subquery condition, got deny-all: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_in_group_produces_subquery_condition() {
+        let g1 = uuid::Uuid::new_v4();
+        let g2 = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_group(pep_properties::RESOURCE_ID, vec![g1, g2]),
+        ])]);
+
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "Expected subquery condition, got deny-all: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_in_group_subtree_produces_subquery_condition() {
+        let gid = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_group_subtree(pep_properties::RESOURCE_ID, gid),
+        ])]);
+
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "Expected subquery condition, got deny-all: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_combined_tenant_subtree_and_group() {
+        use modkit_security::access_scope::ScopeBarrierMode;
+
+        let tid = uuid::Uuid::new_v4();
+        let gid = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_tenant_subtree(
+                pep_properties::OWNER_TENANT_ID,
+                tid,
+                ScopeBarrierMode::Respect,
+                None,
+            ),
+            ScopeFilter::in_group(pep_properties::RESOURCE_ID, vec![gid]),
+        ])]);
+
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        // Both filters should resolve — combined AND
+        assert!(
+            !cond_str.contains("Value(Bool(Some(false)))"),
+            "Expected combined condition, got deny-all: {cond_str}"
+        );
+    }
+
+    #[test]
+    fn test_subquery_with_unknown_property_deny_all() {
+        use modkit_security::access_scope::ScopeBarrierMode;
+
+        let tid = uuid::Uuid::new_v4();
+        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
+            ScopeFilter::in_tenant_subtree(
+                "nonexistent_prop",
+                tid,
+                ScopeBarrierMode::Respect,
+                None,
+            ),
+        ])]);
+
+        let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
+        let cond_str = format!("{cond:?}");
+        assert!(
+            cond_str.contains("Value(Bool(Some(false)))"),
+            "Expected deny-all for unknown property, got: {cond_str}"
         );
     }
 }

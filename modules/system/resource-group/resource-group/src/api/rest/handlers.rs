@@ -334,6 +334,7 @@ impl DomainError {
             ResourceGroupError::TenantIncompatibility { message } => {
                 DomainError::TenantIncompatibility { message }
             }
+            ResourceGroupError::Forbidden => DomainError::Forbidden,
             ResourceGroupError::ServiceUnavailable | ResourceGroupError::Internal => {
                 DomainError::database("Internal error")
             }

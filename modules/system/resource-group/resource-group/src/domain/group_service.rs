@@ -69,10 +69,6 @@ fn unwrap_domain(e: modkit_db::DbError) -> DomainError {
     }
 }
 
-fn scope() -> AccessScope {
-    AccessScope::allow_all()
-}
-
 fn clamp_top(top: Option<i32>) -> i32 {
     match top {
         Some(t) if t < 1 => DEFAULT_TOP,
@@ -153,6 +149,7 @@ async fn enforce_profile<C: DBRunner>(
     group_repo: &impl GroupRepository,
     conn: &C,
     parent_id: Option<Uuid>,
+    scope: &AccessScope,
 ) -> Result<(), DomainError> {
     // inst-profile-2: check max_depth
     if let Some(max_d) = max_depth {
@@ -180,7 +177,7 @@ async fn enforce_profile<C: DBRunner>(
     if let (Some(max_w), Some(pid)) = (max_width, parent_id) {
         // inst-profile-3a: count direct children of target parent
         let current_children = group_repo
-            .count_children(conn, &scope(), pid)
+            .count_children(conn, scope, pid)
             .await?;
         // inst-profile-3b: check if exceeds limit
         let new_width = current_children.saturating_add(1);
@@ -251,6 +248,7 @@ async fn force_delete_cascade<C: DBRunner>(
     group_repo: &impl GroupRepository,
     conn: &C,
     group_id: Uuid,
+    scope: &AccessScope,
 ) -> Result<(), DomainError> {
     // inst-force-1: get subtree nodes, deepest first
     let mut subtree = closure_repo.find_descendants(conn, group_id).await?;
@@ -266,7 +264,7 @@ async fn force_delete_cascade<C: DBRunner>(
         // inst-force-2b: delete all closure rows
         closure_repo.delete_all_for_node(conn, node_id).await?;
         // inst-force-2c: delete the group
-        group_repo.delete(conn, &scope(), node_id).await?;
+        group_repo.delete(conn, scope, node_id).await?;
     }
 
     // inst-force-3: cascade complete
@@ -314,12 +312,14 @@ where
     pub async fn create_group(
         &self,
         request: CreateGroupRequest,
+        scope: &AccessScope,
     ) -> Result<ResourceGroup, DomainError> {
         let type_repo = self.type_repo.clone();
         let group_repo = self.group_repo.clone();
         let closure_repo = self.closure_repo.clone();
         let max_depth = self.max_depth;
         let max_width = self.max_width;
+        let scope = scope.clone();
 
         let group_type = request.group_type;
         let name = request.name;
@@ -350,7 +350,7 @@ where
                     if let Some(pid) = parent_id {
                         // inst-grp-create-5a: load parent
                         let parent = group_repo
-                            .find_by_id(tx, &scope(), pid)
+                            .find_by_id(tx, &scope, pid)
                             .await
                             .map_err(d)?
                             .ok_or_else(|| {
@@ -374,6 +374,7 @@ where
                             &group_repo,
                             tx,
                             Some(pid),
+                            &scope,
                         )
                         .await
                         .map_err(d)?;
@@ -401,7 +402,7 @@ where
                         modified: ActiveValue::NotSet,
                     };
                     let model = group_repo
-                        .insert(tx, &scope(), active)
+                        .insert(tx, &scope, active)
                         .await
                         .map_err(d)?;
 
@@ -441,13 +442,17 @@ where
     // @cpt-end:cpt-cf-resource-group-flow-group-create:p1:inst-grp-create-1
 
     // @cpt-begin:cpt-cf-resource-group-flow-group-get:p2:inst-grp-get-1
-    pub async fn get_group(&self, group_id: Uuid) -> Result<ResourceGroup, DomainError> {
+    pub async fn get_group(
+        &self,
+        group_id: Uuid,
+        scope: &AccessScope,
+    ) -> Result<ResourceGroup, DomainError> {
         let conn = self.conn()?;
 
         // inst-grp-get-2: select by id
         let model = self
             .group_repo
-            .find_by_id(&conn, &scope(), group_id)
+            .find_by_id(&conn, scope, group_id)
             .await?
             // inst-grp-get-4a: not found
             .ok_or(DomainError::GroupNotFound { id: group_id })?;
@@ -461,6 +466,7 @@ where
     pub async fn list_groups(
         &self,
         query: ListQuery,
+        scope: &AccessScope,
     ) -> Result<Page<ResourceGroup>, DomainError> {
         let conn = self.conn()?;
 
@@ -470,7 +476,7 @@ where
         // inst-grp-list-4: query with filter, order, pagination
         let models = self
             .group_repo
-            .list_filtered(&conn, &scope(), query.filter.as_deref(), top, skip)
+            .list_filtered(&conn, scope, query.filter.as_deref(), top, skip)
             .await?;
 
         // inst-grp-list-5: return page
@@ -487,12 +493,14 @@ where
         &self,
         group_id: Uuid,
         request: UpdateGroupRequest,
+        scope: &AccessScope,
     ) -> Result<ResourceGroup, DomainError> {
         let type_repo = self.type_repo.clone();
         let group_repo = self.group_repo.clone();
         let closure_repo = self.closure_repo.clone();
         let max_depth = self.max_depth;
         let max_width = self.max_width;
+        let scope = scope.clone();
 
         let new_group_type = request.group_type;
         let new_name = request.name;
@@ -508,7 +516,7 @@ where
 
                     // inst-grp-update-3: load current group
                     let current = group_repo
-                        .find_by_id(tx, &scope(), group_id)
+                        .find_by_id(tx, &scope, group_id)
                         .await
                         .map_err(d)?
                         .ok_or_else(|| {
@@ -541,7 +549,7 @@ where
                         if let Some(pid) = effective_parent_id {
                             // inst-grp-update-6a1: load new/current parent
                             let parent = group_repo
-                                .find_by_id(tx, &scope(), pid)
+                                .find_by_id(tx, &scope, pid)
                                 .await
                                 .map_err(d)?
                                 .ok_or_else(|| {
@@ -583,6 +591,7 @@ where
                                 &group_repo,
                                 tx,
                                 Some(new_pid),
+                                &scope,
                             )
                             .await
                             .map_err(d)?;
@@ -606,7 +615,7 @@ where
                         modified: ActiveValue::Set(Some(OffsetDateTime::now_utc())),
                     };
                     let updated = group_repo
-                        .update(tx, &scope(), group_id, active)
+                        .update(tx, &scope, group_id, active)
                         .await
                         .map_err(d)?;
 
@@ -627,10 +636,12 @@ where
         &self,
         group_id: Uuid,
         force: bool,
+        scope: &AccessScope,
     ) -> Result<(), DomainError> {
         let group_repo = self.group_repo.clone();
         let closure_repo = self.closure_repo.clone();
         let membership_repo = self.membership_repo.clone();
+        let scope = scope.clone();
 
         // inst-grp-delete-2: transaction
         self.db
@@ -640,7 +651,7 @@ where
 
                     // inst-grp-delete-3: verify existence
                     group_repo
-                        .find_by_id(tx, &scope(), group_id)
+                        .find_by_id(tx, &scope, group_id)
                         .await
                         .map_err(d)?
                         .ok_or_else(|| {
@@ -656,13 +667,14 @@ where
                             &group_repo,
                             tx,
                             group_id,
+                            &scope,
                         )
                         .await
                         .map_err(d)?;
                     } else {
                         // inst-grp-delete-5a: count children
                         let children = group_repo
-                            .count_children(tx, &scope(), group_id)
+                            .count_children(tx, &scope, group_id)
                             .await
                             .map_err(d)?;
                         // inst-grp-delete-5b: count memberships
@@ -690,7 +702,7 @@ where
 
                         // inst-grp-delete-5e: delete group
                         group_repo
-                            .delete(tx, &scope(), group_id)
+                            .delete(tx, &scope, group_id)
                             .await
                             .map_err(d)?;
                     }
@@ -710,12 +722,13 @@ where
         &self,
         group_id: Uuid,
         query: ListQuery,
+        scope: &AccessScope,
     ) -> Result<Page<ResourceGroupWithDepth>, DomainError> {
         let conn = self.conn()?;
 
         // inst-grp-depth-2: verify reference group exists
         self.group_repo
-            .find_by_id(&conn, &scope(), group_id)
+            .find_by_id(&conn, scope, group_id)
             .await?
             .ok_or(DomainError::GroupNotFound { id: group_id })?;
 
@@ -767,7 +780,7 @@ where
         for (gid, depth) in page_entries {
             if let Some(model) = self
                 .group_repo
-                .find_by_id(&conn, &scope(), gid)
+                .find_by_id(&conn, scope, gid)
                 .await?
             {
                 items.push(to_sdk_group_with_depth(&model, depth));
@@ -787,6 +800,8 @@ where
         &self,
         groups: Vec<CreateGroupRequest>,
     ) -> Result<(), DomainError> {
+        let seed_scope = AccessScope::allow_all();
+
         // inst-grp-seed-2: for each group definition (ordered by dependency)
         for group_def in groups {
             let conn = self.conn()?;
@@ -805,7 +820,7 @@ where
             if let Some(pid) = group_def.parent_id {
                 let parent = self
                     .group_repo
-                    .find_by_id(&conn, &scope(), pid)
+                    .find_by_id(&conn, &seed_scope, pid)
                     .await?
                     .ok_or(DomainError::GroupNotFound { id: pid })?;
 
@@ -825,12 +840,12 @@ where
             // inst-grp-seed-2d: upsert group
             let existing = self
                 .group_repo
-                .find_by_id(&conn, &scope(), group_def.tenant_id)
+                .find_by_id(&conn, &seed_scope, group_def.tenant_id)
                 .await?;
 
             if existing.is_none() {
                 // Create new group via the standard create flow
-                self.create_group(group_def).await?;
+                self.create_group(group_def, &seed_scope).await?;
             }
         }
 
