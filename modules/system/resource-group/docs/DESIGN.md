@@ -1395,11 +1395,11 @@ Test dataset: 100K groups, 200K memberships, 359K closure rows:
 
 | Table | Rows | Data | Indexes+TOAST | Total | Avg Row |
 |---|---|---|---|---|---|
-| `resource_group` | 100,000 | 11 MB | 17 MB | **28 MB** | 112 B |
+| `resource_group` | 100,000 | 11 MB | 20 MB | **31 MB** | 112 B |
 | `resource_group_closure` | 359,400 | 23 MB | 36 MB | **60 MB** | 68 B |
 | `resource_group_membership` | 200,000 | 14 MB | 30 MB | **44 MB** | 73 B |
 | `resource_group_type` | 20 | 8 KB | 40 KB | **48 KB** | 409 B |
-| **Total** | — | **48 MB** | **83 MB** | **131 MB** | — |
+| **Total** | — | **48 MB** | **86 MB** | **135 MB** | — |
 
 #### Column Widths (avg bytes, measured via pg_stats in test environment)
 
@@ -1415,11 +1415,11 @@ Assumptions: **1.5M tenants**, **303.5M users** (1–2 memberships each → ~455
 
 | Table | Rows | Data | Indexes | Total | % |
 |---|---|---|---|---|---|
-| `resource_group_membership` | 455M | 33.2 GB | 68.3 GB | **101.5 GB** | 95.5% |
+| `resource_group_membership` | 455M | 33.2 GB | 68.3 GB | **101.5 GB** | 95.3% |
 | `resource_group_closure` | 18M | 1.15 GB | 1.80 GB | **2.95 GB** | 2.8% |
-| `resource_group` | 5M | 560 MB | 850 MB | **1.4 GB** | 1.3% |
+| `resource_group` | 5M | 560 MB | 1.0 GB | **1.6 GB** | 1.5% |
 | `resource_group_type` | ~50 | ~8 KB | ~32 KB | **~40 KB** | ~0% |
-| **Total** | — | **~35 GB** | **~71 GB** | **~106 GB** | — |
+| **Total** | — | **~35 GB** | **~71.1 GB** | **~106.1 GB** | — |
 
 Index-to-data ratio: **2.03×** (reasonable for btree-only indexes with UUID keys; higher ratio reflects compact data rows relative to multi-column index entries).
 

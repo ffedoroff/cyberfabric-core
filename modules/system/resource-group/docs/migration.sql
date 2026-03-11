@@ -53,6 +53,10 @@ CREATE INDEX idx_rg_external_id
 CREATE INDEX idx_rg_group_type
     ON resource_group (group_type, id);
 
+-- tenant_id: SecureORM injects WHERE tenant_id IN (...) on every query via AccessScope
+CREATE INDEX idx_rg_tenant_id
+    ON resource_group (tenant_id);
+
 COMMENT ON TABLE resource_group
     IS 'Hierarchical resource groups with closure table pattern for efficient ancestor/descendant queries';
 COMMENT ON COLUMN resource_group.parent_id
