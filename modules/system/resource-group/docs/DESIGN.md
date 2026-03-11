@@ -1430,6 +1430,248 @@ Index-to-data ratio: **2.03×** (reasonable for btree-only indexes with UUID key
 3. **Memory requirements** — minimum 24 GB RAM (shared_buffers 6 GB), recommended 48 GB RAM (shared_buffers 12 GB) to keep hot indexes in memory.
 4. **Partitioning candidate** — `resource_group_membership`: 455M rows, ~101.5 GB. Tenant scope is derived via `group_id` FK (not stored directly), so tenant-based partitioning would require adding a denormalized `tenant_id` column or using hash partitioning by `group_id`. Strategy needs evaluation (see PRD open questions).
 
+### 4.2 Testing Architecture
+
+#### Testing Levels
+
+| Level | Database | Network | What is real | What is mocked |
+|---|---|---|---|---|
+| **Unit** | No DB — in-memory trait mocks | No network | Domain services, invariant logic, error mapping | All repositories (trait-based `InMemory*` impls) |
+| **Integration** | Real PostgreSQL (testcontainers, per-test tx rollback) | No network — direct repo calls | Repositories, closure table SQL, SecureORM tenant scoping, indexes, constraints | Nothing DB-related; no HTTP layer |
+| **API** | Real PostgreSQL (testcontainers) | No real network — `Router::oneshot()` (in-process HTTP simulation) | REST handlers, OData parsing, domain services, DB | `PolicyEnforcer` / `AuthZResolverClient` (mock Allow/Deny) |
+| **E2E** | Real PostgreSQL (Docker or hosted) | Real HTTP via `httpx` to running `hyperspot-server` | Everything: AuthZ, DB, network, auth modes | Nothing — full production-like stack |
+
+#### Level 1: Unit Tests (Domain Layer)
+
+Unit tests verify domain invariants and service logic in isolation from the database. All repository dependencies are mocked via trait implementations.
+
+**Infrastructure**: none (in-process only).
+
+**Test support module** (`src/domain/test_support.rs`), following the pattern established by `oagw` and `credstore`:
+
+| Mock | Purpose | Pattern |
+|------|---------|---------|
+| `InMemoryTypeRepository` | HashMap-backed store keyed by `code` | returns / rejects on demand |
+| `InMemoryEntityRepository` | HashMap-backed store keyed by `id` | seed via `with_entities(vec![...])` |
+| `InMemoryClosureRepository` | Vec-backed closure rows | seed via `with_closure(vec![...])` |
+| `InMemoryMembershipRepository` | Vec-backed membership links | seed via `with_memberships(vec![...])` |
+
+Test builder:
+
+```rust
+RgTestHarness::unit()
+    .with_types(vec![type_tenant, type_department])
+    .with_entities(vec![root_t1, dept_d1])
+    .with_closure(vec![/* self-rows + ancestor rows */])
+    .with_query_profile(Some(10), None)
+    .build()  // → (TypeService, EntityService, HierarchyService, MembershipService)
+```
+
+| What to test | What is mocked | Verification target |
+|---|---|---|
+| Type code validation (length, whitespace, case) | `InMemoryTypeRepository` | `Validation` error returned for invalid codes |
+| Type uniqueness on create | `InMemoryTypeRepository` pre-seeded with existing code | `TypeAlreadyExists` error returned |
+| `allowed_parents` update vs existing hierarchy | `InMemoryTypeRepository` + `InMemoryEntityRepository` | `AllowedParentsViolation` when groups would break new rules |
+| `can_be_root` removal vs existing root groups | `InMemoryTypeRepository` + `InMemoryEntityRepository` | `AllowedParentsViolation` when root groups exist |
+| Type delete-if-unused guard | `InMemoryTypeRepository` + `InMemoryEntityRepository` with matching type | `ConflictActiveReferences` when entities exist |
+| Cycle detection in entity create/move | `InMemoryClosureRepository` with ancestor chain | `CycleDetected` when target is descendant |
+| Self-parent rejection | `InMemoryEntityRepository` | `CycleDetected` for `parent_id == id` |
+| Parent type compatibility | `InMemoryTypeRepository` + `InMemoryEntityRepository` | `InvalidParentType` when parent type not in `allowed_parents` |
+| Depth limit enforcement | `InMemoryClosureRepository` + profile `max_depth=3` | `LimitViolation` at depth 4 |
+| Width limit enforcement | `InMemoryClosureRepository` + profile `max_width=N` | `LimitViolation` when exceeding |
+| Membership add — group does not exist | `InMemoryEntityRepository` empty | `NotFound` |
+| Membership add — duplicate composite key | `InMemoryMembershipRepository` pre-seeded | `Conflict` |
+| Delete entity — active children | `InMemoryClosureRepository` with descendants | `ConflictActiveReferences` |
+| Delete entity — active memberships | `InMemoryMembershipRepository` with links | `ConflictActiveReferences` |
+| Error mapper — all domain→SDK error variants | No mocks | Direct `From` impl test per variant, 100% coverage |
+| Reduced constraints — tightened profile, stored data exceeds | `InMemoryClosureRepository` with deep tree | Reads return full data; violating writes rejected |
+
+#### Level 2: Integration Tests (Persistence Layer)
+
+Integration tests verify SQL correctness, closure table integrity, transactional behavior, and SecureORM tenant isolation against a real database.
+
+**Infrastructure**: PostgreSQL via `testcontainers` (pattern from `modkit-db/tests/common.rs` — `bring_up_postgres()`).
+
+**Schema setup**: модуль реализует `DatabaseCapability` trait с `fn migrations()`, возвращающим список `MigrationTrait`. В тестах схема применяется через `run_migrations_for_testing(db, migrations)` (из `modkit-db`), что использует специальный префикс `"_test"` для таблицы истории миграций. Миграции описываются в `src/infra/storage/migrations/mod.rs` — структура `Migrator` реализует `MigratorTrait` и перечисляет миграции в хронологическом порядке. Каждая миграция использует сырой SQL (`POSTGRES_UP` / `POSTGRES_DOWN` константы) внутри `exec_stmt()`.
+
+```rust
+// Паттерн инициализации БД в интеграционных тестах
+let db = bring_up_postgres().await;
+run_migrations_for_testing(&db, Migrator::migrations()).await.unwrap();
+```
+
+**Isolation strategy**: each test function runs inside a transaction that is rolled back after assertions. For tests that require committed data (e.g. concurrent access), use per-test schemas or unique tenant UUIDs.
+
+| What to test | Setup | Verification target |
+|---|---|---|
+| Type CRUD — insert, read, update, delete | Empty DB | Rows persisted and retrievable; `code_ci` uniqueness enforced at DB level |
+| Type `CHECK` constraints — `can_be_root OR cardinality(allowed_parents) >= 1` | Empty DB | DB rejects invalid type definitions |
+| Entity CRUD — insert with parent, read, update mutable fields | Seed types | Entity rows persisted with correct FK relations |
+| Closure table correctness — create root | Empty DB + seed types | Self-row `(id, id, 0)` created |
+| Closure table correctness — create child | Seed parent entity | Self-row + parent row `(parent, child, 1)` + transitive ancestor rows |
+| Closure table correctness — create 5-level deep tree | Seed types | Verify `(N*(N+1))/2` closure rows with correct depths |
+| Subtree move — closure rebuild | Seed tree `A→B→C`, move `B` under `D` | Old closure paths removed, new paths via `D` created, `C` ancestors updated |
+| Subtree delete — cascade closure removal | Seed tree with subtree | All closure rows for removed nodes deleted |
+| Cycle detection at DB level — concurrent moves | Seed `A→B→C`, concurrent move `A` under `C` + move `C` under `A` | At least one fails with serialization error or `CycleDetected` |
+| SERIALIZABLE retry — concurrent entity create under same parent | Two parallel create operations | Both succeed (via retry) or one gets deterministic error |
+| Membership CRUD — add, remove, query by group, query by resource | Seed entities | Composite key `(group_id, resource_type, resource_id)` enforced |
+| Membership — duplicate rejection at DB level | Pre-seed membership | `UNIQUE` constraint violation mapped to `Conflict` |
+| Tenant isolation — SecureORM | Seed data for tenant A, query with `SecurityContext` of tenant B | Empty result set |
+| Tenant isolation — cross-tenant parent rejected | Seed entity in tenant A, create child with `tenant_id = B` | Tenant incompatibility error |
+| OData `$filter` — types, groups, memberships | Seed diverse dataset | Filtered results match expected subset |
+| Cursor pagination — traverse all pages | Seed 75 entities, `limit=25` | Three pages, no duplicates, no gaps, stable order |
+| Cursor pagination — empty result set | Empty DB | Single empty page with no cursors |
+| Query profile — depth limit on write, no truncation on read | Seed tree exceeding new limit | Reads return full data; new writes at violating depth rejected |
+| Seeding idempotency — types, groups, memberships | Run seed twice | Second run produces no changes; DB state identical |
+| Force delete — cascade subtree + memberships | Seed tree with memberships, delete root with `force=true` | All descendants and their memberships removed |
+
+**Closure integrity checker** (test utility):
+
+A helper function `verify_closure_integrity(tx)` that validates:
+- every entity has a self-row `(id, id, 0)`
+- for every `parent_id` edge, a closure row `(parent, child, 1)` exists
+- closure is transitively complete (if `(A, B, d1)` and `(B, C, d2)` exist, then `(A, C, d1+d2)` exists)
+- no orphan closure rows (both `ancestor_id` and `descendant_id` reference existing entities)
+
+This function is called at the end of every integration test that mutates hierarchy data.
+
+#### Level 3: API Tests (REST Layer)
+
+API tests verify HTTP-level behavior: request/response shapes, status codes, OData query parsing, authentication mode routing, and RFC 9457 error format.
+
+**Infrastructure**: `Router::oneshot()` (axum test pattern per `10_checklists_and_templates.md`) with real database + real domain services. `PolicyEnforcer` is mocked to isolate RG REST layer from AuthZ.
+
+**Mock boundaries**:
+
+| Dependency | Mock | Why |
+|---|---|---|
+| `PolicyEnforcer` / `AuthZResolverClient` | `MockAuthZResolverClient` (always Allow) or `DenyingAuthZResolverClient` | Isolate from AuthZ; test RG's own auth mode logic |
+| Database | Real PostgreSQL | REST tests need real query execution for OData/pagination |
+| Domain services | Real (not mocked) | REST layer delegates to real services |
+
+**Schema setup**: используется тот же паттерн, что в Integration — `bring_up_postgres()` + `run_migrations_for_testing()`. Test builder инкапсулирует всю инициализацию (БД, миграции, домен-сервисы, маршруты, моки AuthZ).
+
+Test builder:
+
+```rust
+let harness = RgTestHarness::api()
+    .with_types(vec![...])
+    .with_authz_client(Arc::new(MockAuthZResolverClient::new()))
+    .build()  // внутри: bring_up_postgres(), run_migrations_for_testing(), создание сервисов, Router
+    .await;
+let router = harness.router();
+```
+
+| What to test | Method | Verification target |
+|---|---|---|
+| Create type — happy path | `POST /types` | 201 Created, response body matches `ResourceGroupType` schema |
+| Create type — duplicate | `POST /types` (same code) | 409 Conflict, Problem JSON with `TypeAlreadyExists` |
+| Create type — invalid code | `POST /types` (whitespace in code) | 400 Bad Request, Problem JSON with validation details |
+| List types — OData filter | `GET /types?$filter=code eq 'tenant'` | 200 OK, filtered result set |
+| Create group — with parent | `POST /groups` | 201 Created, closure rows created |
+| Create group — invalid parent type | `POST /groups` | 400/409, Problem JSON with `InvalidParentType` |
+| Move group — cycle | `PUT /groups/{id}` (parent = descendant) | 409, `CycleDetected` |
+| Delete group — has children, no force | `DELETE /groups/{id}` | 409, `ConflictActiveReferences` |
+| Delete group — force cascade | `DELETE /groups/{id}?force=true` | 200, subtree + memberships removed |
+| List group hierarchy — depth filter | `GET /groups/{id}/hierarchy?$filter=depth ge 0` | 200 OK, descendants with `depth` field |
+| List group hierarchy — ancestors | `GET /groups/{id}/hierarchy?$filter=depth le 0` | 200 OK, ancestors with negative `depth` |
+| Add membership | `POST /memberships/{gid}/{rtype}/{rid}` | 201 Created |
+| Add membership — duplicate | `POST /memberships/{gid}/{rtype}/{rid}` again | 409 Conflict |
+| Remove membership | `DELETE /memberships/{gid}/{rtype}/{rid}` | 200 OK |
+| List memberships — by group | `GET /memberships?$filter=group_id eq '...'` | 200 OK, filtered result |
+| Cursor pagination — all list endpoints | `GET /types?limit=2`, follow `next_cursor` | All items eventually returned |
+| Invalid OData filter | `GET /groups?$filter=invalid` | 400 Bad Request |
+| JWT auth — standard request | Request with bearer token | `PolicyEnforcer` called, response scoped by tenant |
+| JWT auth — AuthZ denies | Request + `DenyingAuthZResolverClient` | 403 Forbidden |
+| MTLS auth — hierarchy endpoint allowed | Simulated MTLS context, `GET /groups/{id}/hierarchy` | 200 OK, no PolicyEnforcer call |
+| MTLS auth — non-hierarchy endpoint rejected | Simulated MTLS context, `POST /groups` | 403 Forbidden |
+| All error categories — RFC 9457 format | Trigger each error category | Response has `type`, `title`, `status`, `detail` fields |
+
+#### Level 4: E2E Tests (Python / pytest)
+
+E2E tests verify the full stack running as `hyperspot-server` with real AuthZ, real DB, and real network requests.
+
+**Infrastructure**: running hyperspot-server (Docker or local), `pytest` + `httpx`.
+
+**Location**: `testing/e2e/modules/resource_group/`
+
+```
+testing/e2e/modules/resource_group/
+├── conftest.py       # fixtures: base_url, tenant_id, seed data
+├── helpers.py        # create_type(), create_group(), add_membership(), etc.
+├── test_types.py     # type CRUD, validation, idempotent seed
+├── test_groups.py    # group CRUD, hierarchy, move, delete
+├── test_memberships.py  # membership add/remove/query
+└── test_hierarchy.py    # depth traversal, ancestor/descendant queries
+```
+
+Fixtures (following `oagw` e2e pattern):
+
+```python
+@pytest.fixture(scope="session")
+def rg_base_url():
+    return os.getenv("E2E_BASE_URL", "http://localhost:8086") + "/api/resource-group/v1"
+
+@pytest.fixture(scope="session")
+def tenant_id():
+    return "11111111-1111-1111-1111-111111111111"
+```
+
+| What to test | Marker | Verification target |
+|---|---|---|
+| Type CRUD happy path | `@pytest.mark.smoke` | Create → list → get → update → delete type |
+| Group hierarchy — create tree, query descendants | `@pytest.mark.smoke` | Descendants returned with correct `depth` values |
+| Membership — add, query by group, query by resource, remove | `@pytest.mark.smoke` | Membership links appear/disappear as expected |
+| Tenant isolation — two tenants, no cross-visibility | — | Tenant A data invisible to tenant B |
+| Error scenarios — duplicate type, cycle, invalid parent | — | Correct HTTP status codes (400, 409) |
+| OData filter — eq, ne, in across all list endpoints | — | Filtered results match expected |
+| Pagination — large dataset traversal | — | All items returned across pages |
+
+#### What Must NOT Be Mocked
+
+| Component | Why |
+|---|---|
+| Closure table logic | Core of the module — correctness depends on real SQL execution |
+| Forest invariants in integration tests | Must verify actual DB constraint enforcement |
+| SecureORM tenant scoping | Must verify real `WHERE tenant_id IN (...)` generation |
+| Index behavior for hierarchy queries | Performance correctness depends on actual query plans |
+
+#### Concurrency Testing
+
+Hierarchy mutations (`create/move/delete`) use `SERIALIZABLE` isolation with bounded retry. Concurrency tests verify correctness under parallel access.
+
+**Serialization retry policy**:
+
+- max retries: 3 (configurable)
+- backoff: none (immediate retry — serialization conflicts resolve within microseconds)
+- on exhaustion: return `ServiceUnavailable` with retry-after hint
+- transaction timeout: 5s (configurable)
+
+**Concurrency test pattern** (integration test level):
+
+```rust
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_moves_no_corruption() {
+    // Seed: A → B → C → D, E → F
+    // Spawn N tasks: move B under E, move F under A, move C under root, ...
+    // Barrier to synchronize start
+    // After all tasks complete:
+    //   verify_closure_integrity(tx)
+    //   verify no cycles in canonical parent_id chain
+    //   verify all moves either succeeded or returned deterministic error
+}
+```
+
+#### NFR Verification Mapping
+
+| NFR | Test level | How verified |
+|---|---|---|
+| `cpt-cf-resource-group-nfr-hierarchy-query-latency` (p95 < 50ms) | Integration | Timed queries on seeded dataset (100K+ groups); assert < 50ms |
+| `cpt-cf-resource-group-nfr-membership-query-latency` (p95 < 30ms) | Integration | Timed queries on seeded dataset (200K+ memberships); assert < 30ms |
+| `cpt-cf-resource-group-nfr-transactional-consistency` | Integration | Concurrent writes + `verify_closure_integrity()` after each |
+| `cpt-cf-resource-group-nfr-deterministic-errors` | Unit | Test every `From<DomainError>` mapping; verify 100% variant coverage |
+| `cpt-cf-resource-group-nfr-production-scale` | Deferred | Capacity planning validated via database size analysis (section 4.1) |
+
 ## 5. Traceability
 
 - **PRD**: [PRD.md](./PRD.md)
