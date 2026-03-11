@@ -549,7 +549,7 @@ Membership list `$filter` fields: `resource_id` (eq, ne, in), `resource_type` (e
 
 REST API field projection notes:
 
-- Group responses (`Group` schema) do not include `created`/`modified` timestamps. These fields exist in the database for audit purposes but are not exposed in API responses.
+- Group responses (`Group` schema) do not include `created_at`/`updated_at` timestamps. These fields exist in the database for audit purposes but are not exposed in API responses.
 - Membership list responses (`Membership` schema) do not include `tenant_id`. Memberships are always scoped to a single tenant; tenant scope is derived from the group's `tenant_id` via `group_id` JOIN and is not stored on the membership row itself.
 
 Type list `$filter` fields: `code` (eq, ne, in).
@@ -1249,8 +1249,8 @@ In both cases, the AuthZ plugin uses `ResourceGroupReadHierarchy` trait. The tra
 | `code`     | TEXT        | type code (PK)            |
 | `can_be_root` | BOOLEAN     | whether this type permits root placement (no parent_id) |
 | `allowed_parents` | TEXT[]      | allowed parent type codes; may be empty if the type is root-only |
-| `created`  | TIMESTAMPTZ | creation time             |
-| `modified` | TIMESTAMPTZ | update time (nullable)    |
+| `created_at`  | TIMESTAMPTZ | creation time             |
+| `updated_at` | TIMESTAMPTZ | update time (nullable)    |
 
 
 Constraints:
@@ -1270,8 +1270,8 @@ Constraints:
 | `name`        | TEXT        | display name                                      |
 | `tenant_id`   | UUID        | tenant scope                                      |
 | `external_id` | TEXT NULL   | optional external ID                              |
-| `created`     | TIMESTAMPTZ | creation time                                     |
-| `modified`    | TIMESTAMPTZ | update time (nullable)                            |
+| `created_at`     | TIMESTAMPTZ | creation time                                     |
+| `updated_at`    | TIMESTAMPTZ | update time (nullable)                            |
 
 
 Constraints:
@@ -1294,7 +1294,7 @@ Indexes:
 | `group_id`      | UUID        | group entity ID (FK to `resource_group.id`)|
 | `resource_type` | TEXT        | caller-defined resource classification     |
 | `resource_id`   | TEXT        | caller-defined resource identifier         |
-| `created`       | TIMESTAMPTZ | creation time                              |
+| `created_at`       | TIMESTAMPTZ | creation time                              |
 
 Tenant scope is not stored on membership rows. It is derived from `resource_group.tenant_id` via JOIN on `group_id`.
 
@@ -1401,11 +1401,11 @@ Test dataset: 100K groups, 200K memberships, 359K closure rows:
 
 #### Column Widths (avg bytes, measured via pg_stats in test environment)
 
-**resource_group** (112 B/row): `id` 16 B (UUID), `parent_id` 16 B (UUID nullable), `group_type` 7 B (TEXT), `name` 14 B (TEXT), `tenant_id` 16 B (UUID), `external_id` 12 B (TEXT), `created`/`modified` 8 B each, row overhead ~15 B.
+**resource_group** (112 B/row): `id` 16 B (UUID), `parent_id` 16 B (UUID nullable), `group_type` 7 B (TEXT), `name` 14 B (TEXT), `tenant_id` 16 B (UUID), `external_id` 12 B (TEXT), `created_at`/`updated_at` 8 B each, row overhead ~15 B.
 
 **resource_group_closure** (68 B/row): `ancestor_id` 16 B, `descendant_id` 16 B, `depth` 4 B, row overhead ~32 B.
 
-**resource_group_membership** (73 B/row): `group_id` 16 B, `resource_type` 6 B, `resource_id` 10 B, `created` 8 B, row overhead ~33 B.
+**resource_group_membership** (73 B/row): `group_id` 16 B, `resource_type` 6 B, `resource_id` 10 B, `created_at` 8 B, row overhead ~33 B.
 
 #### Production Extrapolation
 

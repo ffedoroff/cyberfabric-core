@@ -248,7 +248,7 @@ Entity fields:
 - `external_id` (optional, <=255)
 - `parent_id` (optional)
 - `tenant_id` (required)
-- timestamps (`created`, `modified`) — stored in database for audit; not returned in REST API responses
+- timestamps (`created_at`, `updated_at`) — stored in database for audit; not returned in REST API responses
 
 In `ownership-graph` profile, entity also carries tenant scope metadata for tenant compatibility validation.
 

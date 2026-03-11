@@ -5,8 +5,8 @@ CREATE TABLE resource_group_type (
     code TEXT PRIMARY KEY CHECK (code = LOWER(code)),
     can_be_root BOOLEAN NOT NULL DEFAULT false,
     allowed_parents TEXT[] NOT NULL DEFAULT '{}',
-    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    modified TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
     CONSTRAINT chk_type_has_placement
         CHECK (can_be_root OR cardinality(allowed_parents) >= 1)
 );
@@ -21,8 +21,8 @@ CREATE TABLE resource_group (
     name TEXT NOT NULL,
     tenant_id UUID NOT NULL,
     external_id TEXT,
-    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    modified TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
     CONSTRAINT fk_resource_group_type
         FOREIGN KEY (group_type)
         REFERENCES resource_group_type(code)
@@ -95,7 +95,7 @@ CREATE TABLE resource_group_membership (
     group_id UUID NOT NULL,
     resource_type TEXT NOT NULL,
     resource_id TEXT NOT NULL,
-    created TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_resource_group_membership_group_id
         FOREIGN KEY (group_id)
         REFERENCES resource_group(id)
