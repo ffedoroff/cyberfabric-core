@@ -53,6 +53,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-seed-types`                         | Any RG plugin MUST perform schema migration. Type data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). AuthZ config determines required types. |
 | `cpt-cf-resource-group-fr-seed-groups`                        | Group data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates parent-child links and type compatibility when performed. |
 | `cpt-cf-resource-group-fr-seed-memberships`                   | Membership data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates group existence and tenant compatibility when performed. |
+| `cpt-cf-resource-group-fr-validate-type-update-hierarchy`     | Type update validates removed `allowed_parents` and `can_be_root` changes against existing groups; rejects with `AllowedParentsViolation` when hierarchy would become inconsistent. |
 | `cpt-cf-resource-group-fr-delete-type-only-if-empty`          | Type deletion flow checks for existing entities and rejects delete when references remain.                                            |
 | `cpt-cf-resource-group-fr-manage-entities`                    | Entity service with create/get/update/move/delete operations.                                                                         |
 | `cpt-cf-resource-group-fr-enforce-forest-hierarchy`           | Domain invariants + cycle checks before writes.                                                                                       |
@@ -1361,6 +1362,7 @@ Ownership-graph tenant enforcement:
 | missing type/entity         | `NotFound`                 |
 | duplicate type              | `TypeAlreadyExists`        |
 | invalid parent type         | `InvalidParentType`        |
+| type update violates existing hierarchy | `AllowedParentsViolation` |
 | cycle attempt               | `CycleDetected`            |
 | active references on delete | `ConflictActiveReferences` |
 | depth/width violation       | `LimitViolation`           |

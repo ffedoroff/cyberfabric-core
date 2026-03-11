@@ -220,6 +220,17 @@ AuthZ deployment determines which types are needed:
 - **Flat tenants** — create type `tenant` with `can_be_root: true, allowed_parents: {}` (root placement only, no nesting).
 - **Hierarchical tenants** — create type `tenant` with for example `can_be_root: true, allowed_parents: {'tenant'}` (root placement or nested under another tenant).
 
+#### Validate Type Update Against Existing Hierarchy
+
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-validate-type-update-hierarchy`
+
+Updating a type's placement rules (`allowed_parents`, `can_be_root`) **MUST** be validated against the existing group hierarchy:
+
+- Removing a type code from `allowed_parents` **MUST** be rejected if any group of this type currently has a parent whose type is the removed code.
+- Setting `can_be_root` from `true` to `false` **MUST** be rejected if any root group (no `parent_id`) of this type exists.
+
+Violation **MUST** return `AllowedParentsViolation` with details identifying the conflicting constraint.
+
 #### Delete Type Only If Unused
 
 - [ ] `p1` - **ID**: `cpt-cf-resource-group-fr-delete-type-only-if-empty`
@@ -716,7 +727,7 @@ These responses remain policy-agnostic and SQL-agnostic; caller-side PDP logic u
 - **GIVEN** type `branch` exists with allowed_parents `["tenant", "department"]`
 - **AND** group `B1` (type `branch`) has parent `D1` (type `department`)
 - **WHEN** caller updates `branch` allowed_parents to `["tenant"]` (removes `department`)
-- **THEN** update is rejected with `conflict` — existing group `B1` would violate new parent type rules
+- **THEN** update is rejected with `AllowedParentsViolation` — existing group `B1` would violate new parent type rules
 
 #### Scenario: Delete Unused Type
 
