@@ -1,5 +1,5 @@
 # Created:  2026-03-06 by Constructor Tech
-# Updated:  2026-03-10 by Constructor Tech
+# Updated:  2026-03-11 by Constructor Tech
 
 openapi: 3.1.0
 info:
@@ -20,11 +20,14 @@ info:
     - $filter: https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part1-protocol.html#sec_SystemQueryOptionfilter
 
 
+    Type codes and resource types are GTS type paths (see https://github.com/GlobalTypeSystem/gts-spec).
+    Format: `gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>]~`
+
     Example types:
     ```text
-      tenant (can_be_root: true, allowed_parents: [tenant])
-      └── department (allowed_parents: [tenant])
-          └── branch (allowed_parents: [department])
+      gts.x.system.resource_group.tenant.v1~ (can_be_root: true, allowed_parents: [gts.x.system.resource_group.tenant.v1~])
+      └── gts.x.system.resource_group.department.v1~ (allowed_parents: [gts.x.system.resource_group.tenant.v1~])
+          └── gts.x.system.resource_group.branch.v1~ (allowed_parents: [gts.x.system.resource_group.department.v1~])
     ```
 
     Example hierarchy:

@@ -1,10 +1,20 @@
 -- Created:  2026-03-06 by Constructor Tech
--- Updated:  2026-03-06 by Constructor Tech
+-- Updated:  2026-03-11 by Constructor Tech
+
+-- ── GTS type path domain ─────────────────────────────────────────────────────
+-- GTS type identifier: single or chained, always ends with ~ (schema, not instance).
+-- Format: gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>][~<segment>]*~
+-- Spec:   https://github.com/GlobalTypeSystem/gts-spec
+CREATE DOMAIN gts_type_path AS TEXT
+    CHECK (
+        LENGTH(VALUE) <= 1024
+        AND VALUE ~ '^gts\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?(?:~[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\.v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?)*~$'
+    );
 
 CREATE TABLE resource_group_type (
-    code TEXT PRIMARY KEY CHECK (code = LOWER(code)),
+    code gts_type_path PRIMARY KEY,
     can_be_root BOOLEAN NOT NULL DEFAULT false,
-    allowed_parents TEXT[] NOT NULL DEFAULT '{}',
+    allowed_parents gts_type_path[] NOT NULL DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
     CONSTRAINT chk_type_has_placement
@@ -17,7 +27,7 @@ COMMENT ON TABLE resource_group_type
 CREATE TABLE resource_group (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID,
-    group_type TEXT NOT NULL CHECK (group_type = LOWER(group_type)),
+    group_type gts_type_path NOT NULL,
     name TEXT NOT NULL,
     tenant_id UUID NOT NULL,
     external_id TEXT,
@@ -97,7 +107,7 @@ CREATE INDEX idx_rgc_ancestor_depth
 
 CREATE TABLE resource_group_membership (
     group_id UUID NOT NULL,
-    resource_type TEXT NOT NULL,
+    resource_type gts_type_path NOT NULL,
     resource_id TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_resource_group_membership_group_id
