@@ -274,6 +274,20 @@ fn domain_err_to_sdk(err: DomainError) -> ServiceGatewayError {
         } => ServiceGatewayError::Forbidden {
             detail: format!("CORS header not allowed: {header} (instance: {instance})"),
         },
+        DomainError::StreamAborted { detail, instance } => {
+            ServiceGatewayError::StreamAborted { detail, instance }
+        }
+        DomainError::LinkUnavailable { detail, instance } => {
+            ServiceGatewayError::LinkUnavailable { detail, instance }
+        }
+        DomainError::CircuitBreakerOpen { detail, instance } => {
+            ServiceGatewayError::CircuitBreakerOpen { detail, instance }
+        }
+        DomainError::IdleTimeout { detail, instance } => {
+            ServiceGatewayError::IdleTimeout { detail, instance }
+        }
+        DomainError::PluginNotFound { detail } => ServiceGatewayError::PluginNotFound { detail },
+        DomainError::PluginInUse { detail } => ServiceGatewayError::PluginInUse { detail },
         DomainError::Forbidden { detail } => ServiceGatewayError::Forbidden { detail },
     }
 }
