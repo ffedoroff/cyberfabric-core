@@ -1,23 +1,90 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use super::core::Outbox;
 use super::handler::{
     Handler, MessageHandler, PerMessageAdapter, TransactionalHandler, TransactionalMessageHandler,
 };
-use super::manager::{DeferredSpawnFactory, OutboxBuilder, QueueDeclaration};
-use super::processor::PartitionProcessor;
+use super::manager::{OutboxBuilder, QueueDeclaration};
+use super::stats::{StatsListener, StatsRegistry};
 use super::strategy::{DecoupledStrategy, TransactionalStrategy, generate_worker_id};
+use super::taskward::{
+    BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit, PanicPolicy, TracingListener,
+    WorkerBuilder,
+};
 use super::types::{Partitions, QueueConfig};
+use super::workers::processor::{PartitionProcessor, ProcessorReport};
 use crate::Db;
+
+/// All runtime context needed to spawn a processor worker.
+/// Constructed once per partition in [`OutboxBuilder::start()`].
+pub struct SpawnContext {
+    pub pid: i64,
+    pub db: Db,
+    pub cancel: CancellationToken,
+    pub partition_notify: Arc<Notify>,
+    pub processor_sem: Arc<Semaphore>,
+    pub start_notify: Arc<Notify>,
+    #[allow(dead_code)]
+    pub outbox: Arc<Outbox>,
+    /// Shared stats registry for processor workers. `None` when stats disabled.
+    pub stats_registry: Option<Arc<std::sync::Mutex<StatsRegistry>>>,
+}
+
+/// Trait for creating processor workers. One impl per processing mode.
+pub trait ProcessorFactory: Send {
+    fn spawn(&self, ctx: SpawnContext) -> (String, Pin<Box<dyn Future<Output = ()> + Send>>);
+}
+
+/// Shared worker assembly logic for all processor factories.
+fn build_processor_worker<S: super::strategy::ProcessingStrategy + 'static>(
+    ctx: &SpawnContext,
+    strategy: S,
+    config: QueueConfig,
+) -> (String, Pin<Box<dyn Future<Output = ()> + Send>>) {
+    let processor = PartitionProcessor::new(strategy, ctx.pid, config, ctx.db.clone());
+    let name = format!("processor-{}", ctx.pid);
+    let mut builder = WorkerBuilder::<ProcessorReport>::new(&name, ctx.cancel.clone())
+        .notifier(Arc::clone(&ctx.partition_notify))
+        .notifier(Arc::clone(&ctx.start_notify))
+        .with_poker(processor.poll_interval())
+        .bulkhead(Bulkhead::new(
+            &name,
+            BulkheadConfig {
+                semaphore: ConcurrencyLimit::Fixed(Arc::clone(&ctx.processor_sem)),
+                backoff: BackoffConfig::default(),
+                steady_pace: Duration::ZERO,
+            },
+        ))
+        .listener(TracingListener)
+        .on_panic(PanicPolicy::CatchAndRetry);
+
+    if let Some(ref registry) = ctx.stats_registry {
+        let stats = StatsListener::new(Box::new(|any| {
+            any.downcast_ref::<ProcessorReport>()
+                .map_or(0, |r| u64::from(r.messages_processed))
+        }));
+        if let Ok(mut reg) = registry.lock() {
+            reg.register("processor".to_owned(), stats.clone());
+        }
+        builder = builder.listener(stats);
+    }
+
+    let worker = builder.build(processor);
+    (name, Box::pin(worker.run()))
+}
 
 /// Builder for registering a queue with per-queue configuration.
 ///
 /// Obtained via [`OutboxBuilder::queue`]. Terminal methods (`transactional`,
 /// `decoupled`, `batch_transactional`, `batch_decoupled`) register the queue
 /// and return the parent [`OutboxBuilder`] for chaining.
+#[must_use = "a queue builder does nothing until a handler is registered via .transactional() or .decoupled()"]
 pub struct QueueBuilder {
     builder: OutboxBuilder,
     name: String,
@@ -35,55 +102,19 @@ impl QueueBuilder {
         }
     }
 
-    /// Lease duration for decoupled mode partition locks. Ignored for
-    /// transactional mode.
-    #[must_use]
-    pub fn lease_duration(mut self, d: Duration) -> Self {
-        self.config.lease_duration = d;
-        self
-    }
-
-    /// Max partitions processed concurrently within this queue.
-    ///
-    /// Each active partition processor acquires a DB connection from the pool,
-    /// so this value must be aligned with the connection pool size.  A safe
-    /// lower-bound for the pool is:
-    ///
-    /// ```text
-    /// max_connections >= max_concurrent_partitions
-    ///                  + producer_threads
-    ///                  + maintenance_total  (sequencer + vacuum share this)
-    ///                  + 1                  (sequencer batch processing)
-    /// ```
-    ///
-    /// The `maintenance_total` budget is a shared semaphore pool configured
-    /// via [`OutboxBuilder::maintenance(high, low)`]. The semaphore pool
-    /// is sized at `high + low`. Low-priority tasks (vacuum) are capped
-    /// to `low` permits, ensuring `high` permits remain for the sequencer.
-    ///
-    /// Defaults to `usize::MAX` (all partitions may run concurrently).
-    #[must_use]
-    pub fn max_concurrent_partitions(mut self, n: usize) -> Self {
-        self.config.max_concurrent_partitions = n;
-        self
-    }
-
     /// Messages per handler call per partition.
-    #[must_use]
     pub fn msg_batch_size(mut self, n: u32) -> Self {
         self.config.msg_batch_size = n;
         self
     }
 
     /// Base delay for exponential backoff on retry.
-    #[must_use]
     pub fn backoff_base(mut self, d: Duration) -> Self {
         self.config.backoff_base = d;
         self
     }
 
     /// Maximum delay for exponential backoff on retry.
-    #[must_use]
     pub fn backoff_max(mut self, d: Duration) -> Self {
         self.config.backoff_max = d;
         self
@@ -112,49 +143,39 @@ impl QueueBuilder {
         self.batch_decoupled(PerMessageAdapter::new(handler))
     }
 
+    /// Register a single-message decoupled handler with explicit configuration.
+    ///
+    /// Forces `msg_batch_size = 1`. Use this to customize `lease_duration`
+    /// and other decoupled-specific settings.
+    #[must_use]
+    pub fn decoupled_with(
+        mut self,
+        handler: impl MessageHandler + 'static,
+        config: super::types::DecoupledConfig,
+    ) -> OutboxBuilder {
+        self.config.msg_batch_size = 1;
+        let super::types::DecoupledConfig { lease_duration } = config;
+        self.config.lease_duration = lease_duration;
+        self.batch_decoupled(PerMessageAdapter::new(handler))
+    }
+
     /// Register a batch transactional handler (advanced).
     #[must_use]
     pub fn batch_transactional(
         self,
         handler: impl TransactionalHandler + 'static,
     ) -> OutboxBuilder {
-        let handler = Arc::new(handler);
-        let config = self.config.clone();
-
-        let make_spawn_fn: DeferredSpawnFactory = Box::new(move |pid, outbox| {
-            let strategy =
-                TransactionalStrategy::new(Box::new(ArcTransactionalHandler(Arc::clone(&handler))));
-            let config = config.clone();
-            #[cfg(feature = "outbox-profiler")]
-            let profiler = outbox.profiler_arc();
-            let _ = &outbox; // suppress unused warning when profiler feature is off
-
-            Box::new(
-                move |db: Db,
-                      cancel: CancellationToken,
-                      notify: Arc<Notify>,
-                      sem: Arc<Semaphore>| {
-                    #[allow(unused_mut)]
-                    let mut processor = PartitionProcessor::new(strategy, pid, config, notify, sem);
-                    #[cfg(feature = "outbox-profiler")]
-                    if let Some(p) = profiler {
-                        processor.set_profiler(p);
-                    }
-                    tokio::spawn(async move {
-                        if let Err(e) = processor.run(&db, cancel).await {
-                            tracing::error!(error = %e, partition_id = pid, "partition processor exited with error");
-                        }
-                    })
-                },
-            )
-        });
+        let factory = TransactionalProcessorFactory {
+            handler: Arc::new(handler),
+            config: self.config.clone(),
+        };
 
         let mut builder = self.builder;
         builder.queue_declarations.push(QueueDeclaration {
             name: self.name,
             partitions: self.partitions,
             config: self.config,
-            make_spawn_fn,
+            factory: Box::new(factory),
         });
         builder
     }
@@ -162,47 +183,63 @@ impl QueueBuilder {
     /// Register a batch decoupled handler (advanced).
     #[must_use]
     pub fn batch_decoupled(self, handler: impl Handler + 'static) -> OutboxBuilder {
-        let handler = Arc::new(handler);
-        let config = self.config.clone();
-        let queue_name = self.name.clone();
-
-        let make_spawn_fn: DeferredSpawnFactory = Box::new(move |pid, outbox| {
-            let worker_id = generate_worker_id(&queue_name);
-            let strategy =
-                DecoupledStrategy::new(Box::new(ArcHandler(Arc::clone(&handler))), worker_id);
-            let config = config.clone();
-            #[cfg(feature = "outbox-profiler")]
-            let profiler = outbox.profiler_arc();
-            let _ = &outbox;
-
-            Box::new(
-                move |db: Db,
-                      cancel: CancellationToken,
-                      notify: Arc<Notify>,
-                      sem: Arc<Semaphore>| {
-                    #[allow(unused_mut)]
-                    let mut processor = PartitionProcessor::new(strategy, pid, config, notify, sem);
-                    #[cfg(feature = "outbox-profiler")]
-                    if let Some(p) = profiler {
-                        processor.set_profiler(p);
-                    }
-                    tokio::spawn(async move {
-                        if let Err(e) = processor.run(&db, cancel).await {
-                            tracing::error!(error = %e, partition_id = pid, "partition processor exited with error");
-                        }
-                    })
-                },
-            )
-        });
+        let factory = DecoupledProcessorFactory {
+            handler: Arc::new(handler),
+            config: self.config.clone(),
+            queue_name: self.name.clone(),
+        };
 
         let mut builder = self.builder;
         builder.queue_declarations.push(QueueDeclaration {
             name: self.name,
             partitions: self.partitions,
             config: self.config,
-            make_spawn_fn,
+            factory: Box::new(factory),
         });
         builder
+    }
+
+    /// Register a batch decoupled handler with explicit configuration (advanced).
+    #[must_use]
+    pub fn batch_decoupled_with(
+        mut self,
+        handler: impl Handler + 'static,
+        config: super::types::DecoupledConfig,
+    ) -> OutboxBuilder {
+        let super::types::DecoupledConfig { lease_duration } = config;
+        self.config.lease_duration = lease_duration;
+        self.batch_decoupled(handler)
+    }
+}
+
+// --- Factory implementations ---
+
+struct TransactionalProcessorFactory<H: TransactionalHandler> {
+    handler: Arc<H>,
+    config: QueueConfig,
+}
+
+impl<H: TransactionalHandler + 'static> ProcessorFactory for TransactionalProcessorFactory<H> {
+    fn spawn(&self, ctx: SpawnContext) -> (String, Pin<Box<dyn Future<Output = ()> + Send>>) {
+        let strategy = TransactionalStrategy::new(Box::new(ArcTransactionalHandler(Arc::clone(
+            &self.handler,
+        ))));
+        build_processor_worker(&ctx, strategy, self.config.clone())
+    }
+}
+
+struct DecoupledProcessorFactory<H: Handler> {
+    handler: Arc<H>,
+    config: QueueConfig,
+    queue_name: String,
+}
+
+impl<H: Handler + 'static> ProcessorFactory for DecoupledProcessorFactory<H> {
+    fn spawn(&self, ctx: SpawnContext) -> (String, Pin<Box<dyn Future<Output = ()> + Send>>) {
+        let worker_id = generate_worker_id(&self.queue_name);
+        let strategy =
+            DecoupledStrategy::new(Box::new(ArcHandler(Arc::clone(&self.handler))), worker_id);
+        build_processor_worker(&ctx, strategy, self.config.clone())
     }
 }
 
@@ -253,7 +290,6 @@ mod tests {
     fn queue_config_defaults() {
         let config = QueueConfig::default();
         assert_eq!(config.lease_duration, DEFAULT_LEASE_DURATION);
-        assert_eq!(config.max_concurrent_partitions, usize::MAX);
         assert_eq!(config.msg_batch_size, 1);
     }
 

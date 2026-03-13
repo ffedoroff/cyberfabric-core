@@ -91,14 +91,14 @@ mod dialect;
 mod handler;
 mod manager;
 mod migrations;
-mod processor;
-mod sequencer;
+pub(crate) mod prioritizer;
+pub(crate) mod stats;
 mod strategy;
+#[doc(hidden)]
+pub mod taskward;
 mod types;
-mod vacuum;
-
-#[cfg(feature = "outbox-profiler")]
-pub mod profiler;
+mod validation;
+mod workers;
 
 #[cfg(test)]
 #[cfg(feature = "sqlite")]

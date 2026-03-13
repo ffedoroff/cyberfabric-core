@@ -47,11 +47,7 @@ mysql = [
 integration = []
 
 # Transactional outbox pipeline (preview — API may change)
-preview-outbox = ["dep:tokio-util"]
-
-# Outbox query profiler — instruments all SQL operations and emits periodic
-# tracing reports. Zero-cost when disabled.
-outbox-profiler = ["preview-outbox"]
+preview-outbox = ["dep:tokio-util", "dep:futures-util"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -80,6 +76,7 @@ dashmap = { workspace = true }
 figment = { workspace = true }
 sqlx = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 [[example]]
 name = "outbox_transactional"
@@ -99,6 +96,11 @@ required-features = ["sqlite", "preview-outbox"]
 
 [[bench]]
 name = "outbox_throughput"
+harness = false
+required-features = ["preview-outbox"]
+
+[[bench]]
+name = "worker_overhead"
 harness = false
 required-features = ["preview-outbox"]
 

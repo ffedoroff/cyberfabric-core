@@ -1,12 +1,12 @@
-use std::sync::Arc;
+use std::time::Duration;
 
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::dialect::Dialect;
-use super::types::{MaintenanceConfig, OutboxError};
+use super::super::dialect::Dialect;
+use super::super::taskward::{Directive, WorkerAction};
+use super::super::types::OutboxError;
 use crate::Db;
 
 /// Max rows per bounded vacuum chunk (SELECT + DELETE).
@@ -20,6 +20,16 @@ const DIRTY_PAGE_SIZE: usize = 64;
 
 /// SQL LIMIT value for dirty-partition page size.
 const DIRTY_PAGE_LIMIT: i64 = 64;
+
+/// Report emitted by a vacuum sweep.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct VacuumReport {
+    /// Number of partitions visited in this sweep.
+    pub partitions_swept: usize,
+    /// Total outgoing + body rows deleted across all partitions.
+    pub rows_deleted: u64,
+}
 
 /// Standalone vacuum background task that garbage-collects processed
 /// outgoing rows and their associated body rows.
@@ -36,79 +46,58 @@ const DIRTY_PAGE_LIMIT: i64 = 64;
 /// error is logged and the sweep continues (or retries after cooldown).
 /// The vacuum never kills itself on a transient failure.
 pub struct VacuumTask {
-    maintenance_sem: Arc<Semaphore>,
-    config: MaintenanceConfig,
-    #[cfg(feature = "outbox-profiler")]
-    profiler: Option<Arc<super::profiler::QueryProfiler>>,
+    db: Db,
+    vacuum_cooldown: Duration,
 }
 
 impl VacuumTask {
-    pub fn new(maintenance_sem: Arc<Semaphore>, config: MaintenanceConfig) -> Self {
+    pub fn new(db: Db, vacuum_cooldown: Duration) -> Self {
         Self {
-            maintenance_sem,
-            config,
-            #[cfg(feature = "outbox-profiler")]
-            profiler: None,
+            db,
+            vacuum_cooldown,
         }
     }
+}
 
-    #[cfg(feature = "outbox-profiler")]
-    pub fn set_profiler(&mut self, profiler: Arc<super::profiler::QueryProfiler>) {
-        self.profiler = Some(profiler);
-    }
+impl WorkerAction for VacuumTask {
+    type Payload = VacuumReport;
+    type Error = OutboxError;
 
-    /// Run the vacuum loop until cancellation.
-    ///
-    /// Each cycle: snapshot dirty partitions → drain each → sleep cooldown.
-    /// Transient errors are logged and retried next cycle — the vacuum
-    /// never exits on a recoverable failure.
-    pub async fn run(self, db: &Db, cancel: CancellationToken) -> Result<(), OutboxError> {
-        let cooldown = self.config.vacuum_cooldown;
-
+    async fn execute(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Directive<VacuumReport>, OutboxError> {
         let (backend, dialect) = {
-            let sea_conn = db.sea_internal();
+            let sea_conn = self.db.sea_internal();
             let b = sea_conn.get_database_backend();
             (b, Dialect::from(b))
         };
 
-        loop {
-            let sweep_start = tokio::time::Instant::now();
+        let sweep_start = tokio::time::Instant::now();
 
-            // Phase 1: Snapshot all dirty partitions via paginated cursor.
-            let dirty = match Self::snapshot_dirty(db, backend, &dialect, &cancel).await {
-                Ok(d) => d,
-                Err(e) => {
-                    if cancel.is_cancelled() {
-                        break;
-                    }
-                    warn!(error = %e, "vacuum: failed to snapshot dirty partitions, retrying after cooldown");
-                    Self::sleep_remaining(cooldown, sweep_start, &cancel).await;
-                    continue;
-                }
-            };
+        // Phase 1: Snapshot dirty partitions (errors propagate to bulkhead)
+        let dirty = Self::snapshot_dirty(&self.db, backend, &dialect, cancel).await?;
 
+        // Phase 2: Drain each partition (per-partition errors logged, not propagated)
+        let mut errors = 0u32;
+        let mut total_deleted: u64 = 0;
+        for (partition_id, snapshot_counter) in &dirty {
             if cancel.is_cancelled() {
                 break;
             }
-
-            // Phase 2: Drain each partition, then decrement its counter.
-            let mut errors = 0u32;
-            for (partition_id, snapshot_counter) in &dirty {
-                if cancel.is_cancelled() {
-                    break;
-                }
-
-                if let Err(e) = self
-                    .drain_partition(
-                        db,
-                        backend,
-                        &dialect,
-                        *partition_id,
-                        *snapshot_counter,
-                        &cancel,
-                    )
-                    .await
-                {
+            match self
+                .drain_partition(
+                    &self.db,
+                    backend,
+                    &dialect,
+                    *partition_id,
+                    *snapshot_counter,
+                    cancel,
+                )
+                .await
+            {
+                Ok(deleted) => total_deleted += deleted,
+                Err(e) => {
                     warn!(
                         partition_id,
                         error = %e,
@@ -117,24 +106,28 @@ impl VacuumTask {
                     errors += 1;
                 }
             }
-
-            let elapsed = sweep_start.elapsed();
-            debug!(
-                partitions = dirty.len(),
-                errors,
-                elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-                "vacuum: sweep complete",
-            );
-
-            // Phase 3: Sleep for remaining cooldown (cooldown minus sweep time).
-            Self::sleep_remaining(cooldown, sweep_start, &cancel).await;
         }
 
-        Ok(())
-    }
+        let elapsed = sweep_start.elapsed();
+        debug!(
+            partitions = dirty.len(),
+            errors,
+            elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            "vacuum: sweep complete",
+        );
 
+        let report = VacuumReport {
+            partitions_swept: dirty.len(),
+            rows_deleted: total_deleted,
+        };
+        Ok(Directive::Sleep(self.vacuum_cooldown, report))
+    }
+}
+
+impl VacuumTask {
     /// Drain a single partition and decrement its counter.
-    /// Extracted so the caller can catch errors per-partition.
+    /// Returns the number of rows deleted. Extracted so the caller can catch
+    /// errors per-partition.
     async fn drain_partition(
         &self,
         db: &Db,
@@ -143,36 +136,25 @@ impl VacuumTask {
         partition_id: i64,
         snapshot_counter: i64,
         cancel: &CancellationToken,
-    ) -> Result<(), OutboxError> {
-        self.vacuum_partition(db, backend, dialect, partition_id, cancel)
+    ) -> Result<u64, OutboxError> {
+        let deleted = self
+            .vacuum_partition(db, backend, dialect, partition_id, cancel)
             .await?;
 
-        // Decrement counter by snapshot value. GREATEST(counter - snapshot, 0)
-        // preserves any concurrent bumps from the processor.
-        let conn = db.sea_internal();
-        conn.execute(Statement::from_sql_and_values(
-            backend,
-            dialect.decrement_vacuum_counter(),
-            [snapshot_counter.into(), partition_id.into()],
-        ))
-        .await?;
-
-        Ok(())
-    }
-
-    /// Sleep for the remaining cooldown after a sweep, cancellation-aware.
-    async fn sleep_remaining(
-        cooldown: std::time::Duration,
-        sweep_start: tokio::time::Instant,
-        cancel: &CancellationToken,
-    ) {
-        let remaining = cooldown.saturating_sub(sweep_start.elapsed());
-        if !remaining.is_zero() {
-            tokio::select! {
-                () = cancel.cancelled() => {}
-                () = tokio::time::sleep(remaining) => {}
-            }
+        // Only decrement counter if vacuum completed without cancellation.
+        // A cancelled partial drain leaves rows behind — if we decrement to 0,
+        // those rows become orphaned (no mechanism to rediscover them).
+        if !cancel.is_cancelled() {
+            let conn = db.sea_internal();
+            conn.execute(Statement::from_sql_and_values(
+                backend,
+                dialect.decrement_vacuum_counter(),
+                [snapshot_counter.into(), partition_id.into()],
+            ))
+            .await?;
         }
+
+        Ok(deleted)
     }
 
     /// Collect all dirty partitions (counter > 0) via paginated cursor.
@@ -230,6 +212,7 @@ impl VacuumTask {
     /// Drain a single partition: read `processed_seq`, then delete all
     /// outgoing + body rows with `seq <= processed_seq` in bounded chunks
     /// until `deleted < VACUUM_BATCH_SIZE`.
+    /// Returns total rows deleted for this partition.
     async fn vacuum_partition(
         &self,
         db: &Db,
@@ -237,7 +220,7 @@ impl VacuumTask {
         dialect: &Dialect,
         partition_id: i64,
         cancel: &CancellationToken,
-    ) -> Result<(), OutboxError> {
+    ) -> Result<u64, OutboxError> {
         // Read processed_seq (PK lookup, cheap).
         let row = {
             let conn = db.sea_internal();
@@ -250,7 +233,7 @@ impl VacuumTask {
         };
 
         let Some(row) = row else {
-            return Ok(());
+            return Ok(0);
         };
         let processed_seq: i64 = row.try_get_by_index(0).map_err(|e| {
             OutboxError::Database(sea_orm::DbErr::Custom(format!(
@@ -258,31 +241,18 @@ impl VacuumTask {
             )))
         })?;
         if processed_seq == 0 {
-            return Ok(());
+            return Ok(0);
         }
 
         let vacuum_sql = dialect.vacuum_cleanup();
+        let mut total_deleted: u64 = 0;
 
         // Delete in bounded chunks until drained.
+        // The bulkhead holds the maintenance semaphore for the entire sweep.
         loop {
             if cancel.is_cancelled() {
                 break;
             }
-
-            // Acquire maintenance permit, cancellation-aware.
-            let _maint_permit = tokio::select! {
-                () = cancel.cancelled() => break,
-                result = self.maintenance_sem.acquire() => match result {
-                    Ok(permit) => permit,
-                    Err(_) => break,
-                }
-            };
-
-            #[cfg(feature = "outbox-profiler")]
-            let mut delete_guard = self
-                .profiler
-                .as_ref()
-                .map(|p| p.measure(super::profiler::Op::VacuumDelete));
 
             let deleted = Self::delete_chunk(
                 db,
@@ -294,19 +264,14 @@ impl VacuumTask {
             )
             .await?;
 
-            #[cfg(feature = "outbox-profiler")]
-            if let Some(g) = delete_guard.as_mut() {
-                g.set_rows(u64::try_from(deleted).unwrap_or(u64::MAX));
-            }
-
-            // _maint_permit drops here → permit released.
+            total_deleted += deleted as u64;
 
             if deleted < VACUUM_BATCH_SIZE {
                 break; // Partition drained.
             }
         }
 
-        Ok(())
+        Ok(total_deleted)
     }
 
     /// Execute one bounded chunk of cleanup for a single partition.
@@ -315,7 +280,7 @@ impl VacuumTask {
         db: &Db,
         backend: DbBackend,
         dialect: &Dialect,
-        vacuum_sql: &super::dialect::VacuumSql,
+        vacuum_sql: &super::super::dialect::VacuumSql,
         partition_id: i64,
         processed_seq: i64,
     ) -> Result<usize, OutboxError> {

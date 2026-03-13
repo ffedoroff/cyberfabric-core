@@ -1,38 +1,39 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult, Statement, TransactionTrait};
-use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::warn;
 
-use super::Outbox;
-use super::dialect::{AllocSql, Dialect};
-use super::types::{OutboxError, SequencerConfig};
+use super::super::Outbox;
+use super::super::dialect::{AllocSql, Dialect};
+use super::super::prioritizer::SharedPrioritizer;
+use super::super::taskward::{Directive, WorkerAction};
+use super::super::types::{OutboxError, SequencerConfig};
 use crate::Db;
 
-/// Per-partition notify map shared between sequencer and processors.
-type PartitionNotifyMap = Arc<HashMap<i64, Arc<Notify>>>;
+/// Report emitted by a sequencer execution cycle.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SequencerReport {
+    /// The partition that was processed (`-1` when idle / no work).
+    pub partition_id: i64,
+    /// Number of incoming rows claimed and sequenced.
+    pub rows_claimed: u32,
+}
 
 /// Background sequencer that consumes from incoming, assigns per-partition
 /// sequence numbers, and writes to outgoing.
 ///
-/// Processes partitions in deterministic PK order within a single transaction.
+/// Processes only dirty partitions (those with pending incoming rows).
+/// Each partition is processed in its own transaction.
 /// Uses `FOR UPDATE SKIP LOCKED` on Postgres/MySQL to allow concurrent
 /// sequencers without deadlocks.
 pub struct Sequencer {
     config: SequencerConfig,
     outbox: Arc<Outbox>,
-    notify: Arc<Notify>,
-    maintenance_sem: Arc<Semaphore>,
-    /// Per-partition notify map for direct signaling.
-    partition_notify: std::sync::RwLock<Option<PartitionNotifyMap>>,
-}
-
-/// Result of a single `sequence_batch` invocation.
-pub struct SequenceBatchResult {
-    /// Whether any single partition returned a full batch (hit the LIMIT).
-    pub any_partition_saturated: bool,
+    db: Db,
+    /// Shared prioritizer for parallel sequencer workers.
+    shared_prioritizer: Arc<SharedPrioritizer>,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -48,133 +49,73 @@ impl Sequencer {
     pub fn new(
         config: SequencerConfig,
         outbox: Arc<Outbox>,
-        notify: Arc<Notify>,
-        maintenance_sem: Arc<Semaphore>,
+        db: Db,
+        shared_prioritizer: Arc<SharedPrioritizer>,
     ) -> Self {
         Self {
             config,
             outbox,
-            notify,
-            maintenance_sem,
-            partition_notify: std::sync::RwLock::new(None),
+            db,
+            shared_prioritizer,
         }
     }
 
-    /// Set the per-partition notify map. Called by the manager before spawning.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` is poisoned (another thread panicked
-    /// while holding it).
-    pub fn set_partition_notify(&self, map: PartitionNotifyMap) {
-        let mut guard = self
-            .partition_notify
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(map);
-    }
-
-    /// Run the sequencer loop until cancellation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a database operation fails.
-    pub async fn run(&self, db: &Db, cancel: CancellationToken) -> Result<(), OutboxError> {
-        let mut has_more = false;
-        loop {
-            if !has_more {
-                tokio::select! {
-                    () = cancel.cancelled() => break,
-                    () = self.notify.notified() => {}
-                    () = tokio::time::sleep(self.config.poll_interval) => {}
-                }
-            }
-            if cancel.is_cancelled() {
-                break;
-            }
-            let result = self.sequence_batch(db).await?;
-            has_more = result.any_partition_saturated;
-        }
-        Ok(())
-    }
-
-    /// Execute one sequencing cycle: iterate all partitions in PK order,
-    /// claim from incoming per-partition, assign sequences, write to outgoing.
-    /// Returns total number of items sequenced across all partitions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a database operation fails.
-    pub async fn sequence_batch(&self, db: &Db) -> Result<SequenceBatchResult, OutboxError> {
-        // Acquire maintenance semaphore permit before DB operations.
-        let Ok(_maint_permit) = self.maintenance_sem.acquire().await else {
-            return Ok(SequenceBatchResult {
-                any_partition_saturated: false,
-            });
-        };
-
-        #[cfg(feature = "outbox-profiler")]
-        let mut profiler_guard = self
-            .outbox
-            .profiler()
-            .map(|p| p.measure(super::profiler::Op::SequencerClaimIncoming));
-
-        let partition_ids = self.outbox.all_partition_ids();
-        if partition_ids.is_empty() {
-            return Ok(SequenceBatchResult {
-                any_partition_saturated: false,
-            });
-        }
-
-        let conn = db.sea_internal();
+    /// Process a single partition with a bounded inner drain loop.
+    /// Each iteration runs in its own transaction.
+    async fn process_partition(
+        &self,
+        partition_id: i64,
+    ) -> Result<PartitionProcessResult, PartitionError> {
+        let conn = self.db.sea_internal();
         let backend = conn.get_database_backend();
         let dialect = Dialect::from(backend);
-        let txn = conn.begin().await?;
 
-        let mut total = 0u32;
-        let mut any_saturated = false;
-        let mut affected_partitions = Vec::new();
+        let mut drained = true;
+        let mut total_claimed: u32 = 0;
 
-        for partition_id in &partition_ids {
-            // Try to acquire a row lock; skip if held by another sequencer.
-            // Postgres/MySQL use FOR UPDATE SKIP LOCKED; SQLite returns None (no row locking).
+        for _iteration in 0..self.config.max_inner_iterations {
+            let txn = conn.begin().await?;
+
+            // Try to acquire row lock
             if let Some(lock_sql) = dialect.lock_partition()
                 && !self
-                    .try_lock_partition(&txn, backend, *partition_id, lock_sql)
+                    .try_lock_partition(&txn, backend, partition_id, lock_sql)
                     .await?
             {
-                continue;
+                // Rollback (drop txn) and signal skip
+                drop(txn);
+                return Err(PartitionError::Skipped);
             }
 
             // Claim incoming for this partition
             let claimed = self
-                .claim_incoming_for_partition(&txn, backend, &dialect, *partition_id)
+                .claim_incoming_for_partition(&txn, backend, &dialect, partition_id)
                 .await?;
+
             if claimed.is_empty() {
-                continue;
+                // Nothing to process — partition is fully drained
+                drained = true;
+                drop(txn);
+                break;
             }
 
             #[allow(clippy::cast_possible_wrap)]
             let item_count = claimed.len() as i64;
 
             #[allow(clippy::cast_possible_truncation)]
-            let count = claimed.len() as u32;
-            if count >= self.config.batch_size {
-                any_saturated = true;
-            }
+            let drained_this_iteration = (claimed.len() as u32) < self.config.batch_size;
 
             // Allocate sequences
             let start_seq = self
-                .allocate_sequences(&txn, backend, &dialect, *partition_id, item_count)
+                .allocate_sequences(&txn, backend, &dialect, partition_id, item_count)
                 .await?;
 
-            // Insert outgoing rows (batched)
             let outgoing_sql = dialect.build_insert_outgoing_batch(claimed.len());
             let mut values: Vec<sea_orm::Value> = Vec::with_capacity(claimed.len() * 4);
             for (i, item) in claimed.iter().enumerate() {
                 #[allow(clippy::cast_possible_wrap)]
                 let seq = start_seq + 1 + i as i64;
-                values.push((*partition_id).into());
+                values.push(partition_id.into());
                 values.push(item.body_id.into());
                 values.push(seq.into());
                 values.push(item.created_at.into());
@@ -186,44 +127,114 @@ impl Sequencer {
             ))
             .await?;
 
-            total += count;
-            affected_partitions.push(*partition_id);
-        }
+            txn.commit().await?;
 
-        txn.commit().await?;
-
-        #[cfg(feature = "outbox-profiler")]
-        if let Some(g) = profiler_guard.as_mut() {
-            g.set_rows(u64::from(total));
-        }
-
-        // Notify per-partition processors after commit
-        if let Some(map) = self
-            .partition_notify
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            for pid in &affected_partitions {
-                if let Some(notify) = map.get(pid) {
-                    notify.notify_one();
-                }
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total_claimed += claimed.len() as u32;
             }
+
+            // Post-commit: notify the partition's processor
+            self.outbox.notify_partition(partition_id);
+
+            if drained_this_iteration {
+                drained = true;
+                break;
+            }
+
+            drained = false;
         }
 
-        if total > 0 {
-            debug!(
-                total,
-                partitions = affected_partitions.len(),
-                "sequenced batch"
-            );
-        }
-
-        Ok(SequenceBatchResult {
-            any_partition_saturated: any_saturated,
+        Ok(PartitionProcessResult {
+            drained,
+            rows_claimed: total_claimed,
         })
     }
+}
 
+/// Internal result for a single partition's processing.
+struct PartitionProcessResult {
+    drained: bool,
+    rows_claimed: u32,
+}
+
+/// Internal error type distinguishing skipped vs DB errors.
+enum PartitionError {
+    Skipped,
+    Db(OutboxError),
+}
+
+impl From<sea_orm::DbErr> for PartitionError {
+    fn from(e: sea_orm::DbErr) -> Self {
+        Self::Db(OutboxError::Database(e))
+    }
+}
+
+impl From<OutboxError> for PartitionError {
+    fn from(e: OutboxError) -> Self {
+        Self::Db(e)
+    }
+}
+
+impl WorkerAction for Sequencer {
+    type Payload = SequencerReport;
+    type Error = OutboxError;
+
+    async fn execute(
+        &mut self,
+        _cancel: &CancellationToken,
+    ) -> Result<Directive<SequencerReport>, OutboxError> {
+        let Some(guard) = self.shared_prioritizer.take() else {
+            return Ok(Directive::Idle(SequencerReport {
+                partition_id: -1,
+                rows_claimed: 0,
+            }));
+        };
+
+        let pid = guard.partition_id();
+        match self.process_partition(pid).await {
+            Ok(result) => {
+                let report = SequencerReport {
+                    partition_id: pid,
+                    rows_claimed: result.rows_claimed,
+                };
+                guard.processed();
+
+                // Re-dirty only when saturated (partition still has rows).
+                // Drained partitions don't go back — new enqueues re-dirty them.
+                if !result.drained {
+                    self.shared_prioritizer.push_dirty(pid);
+                }
+
+                // Idle only when zero work was done (partition already stolen
+                // or empty). Any work → Proceed, because other dirty partitions
+                // may be queued in the SharedPrioritizer.
+                if result.rows_claimed == 0 {
+                    Ok(Directive::Idle(report))
+                } else {
+                    Ok(Directive::Proceed(report))
+                }
+            }
+            Err(PartitionError::Skipped) => {
+                guard.skipped();
+                Ok(Directive::Idle(SequencerReport {
+                    partition_id: pid,
+                    rows_claimed: 0,
+                }))
+            }
+            Err(PartitionError::Db(e)) => {
+                warn!(partition_id = pid, error = %e, "sequencer partition error");
+                guard.error();
+                Ok(Directive::Proceed(SequencerReport {
+                    partition_id: pid,
+                    rows_claimed: 0,
+                }))
+            }
+        }
+    }
+}
+
+impl Sequencer {
     /// Try to acquire a row-level lock on the partition row.
     /// Returns `true` if the lock was acquired, `false` if skipped.
     async fn try_lock_partition(

@@ -1409,6 +1409,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "figment",
+ "futures-util",
  "rust_decimal",
  "ryu",
  "sea-orm",

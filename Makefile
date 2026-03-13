@@ -323,10 +323,6 @@ test-users-info-pg:
 bench-pg:
 	cargo bench -p cf-modkit-db --features pg,preview-outbox --bench outbox_throughput -- postgres
 
-## Run outbox benchmarks against PostgreSQL with query profiler (logs → /tmp/outbox_bench.log)
-bench-pg-profiler:
-	RUST_LOG=info cargo bench -p cf-modkit-db --features pg,outbox-profiler --bench outbox_throughput -- postgres
-
 ## Run outbox throughput benchmarks against MySQL
 bench-mysql:
 	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mysql

@@ -14,9 +14,6 @@ pub struct ProcessContext<'a> {
     pub backend: DbBackend,
     pub dialect: Dialect,
     pub partition_id: i64,
-    #[cfg(feature = "outbox-profiler")]
-    #[allow(dead_code)] // available for strategies to instrument inner queries
-    pub profiler: Option<std::sync::Arc<super::profiler::QueryProfiler>>,
 }
 
 /// Sealed trait for compile-time processing mode dispatch.
@@ -40,7 +37,6 @@ pub trait ProcessingStrategy: Send + Sync {
 pub struct ProcessResult {
     pub count: u32,
     pub handler_result: HandlerResult,
-    pub attempts_before: i16,
     /// Number of messages the handler successfully processed before the batch
     /// completed (or failed). `Some` for `PerMessageAdapter`-wrapped handlers,
     /// `None` for raw batch handlers. Used for partial-failure semantics.
@@ -278,7 +274,6 @@ impl ProcessingStrategy for TransactionalStrategy {
 
         #[allow(clippy::cast_possible_truncation)]
         let count = msgs.len() as u32;
-        let attempts_before = proc_row.attempts;
 
         let result = self.handler.handle(&txn, &msgs, cancel).await;
         #[allow(clippy::cast_possible_truncation)]
@@ -306,7 +301,7 @@ impl ProcessingStrategy for TransactionalStrategy {
         Ok(Some(ProcessResult {
             count,
             handler_result: result,
-            attempts_before,
+
             processed_count: pc,
         }))
     }
@@ -339,7 +334,7 @@ impl ProcessingStrategy for DecoupledStrategy {
         let lease_secs = config.lease_duration.as_secs() as i64;
 
         // Phase 1: Acquire lease + read messages
-        let (proc_row, msgs) = {
+        let (_proc_row, msgs) = {
             let sea_conn = ctx.db.sea_internal();
             let txn = sea_conn.begin().await?;
 
@@ -392,7 +387,6 @@ impl ProcessingStrategy for DecoupledStrategy {
 
         #[allow(clippy::cast_possible_truncation)]
         let count = msgs.len() as u32;
-        let attempts_before = proc_row.attempts;
 
         // Phase 2: call handler outside any transaction
         // Create a child token that fires at 80% of lease duration
@@ -530,7 +524,7 @@ impl ProcessingStrategy for DecoupledStrategy {
         Ok(Some(ProcessResult {
             count,
             handler_result: result,
-            attempts_before,
+
             processed_count: pc,
         }))
     }

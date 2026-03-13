@@ -99,6 +99,24 @@ impl Dialect {
 // -- Single-row insert queries --
 
 impl Dialect {
+    /// Combined CTE: insert body + incoming in a single round-trip.
+    /// Returns the incoming row id. Only for backends that support RETURNING.
+    pub fn insert_body_and_incoming_cte(self) -> Option<&'static str> {
+        match self {
+            Self::Postgres => Some(
+                "WITH b AS (\
+                   INSERT INTO modkit_outbox_body (payload, payload_type) \
+                   VALUES ($1, $2) RETURNING id\
+                 ) \
+                 INSERT INTO modkit_outbox_incoming (partition_id, body_id) \
+                 SELECT $3, id FROM b RETURNING id",
+            ),
+            // SQLite: writable CTEs require 3.35+; the bundled libsqlite3
+            // version may be older, so fall back to two separate INSERTs.
+            Self::Sqlite | Self::MySql => None,
+        }
+    }
+
     pub fn insert_body(self) -> &'static str {
         match self {
             Self::Postgres | Self::Sqlite => {
@@ -314,6 +332,40 @@ impl Dialect {
         }
     }
 
+    /// Execute an INSERT and return the generated `id` column.
+    ///
+    /// Encapsulates RETURNING (Postgres/SQLite) vs `LAST_INSERT_ID` (`MySQL`).
+    async fn exec_insert_returning_id(
+        self,
+        conn: &dyn ConnectionTrait,
+        backend: DbBackend,
+        sql: &str,
+        params: Vec<sea_orm::Value>,
+        context: &str,
+    ) -> Result<i64, DbErr> {
+        if self.supports_returning() {
+            let row = conn
+                .query_one(Statement::from_sql_and_values(backend, sql, params))
+                .await?
+                .ok_or_else(|| {
+                    DbErr::Custom(format!("INSERT RETURNING returned no row for {context}"))
+                })?;
+            row.try_get_by_index(0)
+                .map_err(|e| DbErr::Custom(format!("{context} id column: {e}")))
+        } else {
+            conn.execute(Statement::from_sql_and_values(backend, sql, params))
+                .await?;
+            let row = conn
+                .query_one(Statement::from_string(backend, Self::last_insert_id()))
+                .await?
+                .ok_or_else(|| {
+                    DbErr::Custom(format!("LAST_INSERT_ID() returned no row for {context}"))
+                })?;
+            row.try_get_by_index(0)
+                .map_err(|e| DbErr::Custom(format!("{context} id column: {e}")))
+        }
+    }
+
     /// Execute a single body INSERT and return the generated ID.
     pub async fn exec_insert_body(
         self,
@@ -322,35 +374,14 @@ impl Dialect {
         payload: Vec<u8>,
         payload_type: &str,
     ) -> Result<i64, DbErr> {
-        if self.supports_returning() {
-            let row = conn
-                .query_one(Statement::from_sql_and_values(
-                    backend,
-                    self.insert_body(),
-                    [payload.into(), payload_type.into()],
-                ))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("INSERT RETURNING returned no row for body".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("body id column: {e}")))
-        } else {
-            conn.execute(Statement::from_sql_and_values(
-                backend,
-                self.insert_body(),
-                [payload.into(), payload_type.into()],
-            ))
-            .await?;
-            let row = conn
-                .query_one(Statement::from_string(backend, Self::last_insert_id()))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("LAST_INSERT_ID() returned no row for body".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("body id column: {e}")))
-        }
+        self.exec_insert_returning_id(
+            conn,
+            backend,
+            self.insert_body(),
+            vec![payload.into(), payload_type.into()],
+            "body",
+        )
+        .await
     }
 
     /// Execute a single incoming INSERT and return the generated ID.
@@ -361,34 +392,42 @@ impl Dialect {
         partition_id: i64,
         body_id: i64,
     ) -> Result<i64, DbErr> {
-        if self.supports_returning() {
-            let row = conn
-                .query_one(Statement::from_sql_and_values(
-                    backend,
-                    self.insert_incoming(),
-                    [partition_id.into(), body_id.into()],
-                ))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("INSERT RETURNING returned no row for incoming".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("incoming id column: {e}")))
-        } else {
-            conn.execute(Statement::from_sql_and_values(
+        self.exec_insert_returning_id(
+            conn,
+            backend,
+            self.insert_incoming(),
+            vec![partition_id.into(), body_id.into()],
+            "incoming",
+        )
+        .await
+    }
+
+    /// Execute combined CTE: insert body + incoming in one round-trip.
+    /// Falls back to two separate inserts on `MySQL`.
+    pub async fn exec_insert_body_and_incoming(
+        self,
+        conn: &dyn ConnectionTrait,
+        backend: DbBackend,
+        partition_id: i64,
+        payload: Vec<u8>,
+        payload_type: &str,
+    ) -> Result<i64, DbErr> {
+        if let Some(cte) = self.insert_body_and_incoming_cte() {
+            self.exec_insert_returning_id(
+                conn,
                 backend,
-                self.insert_incoming(),
-                [partition_id.into(), body_id.into()],
-            ))
-            .await?;
-            let row = conn
-                .query_one(Statement::from_string(backend, Self::last_insert_id()))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("LAST_INSERT_ID() returned no row for incoming".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("incoming id column: {e}")))
+                cte,
+                vec![payload.into(), payload_type.into(), partition_id.into()],
+                "incoming",
+            )
+            .await
+        } else {
+            // MySQL: two separate round-trips (no CTE INSERT support)
+            let body_id = self
+                .exec_insert_body(conn, backend, payload, payload_type)
+                .await?;
+            self.exec_insert_incoming(conn, backend, partition_id, body_id)
+                .await
         }
     }
 
@@ -553,6 +592,18 @@ impl Dialect {
                  WHERE id = ? FOR UPDATE SKIP LOCKED",
             ),
             Self::Sqlite => None,
+        }
+    }
+
+    /// Cold-path discovery: find all partition IDs with pending incoming rows.
+    /// Uses the existing `(partition_id, id)` index for an index-only skip scan.
+    /// Same SQL for all backends — `DISTINCT` on the leading index column is portable.
+    pub fn discover_dirty_partitions(self) -> &'static str {
+        // Same SQL for all backends — DISTINCT on leading index column is portable.
+        match self {
+            Self::Postgres | Self::Sqlite | Self::MySql => {
+                "SELECT DISTINCT partition_id FROM modkit_outbox_incoming"
+            }
         }
     }
 }
@@ -738,12 +789,12 @@ impl Dialect {
         match self {
             Self::Postgres | Self::Sqlite => {
                 "UPDATE modkit_outbox_processor \
-                 SET locked_by = NULL, locked_until = NULL \
+                 SET attempts = 0, locked_by = NULL, locked_until = NULL \
                  WHERE partition_id = $1 AND locked_by = $2"
             }
             Self::MySql => {
                 "UPDATE modkit_outbox_processor \
-                 SET locked_by = NULL, locked_until = NULL \
+                 SET attempts = 0, locked_by = NULL, locked_until = NULL \
                  WHERE partition_id = ? AND locked_by = ?"
             }
         }

@@ -3,10 +3,19 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// Default batch size for the sequencer (rows per cycle).
-pub const DEFAULT_SEQUENCER_BATCH_SIZE: u32 = 100;
+pub const DEFAULT_SEQUENCER_BATCH_SIZE: u32 = 1000;
 
 /// Default poll interval (safety net fallback for sequencer and processors).
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(600);
+
+/// Default partition batch limit for the sequencer (max partitions per cycle).
+pub const DEFAULT_PARTITION_BATCH_LIMIT: u32 = 128;
+
+/// Default max inner iterations per partition before yielding.
+pub const DEFAULT_MAX_INNER_ITERATIONS: u32 = 8;
+
+/// Default cold reconciler (poker) interval.
+pub const DEFAULT_POKER_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Default message batch size (messages per handler call per partition).
 pub const DEFAULT_MSG_BATCH_SIZE: u32 = 1;
@@ -101,6 +110,12 @@ pub enum OutboxError {
         found: usize,
     },
 
+    #[error("invalid queue name: '{0}'")]
+    InvalidQueueName(String),
+
+    #[error("invalid payload type: '{0}'")]
+    InvalidPayloadType(String),
+
     #[error(transparent)]
     Database(#[from] sea_orm::DbErr),
 }
@@ -116,6 +131,10 @@ pub struct OutboxConfig {
 pub struct SequencerConfig {
     pub batch_size: u32,
     pub poll_interval: Duration,
+    /// Max partitions to process per sequencer cycle. Default: 128.
+    pub partition_batch_limit: u32,
+    /// Max inner drain iterations per partition before yielding. Default: 8.
+    pub max_inner_iterations: u32,
 }
 
 impl Default for SequencerConfig {
@@ -123,6 +142,8 @@ impl Default for SequencerConfig {
         Self {
             batch_size: DEFAULT_SEQUENCER_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
+            partition_batch_limit: DEFAULT_PARTITION_BATCH_LIMIT,
+            max_inner_iterations: DEFAULT_MAX_INNER_ITERATIONS,
         }
     }
 }
@@ -133,9 +154,6 @@ pub struct QueueConfig {
     /// Lease duration for decoupled mode partition locks.
     /// Ignored for transactional mode. Default: 30s.
     pub lease_duration: Duration,
-    /// Max partitions processed concurrently within this queue.
-    /// Default: `usize::MAX` (all partitions).
-    pub max_concurrent_partitions: usize,
     /// Messages per handler call per partition. Default: 1.
     pub msg_batch_size: u32,
     /// Safety net fallback poll interval per partition. Default: 1s.
@@ -148,26 +166,28 @@ pub struct QueueConfig {
     pub backoff_max: Duration,
 }
 
+/// Configuration specific to decoupled handler mode.
+#[derive(Debug, Clone, Copy)]
+pub struct DecoupledConfig {
+    /// Lease duration for decoupled mode partition locks. Default: 30s.
+    pub lease_duration: Duration,
+}
+
+impl Default for DecoupledConfig {
+    fn default() -> Self {
+        Self {
+            lease_duration: DEFAULT_LEASE_DURATION,
+        }
+    }
+}
+
 /// Default vacuum cooldown: 1 hour.
 pub const DEFAULT_VACUUM_COOLDOWN: Duration = Duration::from_secs(3600);
-
-/// Maintenance connection budget for the outbox pipeline.
-///
-/// The sequencer and vacuum share a semaphore pool of `concurrency`
-/// permits for DB operations.
-#[derive(Debug, Clone)]
-pub struct MaintenanceConfig {
-    /// Total shared maintenance semaphore permits.
-    pub concurrency: usize,
-    /// Minimum interval between full vacuum sweeps. Default: 1h.
-    pub vacuum_cooldown: Duration,
-}
 
 impl Default for QueueConfig {
     fn default() -> Self {
         Self {
             lease_duration: DEFAULT_LEASE_DURATION,
-            max_concurrent_partitions: usize::MAX,
             msg_batch_size: DEFAULT_MSG_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             backoff_base: DEFAULT_BACKOFF_BASE,

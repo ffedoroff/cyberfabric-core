@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -6,9 +7,13 @@ use tokio::sync::{Notify, RwLock};
 
 use super::dialect::Dialect;
 use super::manager::OutboxBuilder;
+use super::prioritizer::SharedPrioritizer;
 use super::types::{EnqueueMessage, OutboxConfig, OutboxError, OutboxMessageId};
 use crate::Db;
 use crate::secure::SeaOrmRunner;
+
+/// Per-partition notify map shared between sequencer and processors.
+type PartitionNotifyMap = Arc<HashMap<i64, Arc<Notify>>>;
 
 /// Maximum payload size in bytes (64 KiB).
 const MAX_PAYLOAD_SIZE: usize = 64 * 1024;
@@ -26,9 +31,11 @@ pub struct Outbox {
     /// Flattened, sorted, deduplicated snapshot of all partition IDs.
     /// Rebuilt on each `register_queue` call.
     all_partition_ids: RwLock<Vec<i64>>,
-    sequencer_notify: Arc<Notify>,
-    #[cfg(feature = "outbox-profiler")]
-    profiler: Option<Arc<super::profiler::QueryProfiler>>,
+    /// Shared prioritizer for dirty partition tracking. Set during `start()`.
+    pub(crate) prioritizer: RwLock<Option<Arc<SharedPrioritizer>>>,
+    /// Per-partition notify map for direct signaling from sequencer to processors.
+    /// Set once during `start()` after all processors are spawned.
+    partition_notify: RwLock<Option<PartitionNotifyMap>>,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -47,34 +54,15 @@ impl Outbox {
 
     /// Create a new outbox. Construction goes through [`OutboxBuilder::start()`].
     #[must_use]
-    pub(crate) fn new(config: OutboxConfig, sequencer_notify: Arc<Notify>) -> Self {
+    pub(crate) fn new(config: OutboxConfig) -> Self {
         Self {
             config,
             partitions: DashMap::new(),
             partition_to_queue: DashMap::new(),
             all_partition_ids: RwLock::new(Vec::new()),
-            sequencer_notify,
-            #[cfg(feature = "outbox-profiler")]
-            profiler: None,
+            prioritizer: RwLock::new(None),
+            partition_notify: RwLock::new(None),
         }
-    }
-
-    /// Attach a query profiler. Called by the builder when the feature is enabled.
-    #[cfg(feature = "outbox-profiler")]
-    pub(crate) fn set_profiler(&mut self, profiler: Arc<super::profiler::QueryProfiler>) {
-        self.profiler = Some(profiler);
-    }
-
-    /// Returns a reference to the profiler if attached.
-    #[cfg(feature = "outbox-profiler")]
-    pub(crate) fn profiler(&self) -> Option<&super::profiler::QueryProfiler> {
-        self.profiler.as_deref()
-    }
-
-    /// Returns an `Arc` clone of the profiler if attached.
-    #[cfg(feature = "outbox-profiler")]
-    pub(crate) fn profiler_arc(&self) -> Option<Arc<super::profiler::QueryProfiler>> {
-        self.profiler.clone()
     }
 
     /// Register a queue with `num_partitions` partitions `[0, num_partitions)`.
@@ -100,6 +88,7 @@ impl Outbox {
         queue: &str,
         num_partitions: u16,
     ) -> Result<(), OutboxError> {
+        super::validation::validate_queue_name(queue)?;
         let conn = db.sea_internal();
         let txn = conn.begin().await?;
         let backend = txn.get_database_backend();
@@ -258,22 +247,16 @@ impl Outbox {
         payload: Vec<u8>,
         payload_type: &str,
     ) -> Result<OutboxMessageId, OutboxError> {
+        super::validation::validate_queue_name(queue)?;
+        super::validation::validate_payload_type(payload_type)?;
         Self::validate_payload(&payload)?;
         let partition_id = self.resolve_partition(queue, partition)?;
-
-        #[cfg(feature = "outbox-profiler")]
-        let mut body_guard = self
-            .profiler()
-            .map(|p| p.measure(super::profiler::Op::EnqueueInsertBody));
 
         let runner = db.as_seaorm();
         let incoming_id =
             Self::insert_body_and_incoming(&runner, partition_id, payload, payload_type).await?;
 
-        #[cfg(feature = "outbox-profiler")]
-        if let Some(g) = body_guard.as_mut() {
-            g.set_rows(1);
-        }
+        self.push_dirty(partition_id);
 
         Ok(OutboxMessageId(incoming_id))
     }
@@ -292,25 +275,21 @@ impl Outbox {
         items: &[EnqueueMessage<'_>],
     ) -> Result<Vec<OutboxMessageId>, OutboxError> {
         // Validate ALL items first
+        super::validation::validate_queue_name(queue)?;
         let mut resolved = Vec::with_capacity(items.len());
         for item in items {
+            super::validation::validate_payload_type(item.payload_type)?;
             Self::validate_payload(&item.payload)?;
             let partition_id = self.resolve_partition(queue, item.partition)?;
             resolved.push(partition_id);
         }
 
-        #[cfg(feature = "outbox-profiler")]
-        let mut body_guard = self
-            .profiler()
-            .map(|p| p.measure(super::profiler::Op::EnqueueInsertBody));
-
         let runner = db.as_seaorm();
         let ids = Self::insert_batch(&runner, &resolved, items).await?;
 
-        #[cfg(feature = "outbox-profiler")]
-        if let Some(g) = body_guard.as_mut() {
-            #[allow(clippy::cast_possible_truncation)]
-            g.set_rows(ids.len() as u64);
+        // Push dirty for each distinct partition_id in the batch
+        for &pid in &resolved {
+            self.push_dirty(pid);
         }
 
         Ok(ids)
@@ -376,11 +355,8 @@ impl Outbox {
         };
         let dialect = Dialect::from(backend);
 
-        let body_id = dialect
-            .exec_insert_body(conn, backend, payload, payload_type)
-            .await?;
         let incoming_id = dialect
-            .exec_insert_incoming(conn, backend, partition_id, body_id)
+            .exec_insert_body_and_incoming(conn, backend, partition_id, payload, payload_type)
             .await?;
 
         Ok(incoming_id)
@@ -480,10 +456,45 @@ impl Outbox {
         super::dead_letter::dead_letter_cleanup(db.as_seaorm(), scope).await
     }
 
+    /// Install the shared prioritizer. Called once during `start()`.
+    pub(crate) async fn set_prioritizer(&self, prioritizer: Arc<SharedPrioritizer>) {
+        *self.prioritizer.write().await = Some(prioritizer);
+    }
+
+    /// Push a partition into the prioritizer (dirty signal).
+    /// No-op if the prioritizer is not yet installed (before `start()`).
+    fn push_dirty(&self, partition_id: i64) {
+        if let Some(guard) = self.prioritizer.try_read().ok()
+            && let Some(p) = guard.as_ref()
+        {
+            p.push_dirty(partition_id);
+        }
+    }
+
+    /// Install the per-partition notify map. Called once during `start()`.
+    pub(crate) async fn set_partition_notify(&self, map: PartitionNotifyMap) {
+        *self.partition_notify.write().await = Some(map);
+    }
+
+    /// Signal a partition's processor that new outgoing rows are available.
+    pub(crate) fn notify_partition(&self, partition_id: i64) {
+        if let Some(guard) = self.partition_notify.try_read().ok()
+            && let Some(map) = guard.as_ref()
+            && let Some(notify) = map.get(&partition_id)
+        {
+            notify.notify_one();
+        }
+    }
+
     /// Notify the sequencer that new items are available.
     /// Multiple flushes coalesce into a single wakeup.
+    /// No-op before `set_prioritizer()` (during startup).
     pub fn flush(&self) {
-        self.sequencer_notify.notify_one();
+        if let Ok(guard) = self.prioritizer.try_read()
+            && let Some(p) = guard.as_ref()
+        {
+            p.wake_sequencers();
+        }
     }
 
     /// Execute a closure inside a database transaction, then auto-flush
@@ -506,6 +517,7 @@ impl Outbox {
 
     /// Returns all registered partition IDs in deterministic order (sorted by PK).
     /// Reads from a pre-computed cache that is rebuilt on each `register_queue` call.
+    #[allow(dead_code)] // used in integration tests
     pub(crate) fn all_partition_ids(&self) -> Vec<i64> {
         // try_read is non-blocking and always succeeds when no writer is active.
         // Writers only hold the lock briefly during register_queue (startup).
@@ -558,8 +570,7 @@ mod tests {
     use crate::outbox::types::*;
 
     fn make_outbox(config: OutboxConfig) -> Arc<Outbox> {
-        let notify = Arc::new(Notify::new());
-        Arc::new(Outbox::new(config, notify))
+        Arc::new(Outbox::new(config))
     }
 
     fn make_default_outbox() -> Arc<Outbox> {
@@ -644,19 +655,33 @@ mod tests {
 
     #[tokio::test]
     async fn flush_triggers_notify() {
-        let notify = Arc::new(Notify::new());
-        let outbox = Arc::new(Outbox::new(OutboxConfig::default(), Arc::clone(&notify)));
+        use crate::outbox::prioritizer::SharedPrioritizer;
+        let prioritizer = Arc::new(SharedPrioritizer::new());
+        let notifier = prioritizer.notifier();
+        let outbox = Arc::new(Outbox::new(OutboxConfig::default()));
+        outbox.set_prioritizer(Arc::clone(&prioritizer)).await;
 
         outbox.flush();
-        // Notify was signaled — notified() resolves immediately
-        tokio::time::timeout(std::time::Duration::from_millis(50), notify.notified())
+        // Notify was signaled via prioritizer — notified() resolves immediately
+        tokio::time::timeout(std::time::Duration::from_millis(50), notifier.notified())
             .await
             .expect("notify should fire");
     }
 
-    #[test]
-    fn flush_does_not_block() {
-        let outbox = make_default_outbox();
+    #[tokio::test]
+    async fn flush_before_prioritizer_is_noop() {
+        let outbox = Arc::new(Outbox::new(OutboxConfig::default()));
+        // flush() before set_prioritizer() — should not panic
+        outbox.flush();
+        outbox.flush();
+    }
+
+    #[tokio::test]
+    async fn flush_does_not_block() {
+        use crate::outbox::prioritizer::SharedPrioritizer;
+        let prioritizer = Arc::new(SharedPrioritizer::new());
+        let outbox = Arc::new(Outbox::new(OutboxConfig::default()));
+        outbox.set_prioritizer(prioritizer).await;
         // Multiple flushes should not block or panic
         outbox.flush();
         outbox.flush();
