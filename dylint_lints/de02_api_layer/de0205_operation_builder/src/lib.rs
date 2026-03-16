@@ -100,7 +100,7 @@ fn is_operation_builder_method(cx: &LateContext<'_>, expr: &rustc_hir::Expr<'_>)
     let ty = cx.typeck_results().expr_ty(expr);
     let type_str = format!("{:?}", ty);
 
-    type_str.contains("OperationBuilder")
+    type_str.contains("OperationBuilder") && type_str.contains("modkit")
 }
 
 fn extract_tag_value(cx: &LateContext<'_>, expr: &rustc_hir::Expr<'_>) -> Option<String> {
