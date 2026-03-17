@@ -344,10 +344,6 @@ impl De0901GtsStringPattern {
         self.check_gts_string_literal_with_wildcard_flag(cx, expr, false);
     }
 
-    fn check_gts_string_literal_with_wildcards(&self, cx: &EarlyContext<'_>, expr: &Expr) {
-        self.check_gts_string_literal_with_wildcard_flag(cx, expr, true);
-    }
-
     fn check_gts_string_literal_with_wildcard_flag(
         &self,
         cx: &EarlyContext<'_>,
