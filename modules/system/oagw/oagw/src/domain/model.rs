@@ -53,13 +53,21 @@ impl Endpoint {
         }
     }
 
-    /// The normalized host for alias derivation: lowercased, trailing dots stripped.
+    /// The normalized host: brackets stripped (IPv6), lowercased, trailing dots stripped.
     #[must_use]
     pub fn normalized_host(&self) -> String {
-        self.host
-            .to_ascii_lowercase()
-            .trim_end_matches('.')
-            .to_string()
+        let h = self
+            .host
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(&self.host);
+        h.to_ascii_lowercase().trim_end_matches('.').to_string()
+    }
+
+    /// Whether this endpoint's host is an IP address (v4 or v6).
+    #[must_use]
+    pub fn is_ip(&self) -> bool {
+        self.normalized_host().parse::<std::net::IpAddr>().is_ok()
     }
 
     /// Single-endpoint alias contribution: `host` if standard port, `host:port` otherwise.

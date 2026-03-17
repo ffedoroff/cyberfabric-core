@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use super::ControlPlaneService;
-use std::net::IpAddr;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::{
@@ -683,10 +682,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> Result<(), DomainError> {
     // Enabling IPv6 requires SSRF protections (deny-lists for link-local, private
     // ranges, IPv4-mapped addresses).
     for (i, ep) in endpoints.iter().enumerate() {
-        if strip_brackets(&ep.host)
-            .parse::<std::net::Ipv6Addr>()
-            .is_ok()
-        {
+        if ep.normalized_host().parse::<std::net::Ipv6Addr>().is_ok() {
             return Err(DomainError::validation(format!(
                 "endpoint[{i}] uses IPv6 address '{}'; IPv6 endpoints are not yet supported",
                 ep.host
@@ -695,10 +691,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> Result<(), DomainError> {
     }
 
     // Check all-IP vs all-hostname consistency.
-    let ip_count = endpoints
-        .iter()
-        .filter(|ep| strip_brackets(&ep.host).parse::<IpAddr>().is_ok())
-        .count();
+    let ip_count = endpoints.iter().filter(|ep| ep.is_ip()).count();
     if ip_count != 0 && ip_count != endpoints.len() {
         return Err(DomainError::validation(
             "all endpoints must use either IP addresses or hostnames; mixed configurations are not allowed",
@@ -817,14 +810,6 @@ fn validate_alias(alias: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
-/// Strip surrounding `[` and `]` from a host string so that bracketed IPv6
-/// literals (e.g. `[2001:db8::1]`) can be parsed by `Ipv6Addr` / `IpAddr`.
-fn strip_brackets(host: &str) -> &str {
-    host.strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host)
-}
-
 /// Normalize an alias to lowercase. Hostname trailing dots are already
 /// handled by `Endpoint::normalized_host()` during derivation; this covers
 /// user-provided explicit aliases. All trailing dots are stripped.
@@ -834,10 +819,7 @@ fn normalize_alias(alias: &str) -> String {
 
 /// Check whether the given endpoints are all IP addresses.
 fn endpoints_are_ip(endpoints: &[Endpoint]) -> bool {
-    !endpoints.is_empty()
-        && endpoints
-            .iter()
-            .all(|ep| strip_brackets(&ep.host).parse::<IpAddr>().is_ok())
+    !endpoints.is_empty() && endpoints.iter().all(Endpoint::is_ip)
 }
 
 /// Attempt to derive an alias from the endpoint list.
