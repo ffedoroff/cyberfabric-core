@@ -46,7 +46,7 @@ pub struct VacuumSql {
 /// the SELECT returns rows ordered by `id`, and the sequencer assigns
 /// sequences in that order before deleting.
 pub struct ClaimSql {
-    /// SELECT query that returns `id, body_id, created_at` ordered by `id`.
+    /// SELECT query that returns `id, body_id` ordered by `id`.
     /// Pg/MySQL append `FOR UPDATE`; `SQLite` omits it (no row locking).
     pub select: String,
 }
@@ -99,6 +99,24 @@ impl Dialect {
 // -- Single-row insert queries --
 
 impl Dialect {
+    /// Combined CTE: insert body + incoming in a single round-trip.
+    /// Returns the incoming row id. Only for backends that support RETURNING.
+    pub fn insert_body_and_incoming_cte(self) -> Option<&'static str> {
+        match self {
+            Self::Postgres => Some(
+                "WITH b AS (\
+                   INSERT INTO modkit_outbox_body (payload, payload_type) \
+                   VALUES ($1, $2) RETURNING id\
+                 ) \
+                 INSERT INTO modkit_outbox_incoming (partition_id, body_id) \
+                 SELECT $3, id FROM b RETURNING id",
+            ),
+            // SQLite: writable CTEs require 3.35+; the bundled libsqlite3
+            // version may be older, so fall back to two separate INSERTs.
+            Self::Sqlite | Self::MySql => None,
+        }
+    }
+
     pub fn insert_body(self) -> &'static str {
         match self {
             Self::Postgres | Self::Sqlite => {
@@ -165,10 +183,11 @@ impl Dialect {
         sql
     }
 
-    /// Build `SELECT id, payload, payload_type FROM modkit_outbox_body WHERE id IN (...)`.
+    /// Build `SELECT id, payload, payload_type, created_at FROM modkit_outbox_body WHERE id IN (...)`.
     pub fn build_read_body_batch(self, count: usize) -> String {
-        let mut sql =
-            String::from("SELECT id, payload, payload_type FROM modkit_outbox_body WHERE id IN (");
+        let mut sql = String::from(
+            "SELECT id, payload, payload_type, created_at FROM modkit_outbox_body WHERE id IN (",
+        );
         self.append_in_placeholders(&mut sql, count);
         sql.push(')');
         sql
@@ -314,6 +333,40 @@ impl Dialect {
         }
     }
 
+    /// Execute an INSERT and return the generated `id` column.
+    ///
+    /// Encapsulates RETURNING (Postgres/SQLite) vs `LAST_INSERT_ID` (`MySQL`).
+    async fn exec_insert_returning_id(
+        self,
+        conn: &dyn ConnectionTrait,
+        backend: DbBackend,
+        sql: &str,
+        params: Vec<sea_orm::Value>,
+        context: &str,
+    ) -> Result<i64, DbErr> {
+        if self.supports_returning() {
+            let row = conn
+                .query_one(Statement::from_sql_and_values(backend, sql, params))
+                .await?
+                .ok_or_else(|| {
+                    DbErr::Custom(format!("INSERT RETURNING returned no row for {context}"))
+                })?;
+            row.try_get_by_index(0)
+                .map_err(|e| DbErr::Custom(format!("{context} id column: {e}")))
+        } else {
+            conn.execute(Statement::from_sql_and_values(backend, sql, params))
+                .await?;
+            let row = conn
+                .query_one(Statement::from_string(backend, Self::last_insert_id()))
+                .await?
+                .ok_or_else(|| {
+                    DbErr::Custom(format!("LAST_INSERT_ID() returned no row for {context}"))
+                })?;
+            row.try_get_by_index(0)
+                .map_err(|e| DbErr::Custom(format!("{context} id column: {e}")))
+        }
+    }
+
     /// Execute a single body INSERT and return the generated ID.
     pub async fn exec_insert_body(
         self,
@@ -322,35 +375,14 @@ impl Dialect {
         payload: Vec<u8>,
         payload_type: &str,
     ) -> Result<i64, DbErr> {
-        if self.supports_returning() {
-            let row = conn
-                .query_one(Statement::from_sql_and_values(
-                    backend,
-                    self.insert_body(),
-                    [payload.into(), payload_type.into()],
-                ))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("INSERT RETURNING returned no row for body".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("body id column: {e}")))
-        } else {
-            conn.execute(Statement::from_sql_and_values(
-                backend,
-                self.insert_body(),
-                [payload.into(), payload_type.into()],
-            ))
-            .await?;
-            let row = conn
-                .query_one(Statement::from_string(backend, Self::last_insert_id()))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("LAST_INSERT_ID() returned no row for body".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("body id column: {e}")))
-        }
+        self.exec_insert_returning_id(
+            conn,
+            backend,
+            self.insert_body(),
+            vec![payload.into(), payload_type.into()],
+            "body",
+        )
+        .await
     }
 
     /// Execute a single incoming INSERT and return the generated ID.
@@ -361,34 +393,42 @@ impl Dialect {
         partition_id: i64,
         body_id: i64,
     ) -> Result<i64, DbErr> {
-        if self.supports_returning() {
-            let row = conn
-                .query_one(Statement::from_sql_and_values(
-                    backend,
-                    self.insert_incoming(),
-                    [partition_id.into(), body_id.into()],
-                ))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("INSERT RETURNING returned no row for incoming".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("incoming id column: {e}")))
-        } else {
-            conn.execute(Statement::from_sql_and_values(
+        self.exec_insert_returning_id(
+            conn,
+            backend,
+            self.insert_incoming(),
+            vec![partition_id.into(), body_id.into()],
+            "incoming",
+        )
+        .await
+    }
+
+    /// Execute combined CTE: insert body + incoming in one round-trip.
+    /// Falls back to two separate inserts on `MySQL`.
+    pub async fn exec_insert_body_and_incoming(
+        self,
+        conn: &dyn ConnectionTrait,
+        backend: DbBackend,
+        partition_id: i64,
+        payload: Vec<u8>,
+        payload_type: &str,
+    ) -> Result<i64, DbErr> {
+        if let Some(cte) = self.insert_body_and_incoming_cte() {
+            self.exec_insert_returning_id(
+                conn,
                 backend,
-                self.insert_incoming(),
-                [partition_id.into(), body_id.into()],
-            ))
-            .await?;
-            let row = conn
-                .query_one(Statement::from_string(backend, Self::last_insert_id()))
-                .await?
-                .ok_or_else(|| {
-                    DbErr::Custom("LAST_INSERT_ID() returned no row for incoming".to_owned())
-                })?;
-            row.try_get_by_index(0)
-                .map_err(|e| DbErr::Custom(format!("incoming id column: {e}")))
+                cte,
+                vec![payload.into(), payload_type.into(), partition_id.into()],
+                "incoming",
+            )
+            .await
+        } else {
+            // MySQL: two separate round-trips (no CTE INSERT support)
+            let body_id = self
+                .exec_insert_body(conn, backend, payload, payload_type)
+                .await?;
+            self.exec_insert_incoming(conn, backend, partition_id, body_id)
+                .await
         }
     }
 
@@ -465,31 +505,33 @@ impl Dialect {
         match self {
             Self::Postgres => ClaimSql {
                 select: format!(
-                    "SELECT id, body_id, created_at \
+                    "SELECT id, body_id \
                      FROM modkit_outbox_incoming \
                      WHERE partition_id = $1 \
                      ORDER BY id \
                      LIMIT {batch_size} \
-                     FOR UPDATE"
+                     FOR UPDATE SKIP LOCKED"
                 ),
             },
             Self::Sqlite => ClaimSql {
                 select: format!(
-                    "SELECT id, body_id, created_at \
+                    "SELECT id, body_id \
                      FROM modkit_outbox_incoming \
                      WHERE partition_id = $1 \
                      ORDER BY id \
                      LIMIT {batch_size}"
                 ),
             },
+            // SKIP LOCKED prevents InnoDB gap-lock deadlocks when
+            // multiple sequencers claim from adjacent partitions.
             Self::MySql => ClaimSql {
                 select: format!(
-                    "SELECT id, body_id, created_at \
+                    "SELECT id, body_id \
                      FROM modkit_outbox_incoming \
                      WHERE partition_id = ? \
                      ORDER BY id \
                      LIMIT {batch_size} \
-                     FOR UPDATE"
+                     FOR UPDATE SKIP LOCKED"
                 ),
             },
         }
@@ -535,10 +577,9 @@ impl Dialect {
     }
 
     pub fn build_insert_outgoing_batch(self, count: usize) -> String {
-        let mut sql = String::from(
-            "INSERT INTO modkit_outbox_outgoing (partition_id, body_id, seq, created_at) VALUES ",
-        );
-        self.append_value_tuples(&mut sql, count, 4);
+        let mut sql =
+            String::from("INSERT INTO modkit_outbox_outgoing (partition_id, body_id, seq) VALUES ");
+        self.append_value_tuples(&mut sql, count, 3);
         sql
     }
 
@@ -553,6 +594,18 @@ impl Dialect {
                  WHERE id = ? FOR UPDATE SKIP LOCKED",
             ),
             Self::Sqlite => None,
+        }
+    }
+
+    /// Cold-path discovery: find all partition IDs with pending incoming rows.
+    /// Uses the existing `(partition_id, id)` index for an index-only skip scan.
+    /// Same SQL for all backends — `DISTINCT` on the leading index column is portable.
+    pub fn discover_dirty_partitions(self) -> &'static str {
+        // Same SQL for all backends — DISTINCT on leading index column is portable.
+        match self {
+            Self::Postgres | Self::Sqlite | Self::MySql => {
+                "SELECT DISTINCT partition_id FROM modkit_outbox_incoming"
+            }
         }
     }
 }
@@ -596,14 +649,14 @@ impl Dialect {
     pub fn read_outgoing_batch(self, batch_size: u32) -> String {
         match self {
             Self::Postgres | Self::Sqlite => format!(
-                "SELECT id, body_id, seq, created_at \
+                "SELECT id, body_id, seq \
                  FROM modkit_outbox_outgoing \
                  WHERE partition_id = $1 AND seq > $2 \
                  ORDER BY seq \
                  LIMIT {batch_size}"
             ),
             Self::MySql => format!(
-                "SELECT id, body_id, seq, created_at \
+                "SELECT id, body_id, seq \
                  FROM modkit_outbox_outgoing \
                  WHERE partition_id = ? AND seq > ? \
                  ORDER BY seq \
@@ -738,12 +791,12 @@ impl Dialect {
         match self {
             Self::Postgres | Self::Sqlite => {
                 "UPDATE modkit_outbox_processor \
-                 SET locked_by = NULL, locked_until = NULL \
+                 SET attempts = 0, locked_by = NULL, locked_until = NULL \
                  WHERE partition_id = $1 AND locked_by = $2"
             }
             Self::MySql => {
                 "UPDATE modkit_outbox_processor \
-                 SET locked_by = NULL, locked_until = NULL \
+                 SET attempts = 0, locked_by = NULL, locked_until = NULL \
                  WHERE partition_id = ? AND locked_by = ?"
             }
         }
@@ -950,7 +1003,7 @@ mod tests {
     fn claim_pg_select_ordered_with_for_update() {
         let claim = Dialect::Postgres.claim_incoming(100);
         assert!(claim.select.contains("ORDER BY id"));
-        assert!(claim.select.contains("FOR UPDATE"));
+        assert!(claim.select.contains("FOR UPDATE SKIP LOCKED"));
         assert!(claim.select.contains("$1"));
     }
 
@@ -965,7 +1018,7 @@ mod tests {
     fn claim_mysql_select_ordered_with_for_update() {
         let claim = Dialect::MySql.claim_incoming(100);
         assert!(claim.select.contains("ORDER BY id"));
-        assert!(claim.select.contains("FOR UPDATE"));
+        assert!(claim.select.contains("FOR UPDATE SKIP LOCKED"));
         assert!(claim.select.contains('?'));
     }
 
@@ -1058,7 +1111,7 @@ mod tests {
     fn build_read_body_batch_placeholders() {
         let pg = Dialect::Postgres.build_read_body_batch(3);
         assert!(pg.contains("$1, $2, $3"));
-        assert!(pg.contains("SELECT id, payload, payload_type"));
+        assert!(pg.contains("SELECT id, payload, payload_type, created_at"));
 
         let mysql = Dialect::MySql.build_read_body_batch(3);
         assert!(mysql.contains("?, ?, ?"));

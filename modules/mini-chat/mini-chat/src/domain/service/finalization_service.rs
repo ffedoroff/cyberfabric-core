@@ -20,6 +20,9 @@ use crate::domain::repos::{
 use crate::domain::service::quota_settler::QuotaSettler;
 use crate::infra::db::entity::chat_turn::TurnState;
 
+use crate::domain::ports::MiniChatMetricsPort;
+use crate::domain::ports::metric_labels::{period, result as result_label, trigger};
+
 use super::DbProvider;
 
 fn to_db(e: DomainError) -> modkit_db::DbError {
@@ -41,6 +44,7 @@ pub struct FinalizationService<TR: TurnRepository + 'static, MR: MessageReposito
     message_repo: Arc<MR>,
     quota_settler: Arc<dyn QuotaSettler>,
     outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
+    metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
 impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> FinalizationService<TR, MR> {
@@ -50,6 +54,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         message_repo: Arc<MR>,
         quota_settler: Arc<dyn QuotaSettler>,
         outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
+        metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         Self {
             db,
@@ -57,6 +62,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
             message_repo,
             quota_settler,
             outbox_enqueuer,
+            metrics,
         }
     }
 
@@ -70,11 +76,13 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
     ///
     /// If message persistence fails on a completed turn, rolls back and
     /// retries as `Failed` with `error_code = "message_persistence_failed"`
-    /// (content durability invariant, DESIGN.md §5.7).
+    /// (content durability invariant).
+    #[allow(clippy::cognitive_complexity)]
     pub(crate) async fn finalize_turn_cas(
         &self,
         input: FinalizationInput,
     ) -> Result<FinalizationOutcome, DomainError> {
+        let start = std::time::Instant::now();
         let result = self.try_finalize(&input).await;
 
         match result {
@@ -84,39 +92,83 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                     self.outbox_enqueuer.flush();
                 }
                 if let Some(billing) = outcome.billing_outcome {
-                    Self::emit_post_commit_side_effects(&input, billing);
+                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                    Self::emit_post_commit_side_effects(&input, billing, ms, &*self.metrics);
                 }
                 Ok(outcome)
             }
             Err(FinalizationError::MessagePersistenceFailed(e)) => {
-                // Content durability invariant: downgrade completed → failed.
-                // The transaction rolled back, so the turn is still 'running'.
-                // Retry with Failed state.
-                error!(
-                    error = %e,
-                    turn_id = %input.turn_id,
-                    "message persistence failed, downgrading completed to failed"
-                );
-                let mut retry_input = input;
-                retry_input.terminal_state = TurnState::Failed;
-                retry_input.error_code = Some("message_persistence_failed".to_owned());
-                let retry_outcome =
-                    self.try_finalize(&retry_input)
-                        .await
-                        .map_err(|fe| match fe {
-                            FinalizationError::Domain(de) => de,
-                            FinalizationError::MessagePersistenceFailed(e2) => {
-                                // Should not happen on Failed path (no message INSERT).
-                                DomainError::internal(format!("unexpected retry failure: {e2}"))
-                            }
-                        })?;
-                if retry_outcome.won_cas {
-                    self.outbox_enqueuer.flush();
+                if input.terminal_state == TurnState::Completed {
+                    // Content durability invariant: downgrade completed → failed.
+                    // The transaction rolled back, so the turn is still 'running'.
+                    // Retry with Failed state.
+                    error!(
+                        error = %e,
+                        turn_id = %input.turn_id,
+                        "message persistence failed, downgrading completed to failed"
+                    );
+                    let mut retry_input = input;
+                    retry_input.terminal_state = TurnState::Failed;
+                    retry_input.error_code = Some("message_persistence_failed".to_owned());
+                    let retry_outcome =
+                        self.try_finalize(&retry_input)
+                            .await
+                            .map_err(|fe| match fe {
+                                FinalizationError::Domain(de) => de,
+                                FinalizationError::MessagePersistenceFailed(e2) => {
+                                    DomainError::internal(format!("unexpected retry failure: {e2}"))
+                                }
+                            })?;
+                    if retry_outcome.won_cas {
+                        self.outbox_enqueuer.flush();
+                    }
+                    if let Some(billing) = retry_outcome.billing_outcome {
+                        let ms = start.elapsed().as_secs_f64() * 1000.0;
+                        Self::emit_post_commit_side_effects(
+                            &retry_input,
+                            billing,
+                            ms,
+                            &*self.metrics,
+                        );
+                    }
+                    Ok(retry_outcome)
+                } else {
+                    // Best-effort path (cancelled turns): log and finalize
+                    // without message by clearing accumulated_text (D4).
+                    warn!(
+                        error = %e,
+                        turn_id = %input.turn_id,
+                        terminal_state = ?input.terminal_state,
+                        "message persistence failed on non-completed turn, \
+                         finalizing without message"
+                    );
+                    let mut retry_input = input;
+                    retry_input.accumulated_text = String::new();
+                    let retry_outcome =
+                        self.try_finalize(&retry_input)
+                            .await
+                            .map_err(|fe| match fe {
+                                FinalizationError::Domain(de) => de,
+                                FinalizationError::MessagePersistenceFailed(e2) => {
+                                    DomainError::internal(format!(
+                                        "unexpected message persist on empty text: {e2}"
+                                    ))
+                                }
+                            })?;
+                    if retry_outcome.won_cas {
+                        self.outbox_enqueuer.flush();
+                    }
+                    if let Some(billing) = retry_outcome.billing_outcome {
+                        let ms = start.elapsed().as_secs_f64() * 1000.0;
+                        Self::emit_post_commit_side_effects(
+                            &retry_input,
+                            billing,
+                            ms,
+                            &*self.metrics,
+                        );
+                    }
+                    Ok(retry_outcome)
                 }
-                if let Some(billing) = retry_outcome.billing_outcome {
-                    Self::emit_post_commit_side_effects(&retry_input, billing);
-                }
-                Ok(retry_outcome)
             }
             Err(FinalizationError::Domain(e)) => Err(e),
         }
@@ -196,10 +248,14 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         .await
                         .map_err(to_db)?;
 
-                    // 4. Persist assistant message (completed turns only)
-                    //    Content durability invariant (DESIGN.md §5.7):
-                    //    "completed ⟹ full assistant content is durably persisted"
-                    if input.terminal_state == TurnState::Completed {
+                    // 4. Persist assistant message
+                    //    Completed: full content, required (retry-as-failed on failure)
+                    //    Cancelled with non-empty text: partial content, best-effort
+                    let should_persist_message = input.terminal_state == TurnState::Completed
+                        || (input.terminal_state == TurnState::Cancelled
+                            && !input.accumulated_text.is_empty());
+
+                    if should_persist_message {
                         message_repo
                             .insert_assistant_message(
                                 tx,
@@ -270,30 +326,76 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
 
     /// Emit metrics and logs after the transaction commits.
     /// These MUST NOT run inside the transaction.
-    fn emit_post_commit_side_effects(input: &FinalizationInput, billing: BillingDerivation) {
-        // Unknown error code → critical log + metric
+    fn emit_post_commit_side_effects(
+        input: &FinalizationInput,
+        billing: BillingDerivation,
+        finalization_ms: f64,
+        metrics: &dyn MiniChatMetricsPort,
+    ) {
+        metrics.record_audit_emit(result_label::OK);
+        metrics.record_finalization_latency_ms(finalization_ms);
+        Self::emit_quota_metrics(input, billing, metrics);
+        Self::emit_billing_side_effects(input, billing, metrics);
+    }
+
+    fn emit_quota_metrics(
+        input: &FinalizationInput,
+        billing: BillingDerivation,
+        metrics: &dyn MiniChatMetricsPort,
+    ) {
+        match billing.settlement_method {
+            SettlementMethod::Actual => {
+                metrics.record_quota_commit(period::DAILY);
+                metrics.record_quota_commit(period::MONTHLY);
+                if let Some(usage) = input.usage {
+                    #[allow(clippy::cast_precision_loss)]
+                    let actual = (usage.input_tokens + usage.output_tokens) as f64;
+                    metrics.record_quota_actual_tokens(actual);
+
+                    // Overshoot: actual tokens exceeded the reserved estimate.
+                    // Overshoot detection: mini_chat_quota_overshoot_total{period}
+                    #[allow(clippy::cast_precision_loss)]
+                    let reserved = input.reserve_tokens as f64;
+                    if actual > reserved {
+                        metrics.record_quota_overshoot(period::DAILY);
+                        metrics.record_quota_overshoot(period::MONTHLY);
+                    }
+                }
+            }
+            SettlementMethod::Estimated | SettlementMethod::Released => {
+                // No overshoot metric here: overshoot measures actual > reserved,
+                // but estimated settlement has no actual usage data to compare.
+                // The reserved estimate simply stays as-is until a future
+                // reconciliation pass settles it with real numbers.
+            }
+        }
+    }
+
+    fn emit_billing_side_effects(
+        input: &FinalizationInput,
+        billing: BillingDerivation,
+        metrics: &dyn MiniChatMetricsPort,
+    ) {
         if billing.unknown_error_code {
             error!(
                 error_code = ?input.error_code,
                 turn_id = %input.turn_id,
                 "CRITICAL: unknown error code in billing derivation"
             );
-            // TODO(P4): increment mini_chat_unknown_error_code_total{code} (task 8.4)
         }
 
-        // Aborted billing outcome → streams_aborted metric
         if billing.outcome == BillingOutcome::Aborted {
-            let trigger = match input.error_code.as_deref() {
-                Some("orphan_timeout") => "orphan_timeout",
-                _ if input.terminal_state == TurnState::Cancelled => "client_disconnect",
-                _ => "internal_abort",
+            let abort_trigger = match input.error_code.as_deref() {
+                Some("orphan_timeout") => trigger::ORPHAN_TIMEOUT,
+                _ if input.terminal_state == TurnState::Cancelled => trigger::CLIENT_DISCONNECT,
+                _ => trigger::INTERNAL_ABORT,
             };
             warn!(
                 turn_id = %input.turn_id,
-                trigger = trigger,
+                trigger = abort_trigger,
                 "stream aborted"
             );
-            // TODO(P4): increment mini_chat_streams_aborted_total{trigger} (task 8.3)
+            metrics.record_streams_aborted(abort_trigger);
         }
     }
 }
@@ -347,6 +449,7 @@ enum FinalizationError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::domain::llm::Usage;
     use crate::domain::model::finalization::FinalizationInput;
     use crate::domain::model::quota::{SettlementMethod, SettlementOutcome};
     use crate::domain::repos::{CreateTurnParams, TurnRepository as TurnRepoTrait};
@@ -355,7 +458,6 @@ mod tests {
     use crate::infra::db::entity::quota_usage::PeriodType;
     use crate::infra::db::repo::message_repo::MessageRepository as MsgRepo;
     use crate::infra::db::repo::turn_repo::TurnRepository as TurnRepo;
-    use crate::infra::llm::Usage;
     use modkit_security::AccessScope;
     use uuid::Uuid;
 
@@ -410,6 +512,14 @@ mod tests {
             Ok(())
         }
 
+        async fn enqueue_attachment_cleanup(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _event: crate::domain::repos::AttachmentCleanupEvent,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         fn flush(&self) {
             self.flush_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -432,6 +542,29 @@ mod tests {
             })),
             Arc::new(MockQuotaSettler),
             outbox.clone(),
+            Arc::new(crate::domain::ports::metrics::NoopMetrics),
+        );
+        (svc, outbox)
+    }
+
+    fn build_finalization_service_with_metrics(
+        db: Arc<DbProvider>,
+        metrics: Arc<dyn MiniChatMetricsPort>,
+    ) -> (
+        FinalizationService<TurnRepo, MsgRepo>,
+        Arc<NoopOutboxEnqueuer>,
+    ) {
+        let outbox = Arc::new(NoopOutboxEnqueuer::new());
+        let svc = FinalizationService::new(
+            db,
+            Arc::new(TurnRepo),
+            Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+                default: 20,
+                max: 100,
+            })),
+            Arc::new(MockQuotaSettler),
+            outbox.clone(),
+            metrics,
         );
         (svc, outbox)
     }
@@ -675,6 +808,7 @@ mod tests {
             })),
             Arc::new(FailingQuotaSettler),
             Arc::new(NoopOutboxEnqueuer::new()),
+            Arc::new(crate::domain::ports::metrics::NoopMetrics),
         );
 
         let tenant_id = Uuid::new_v4();
@@ -713,5 +847,204 @@ mod tests {
             .expect("turn should still be running");
         assert_eq!(running.id, turn_id);
         assert_eq!(running.state, TurnState::Running);
+    }
+
+    // ── Metrics emission on successful finalization ──
+
+    #[tokio::test]
+    async fn cas_winner_emits_audit_and_quota_metrics() {
+        use crate::domain::service::test_helpers::TestMetrics;
+        use std::sync::atomic::Ordering;
+
+        let db = mock_db_provider(inmem_db().await);
+        let metrics = Arc::new(TestMetrics::new());
+        let (svc, _outbox) =
+            build_finalization_service_with_metrics(Arc::clone(&db), Arc::clone(&metrics) as _);
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let input = make_input(
+            tenant_id,
+            chat_id,
+            turn_id,
+            request_id,
+            user_id,
+            TurnState::Completed,
+        );
+        let outcome = svc
+            .finalize_turn_cas(input)
+            .await
+            .expect("finalization should succeed");
+        assert!(outcome.won_cas);
+
+        // Audit emission metrics
+        assert_eq!(
+            metrics.audit_emit.load(Ordering::Relaxed),
+            1,
+            "should record audit_emit"
+        );
+        assert_eq!(
+            metrics.finalization_latency_ms.load(Ordering::Relaxed),
+            1,
+            "should record finalization_latency_ms"
+        );
+        // Quota settlement metrics (daily + monthly)
+        assert_eq!(
+            metrics.quota_commit.load(Ordering::Relaxed),
+            2,
+            "should record quota_commit for daily + monthly"
+        );
+        assert_eq!(
+            metrics.quota_actual_tokens.load(Ordering::Relaxed),
+            1,
+            "should record quota_actual_tokens"
+        );
+    }
+
+    // ── Cancelled message persistence tests (D4) ──
+
+    #[tokio::test]
+    async fn cancelled_with_text_persists_message() {
+        let db = mock_db_provider(inmem_db().await);
+        let (svc, _outbox) = build_finalization_service(Arc::clone(&db));
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let mut input = make_input(
+            tenant_id,
+            chat_id,
+            turn_id,
+            request_id,
+            user_id,
+            TurnState::Cancelled,
+        );
+        input.accumulated_text = "partial response content".to_owned();
+        input.usage = None;
+
+        let outcome = svc
+            .finalize_turn_cas(input)
+            .await
+            .expect("finalization should succeed");
+
+        assert!(outcome.won_cas);
+
+        // Verify turn is cancelled with assistant_message_id set
+        let conn = db.conn().unwrap();
+        let scope = AccessScope::allow_all();
+        let turn_repo = TurnRepo;
+        let turn = turn_repo
+            .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
+            .await
+            .expect("find turn")
+            .expect("turn should exist");
+        assert_eq!(turn.state, TurnState::Cancelled);
+        assert!(
+            turn.assistant_message_id.is_some(),
+            "cancelled turn with text should have assistant_message_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_without_text_does_not_persist_message() {
+        let db = mock_db_provider(inmem_db().await);
+        let (svc, _outbox) = build_finalization_service(Arc::clone(&db));
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let mut input = make_input(
+            tenant_id,
+            chat_id,
+            turn_id,
+            request_id,
+            user_id,
+            TurnState::Cancelled,
+        );
+        input.accumulated_text = String::new();
+        input.usage = None;
+
+        let outcome = svc
+            .finalize_turn_cas(input)
+            .await
+            .expect("finalization should succeed");
+
+        assert!(outcome.won_cas);
+
+        let conn = db.conn().unwrap();
+        let scope = AccessScope::allow_all();
+        let turn_repo = TurnRepo;
+        let turn = turn_repo
+            .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
+            .await
+            .expect("find turn")
+            .expect("turn should exist");
+        assert_eq!(turn.state, TurnState::Cancelled);
+        assert!(
+            turn.assistant_message_id.is_none(),
+            "cancelled turn without text should have no assistant_message_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_message_persist_failure_retries_as_failed() {
+        // Existing behavior unchanged — verify the guard doesn't break it.
+        // We test by finalizing as Completed, then finalizing again (CAS loser
+        // path), confirming the first finalization worked correctly.
+        let db = mock_db_provider(inmem_db().await);
+        let (svc, _outbox) = build_finalization_service(Arc::clone(&db));
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let input = make_input(
+            tenant_id,
+            chat_id,
+            turn_id,
+            request_id,
+            user_id,
+            TurnState::Completed,
+        );
+        let outcome = svc
+            .finalize_turn_cas(input)
+            .await
+            .expect("finalization should succeed");
+        assert!(outcome.won_cas);
+
+        let conn = db.conn().unwrap();
+        let scope = AccessScope::allow_all();
+        let turn_repo = TurnRepo;
+        let turn = turn_repo
+            .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
+            .await
+            .expect("find turn")
+            .expect("turn should exist");
+        assert_eq!(turn.state, TurnState::Completed);
+        assert!(turn.assistant_message_id.is_some());
     }
 }

@@ -20,6 +20,7 @@ pub struct OutboxMessage {
 }
 
 /// The result of a handler invocation.
+#[derive(Debug, Clone)]
 pub enum HandlerResult {
     /// All messages processed successfully. The processor advances the cursor
     /// past the last message. Processed outgoing and body rows are cleaned up

@@ -57,7 +57,8 @@ impl crate::domain::repos::QuotaUsageRepository for QuotaUsageRepository {
         ])
         .value(
             Column::ReservedCreditsMicro,
-            Expr::col(Column::ReservedCreditsMicro).add(Expr::value(params.amount_micro)),
+            Expr::col((QuotaUsageEntity, Column::ReservedCreditsMicro))
+                .add(Expr::value(params.amount_micro)),
         )?
         .value(Column::UpdatedAt, Expr::value(now))?;
 

@@ -6,8 +6,11 @@ use modkit_security::{AccessScope, SecurityContext};
 use tracing::info;
 use uuid::Uuid;
 
+use crate::domain::ports::MiniChatMetricsPort;
+use crate::domain::ports::metric_labels::{op, result as result_label};
 use crate::domain::repos::{
-    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository, TurnRepository,
+    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageAttachmentRepository,
+    MessageRepository, TurnRepository,
 };
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
 
@@ -99,6 +102,9 @@ pub struct MutationResult {
     /// Snapshot boundary computed before the new user message was persisted.
     /// Ensures deterministic context assembly (DESIGN `§ContextPlan` Determinism P1).
     pub snapshot_boundary: Option<crate::domain::repos::SnapshotBoundary>,
+    /// Chat model carried from the mutation transaction so the handler can
+    /// resolve the provider without a redundant DB round-trip.
+    pub chat_model: String,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -110,30 +116,41 @@ pub struct TurnService<
     TR: TurnRepository + 'static,
     MR: MessageRepository + 'static,
     CR: ChatRepository + 'static,
+    MAR: MessageAttachmentRepository + 'static,
 > {
     pub(crate) db: Arc<DbProvider>,
     pub(crate) turn_repo: Arc<TR>,
     pub(crate) message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
+    message_attachment_repo: Arc<MAR>,
     enforcer: PolicyEnforcer,
+    metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
-impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepository + 'static>
-    TurnService<TR, MR, CR>
+impl<
+    TR: TurnRepository + 'static,
+    MR: MessageRepository + 'static,
+    CR: ChatRepository + 'static,
+    MAR: MessageAttachmentRepository + 'static,
+> TurnService<TR, MR, CR, MAR>
 {
     pub(crate) fn new(
         db: Arc<DbProvider>,
         turn_repo: Arc<TR>,
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
+        message_attachment_repo: Arc<MAR>,
         enforcer: PolicyEnforcer,
+        metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         Self {
             db,
             turn_repo,
             message_repo,
             chat_repo,
+            message_attachment_repo,
             enforcer,
+            metrics,
         }
     }
 
@@ -145,10 +162,11 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         chat_id: Uuid,
         request_id: Uuid,
     ) -> Result<TurnModel, MutationError> {
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::READ_TURN, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         let conn = self.db.conn().map_err(|e| MutationError::Internal {
             message: e.to_string(),
@@ -156,14 +174,14 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
 
         // Verify chat exists (scoped by authz)
         self.chat_repo
-            .get(&conn, &scope, chat_id)
+            .get(&conn, &chat_scope, chat_id)
             .await
             .map_err(|e| MutationError::Internal {
                 message: e.to_string(),
             })?
             .ok_or(MutationError::ChatNotFound { chat_id })?;
 
-        let scope = scope.tenant_only();
+        let scope = chat_scope.tenant_only();
 
         self.turn_repo
             .find_by_chat_and_request_id(&conn, &scope, chat_id, request_id)
@@ -187,20 +205,25 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
     ) -> Result<(), MutationError> {
         info!(%chat_id, %request_id, "turn delete");
 
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::DELETE_TURN, Some(chat_id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
+
+        let start = std::time::Instant::now();
 
         let turn_repo = Arc::clone(&self.turn_repo);
+        let message_repo = Arc::clone(&self.message_repo);
         let chat_repo = Arc::clone(&self.chat_repo);
-        let scope_tx = scope.clone();
+        let scope_tx = chat_scope.clone();
         let ctx_clone = ctx.clone();
 
-        self.db
+        let result = self
+            .db
             .transaction(|tx| {
                 Box::pin(async move {
-                    let (scope, target) = validate_mutation(
+                    let (scope, target, _chat_model) = validate_mutation(
                         &*chat_repo,
                         &*turn_repo,
                         &scope_tx,
@@ -216,12 +239,22 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
                         .soft_delete(tx, &scope, target.id, None)
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+                    message_repo
+                        .soft_delete_by_request_id(tx, &scope, chat_id, request_id)
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
                     Ok(())
                 })
             })
             .await
-            .map_err(unwrap_mutation_err)
+            .map_err(unwrap_mutation_err);
+
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.metrics
+            .record_turn_mutation(op::DELETE, mutation_result_label(&result));
+        self.metrics.record_turn_mutation_latency_ms(op::DELETE, ms);
+        result
     }
 
     // ── Retry ───────────────────────────────────────────────────────────
@@ -233,12 +266,23 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         request_id: Uuid,
     ) -> Result<MutationResult, MutationError> {
         info!(%chat_id, %request_id, "turn retry");
-        let scope = self
+
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::RETRY_TURN, Some(chat_id))
-            .await?;
-        self.mutate_for_stream(ctx, scope, chat_id, request_id, None)
-            .await
+            .await?
+            .ensure_owner(ctx.subject_id());
+
+        let start = std::time::Instant::now();
+        let result = self
+            .mutate_for_stream(ctx, chat_scope, chat_id, request_id, None)
+            .await;
+
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.metrics
+            .record_turn_mutation(op::RETRY, mutation_result_label(&result));
+        self.metrics.record_turn_mutation_latency_ms(op::RETRY, ms);
+        result
     }
 
     // ── Edit ────────────────────────────────────────────────────────────
@@ -251,12 +295,23 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         new_content: String,
     ) -> Result<MutationResult, MutationError> {
         info!(%chat_id, %request_id, "turn edit");
-        let scope = self
+
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::EDIT_TURN, Some(chat_id))
-            .await?;
-        self.mutate_for_stream(ctx, scope, chat_id, request_id, Some(new_content))
-            .await
+            .await?
+            .ensure_owner(ctx.subject_id());
+
+        let start = std::time::Instant::now();
+        let result = self
+            .mutate_for_stream(ctx, chat_scope, chat_id, request_id, Some(new_content))
+            .await;
+
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.metrics
+            .record_turn_mutation(op::EDIT, mutation_result_label(&result));
+        self.metrics.record_turn_mutation_latency_ms(op::EDIT, ms);
+        result
     }
 
     // ── Shared retry/edit transaction ────────────────────────────────────
@@ -275,14 +330,15 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         let turn_repo = Arc::clone(&self.turn_repo);
         let message_repo = Arc::clone(&self.message_repo);
         let chat_repo = Arc::clone(&self.chat_repo);
+        let message_attachment_repo = Arc::clone(&self.message_attachment_repo);
         let scope_tx = chat_scope.clone();
         let ctx_clone = ctx.clone();
 
-        let (user_content, snapshot_boundary) = self
+        let (user_content, snapshot_boundary, chat_model) = self
             .db
             .transaction(|tx| {
                 Box::pin(async move {
-                    let (scope, target) = validate_mutation(
+                    let (scope, target, chat_model) = validate_mutation(
                         &*chat_repo,
                         &*turn_repo,
                         &scope_tx,
@@ -307,9 +363,13 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
 
                     let user_content = override_content.unwrap_or(original_msg.content);
 
-                    // Soft-delete old turn with replacement link
+                    // Soft-delete old turn and its messages
                     turn_repo
                         .soft_delete(tx, &scope, target.id, Some(new_request_id))
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+                    message_repo
+                        .soft_delete_by_request_id(tx, &scope, chat_id, request_id)
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
@@ -353,12 +413,13 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
                     // Insert user message for the new turn
+                    let new_msg_id = Uuid::new_v4();
                     message_repo
                         .insert_user_message(
                             tx,
                             &scope,
                             InsertUserMessageParams {
-                                id: Uuid::new_v4(),
+                                id: new_msg_id,
                                 tenant_id,
                                 chat_id,
                                 request_id: new_request_id,
@@ -368,7 +429,14 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
-                    Ok((user_content, boundary))
+                    // Copy message_attachments from original message to new message,
+                    // excluding soft-deleted attachments (P3-8).
+                    message_attachment_repo
+                        .copy_for_retry(tx, &scope, original_msg.id, new_msg_id, chat_id)
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+
+                    Ok((user_content, boundary, chat_model))
                 })
             })
             .await
@@ -379,6 +447,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             new_turn_id,
             user_content,
             snapshot_boundary,
+            chat_model,
         })
     }
 }
@@ -395,15 +464,16 @@ async fn validate_mutation<CR: ChatRepository, TR: TurnRepository>(
     tx: &impl modkit_db::secure::DBRunner,
     chat_id: Uuid,
     request_id: Uuid,
-) -> Result<(AccessScope, TurnModel), MutationError> {
+) -> Result<(AccessScope, TurnModel, String), MutationError> {
     // 1. Verify chat exists with pre-computed authorization scope
-    chat_repo
+    let chat = chat_repo
         .get(tx, chat_scope, chat_id)
         .await
         .map_err(|e| MutationError::Internal {
             message: e.to_string(),
         })?
         .ok_or(MutationError::ChatNotFound { chat_id })?;
+    let chat_model = chat.model;
 
     let scope = chat_scope.tenant_only();
 
@@ -444,12 +514,24 @@ async fn validate_mutation<CR: ChatRepository, TR: TurnRepository>(
         _ => return Err(MutationError::NotLatestTurn),
     }
 
-    Ok((scope, target))
+    Ok((scope, target, chat_model))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Error helpers for transaction boundary crossing
 // ════════════════════════════════════════════════════════════════════════════
+
+/// Map a mutation result to a label for the `result` metric dimension.
+fn mutation_result_label<T>(result: &Result<T, MutationError>) -> &'static str {
+    match result {
+        Ok(_) => result_label::OK,
+        Err(MutationError::NotLatestTurn) => result_label::NOT_LATEST,
+        Err(MutationError::InvalidTurnState { .. }) => result_label::INVALID_STATE,
+        Err(MutationError::Forbidden) => result_label::FORBIDDEN,
+        Err(MutationError::GenerationInProgress) => result_label::GENERATION_IN_PROGRESS,
+        Err(_) => result_label::ERROR,
+    }
+}
 
 fn mutation_to_db_err(e: MutationError) -> modkit_db::DbError {
     modkit_db::DbError::Other(anyhow::Error::new(e))

@@ -13,11 +13,15 @@
 
 //! Outbox throughput benchmarks with per-partition ordering verification.
 //!
-//! Run via Makefile targets:
-//!   `make bench-pg`       -- Postgres only
-//!   `make bench-mysql`    -- MySQL only
-//!   `make bench-mariadb`  -- MariaDB only
-//!   `make bench-db`       -- All engines
+//! **Profiles:**
+//!   Validation (default) — 1p1c + 16p16c, 100K msgs, 10 samples. ~90s/engine.
+//!   Long-haul (opt-in)   — 1M msgs, 10 samples. ~5 min/engine.
+//!     Enable via `BENCH_LONGHAUL=1`.
+//!
+//! **Run:**
+//!   `cargo bench --bench outbox_throughput --features preview-outbox`
+//!   `cargo bench --bench outbox_throughput --features preview-outbox -- "postgres/16p16c_single"`
+//!   `BENCH_LONGHAUL=1 cargo bench --bench outbox_throughput --features preview-outbox`
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -30,8 +34,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 
 use modkit_db::outbox::{
-    EnqueueMessage, Handler, HandlerResult, Outbox, OutboxHandle, OutboxMessage, Partitions,
-    outbox_migrations,
+    EnqueueMessage, Handler, HandlerResult, Outbox, OutboxHandle, OutboxMessage, OutboxProfile,
+    Partitions, outbox_migrations,
 };
 use modkit_db::{ConnectOpts, Db, connect_db, migration_runner::run_migrations_for_testing};
 use tokio_util::sync::CancellationToken;
@@ -47,42 +51,35 @@ static GLOBAL_ITER_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Messages for 1P/1C profile — multiple of 64 for even partition distribution.
+// ── Message counts ──────────────────────────────────────────────────
+// All multiples of PARTITIONS (64) for even distribution.
+
+/// 1P/1C validation — 10K msgs.
 const MSG_1P: usize = 64 * 157; // 10_048
 
-/// Messages for 16P/16C profile.
+/// 16P/16C validation — 100K msgs.
 const MSG_16P: usize = 64 * 1_563; // 100_032
 
-/// Batch size for batch enqueue mode.
-const BATCH_SIZE: usize = 100;
-
-/// Number of partitions.
-const PARTITIONS: u16 = 64;
-
-/// Messages for 1M long-haul profile.
+/// Long-haul — 1M msgs.
 const MSG_1M: usize = 64 * 15_625; // 1_000_000
 
-/// Messages for 10M long-haul profile.
-const MSG_10M: usize = 64 * 156_250; // 10_000_000
-
-/// SQLite long-haul cap — 100K single-thread only (single-writer engine).
+/// SQLite long-haul cap — 100K (single-writer bottleneck).
 const MSG_SQLITE_LONGHAUL: usize = 64 * 1_563; // 100_032
 
-/// Number of concurrent producers in the 16P profile.
-const NUM_PRODUCERS: usize = 16;
+// ── Pipeline sizing ────────────────────────────────────────────────
 
-/// Max partitions processed concurrently by the outbox pipeline.
-/// Aligned with pool size: max_conns >= MAX_CONCURRENT_PARTITIONS + NUM_PRODUCERS + 5.
+const BATCH_SIZE: usize = 100;
+const PARTITIONS: u16 = 64;
+const NUM_PRODUCERS: usize = 16;
 const MAX_CONCURRENT_PARTITIONS: usize = 16;
 
-/// Timeout for standard benchmarks (120s).
+// ── Timeouts ───────────────────────────────────────────────────────
+
+/// Validation benchmarks.
 const TIMEOUT_STANDARD: Duration = Duration::from_secs(120);
 
-/// Timeout for 1M long-haul benchmarks (5 min).
+/// Long-haul (1M) benchmarks.
 const TIMEOUT_1M: Duration = Duration::from_secs(300);
-
-/// Timeout for 10M long-haul benchmarks (30 min).
-const TIMEOUT_10M: Duration = Duration::from_secs(1800);
 
 // ---------------------------------------------------------------------------
 // BenchState — shared state for handler + verification
@@ -363,22 +360,17 @@ async fn setup_pipeline(
     expected_total: usize,
     queue_name: &str,
 ) -> (Db, OutboxHandle, Arc<BenchState>) {
-    setup_pipeline_with(db_url, expected_total, queue_name, Duration::from_secs(30)).await
+    setup_pipeline_with(db_url, expected_total, queue_name).await
 }
 
 async fn setup_pipeline_with(
     db_url: &str,
     expected_total: usize,
     queue_name: &str,
-    vacuum_cooldown: Duration,
 ) -> (Db, OutboxHandle, Arc<BenchState>) {
-    // DecoupledStrategy uses up to 3 connections per processor cycle (lease+read,
-    // handler, ack), so peak demand is: processors*2 + producers + sequencer + headroom.
-    let max_conns = if db_url.starts_with("sqlite") {
-        1
-    } else {
-        (MAX_CONCURRENT_PARTITIONS as u32) * 2 + (NUM_PRODUCERS as u32) + 5
-    };
+    // Pool budget: producers + processors + sequencers + vacuum + margin.
+    // 16 producers + 8 processors + 2 sequencers + 1 vacuum + 5 margin = 32.
+    let max_conns = if db_url.starts_with("sqlite") { 1 } else { 32 };
     let db = connect_db(
         db_url,
         ConnectOpts {
@@ -399,12 +391,11 @@ async fn setup_pipeline_with(
     };
 
     let handle = Outbox::builder(db.clone())
-        .poll_interval(Duration::from_millis(10))
-        .sequencer_batch_size(500)
-        .vacuum_cooldown(vacuum_cooldown)
+        .profile(OutboxProfile::high_throughput())
+        .processors(8)
+        .maintenance(2, 1)
+        .stats_interval(Duration::from_secs(10))
         .queue(queue_name, Partitions::of(PARTITIONS))
-        .max_concurrent_partitions(MAX_CONCURRENT_PARTITIONS)
-        .msg_batch_size(50)
         .batch_decoupled(handler)
         .start()
         .await
@@ -434,7 +425,12 @@ async fn cleanup_outbox_tables(db_url: &str) {
     let db = Database::connect(db_url).await.unwrap();
     let backend = db.get_database_backend();
     for table in TABLES {
-        let sql = format!("DELETE FROM {table}");
+        let sql = match backend {
+            sea_orm::DbBackend::Postgres => format!("TRUNCATE TABLE {table} CASCADE"),
+            sea_orm::DbBackend::Sqlite | sea_orm::DbBackend::MySql => {
+                format!("DELETE FROM {table}")
+            }
+        };
         db.execute(Statement::from_string(backend, sql))
             .await
             .unwrap();
@@ -479,6 +475,9 @@ mod pg_container {
     pub fn get_pg(rt: &Runtime) -> &'static PgContainer {
         PG.get_or_init(|| {
             rt.block_on(async {
+                // Default Postgres image — no custom config.
+                // Always bench against stock PG settings (fsync=on, etc.)
+                // so numbers reflect realistic deployment, not synthetic peaks.
                 let container = ContainerRequest::from(Postgres::default())
                     .with_env_var("POSTGRES_PASSWORD", "pass")
                     .with_env_var("POSTGRES_USER", "user")
@@ -526,11 +525,27 @@ mod mysql_container {
     pub fn get_mysql(rt: &Runtime) -> &'static MysqlContainer {
         MYSQL.get_or_init(|| {
             rt.block_on(async {
+                // MySQL tuning for benchmark parity with Postgres:
+                // - READ-COMMITTED: eliminates InnoDB gap-lock deadlocks when
+                //   multiple sequencers claim/delete from adjacent partitions
+                // - skip-log-bin: disables binary log fsync, the #1 bottleneck
+                //   (COMMIT is 105x slower than PG with binlog enabled)
+                // - innodb-flush-log-at-trx-commit=2: flush redo log once/sec
+                //   instead of per-commit (ok for benchmarks, not production)
+                //
+                // Profiling showed MySQL COMMIT at 9.5ms vs PG at 0.09ms.
+                // claim_incoming (SELECT+DELETE) was 8x slower due to InnoDB
+                // row-level lock manager overhead vs Postgres MVCC.
                 let container = ContainerRequest::from(Mysql::default())
                     .with_env_var("MYSQL_ROOT_PASSWORD", "root")
                     .with_env_var("MYSQL_USER", "user")
                     .with_env_var("MYSQL_PASSWORD", "pass")
                     .with_env_var("MYSQL_DATABASE", "bench")
+                    .with_cmd([
+                        "--transaction-isolation=READ-COMMITTED",
+                        "--skip-log-bin",
+                        "--innodb-flush-log-at-trx-commit=2",
+                    ])
                     .start()
                     .await
                     .unwrap();
@@ -586,6 +601,11 @@ mod mariadb_container {
                     .with_env_var("MYSQL_USER", "user")
                     .with_env_var("MYSQL_PASSWORD", "pass")
                     .with_env_var("MYSQL_DATABASE", "bench")
+                    .with_cmd([
+                        "--transaction-isolation=READ-COMMITTED",
+                        "--skip-log-bin",
+                        "--innodb-flush-log-at-trx-commit=2",
+                    ])
                     .start()
                     .await
                     .unwrap();
@@ -670,28 +690,11 @@ macro_rules! bench_fn {
             $producer,
             TIMEOUT_STANDARD,
             10,
-            30,
-            5,
-            Duration::from_secs(30)
+            15,
+            2
         )
     };
-    ($c:expr, $group_name:expr, $bench_name:expr, $db_url:expr, $msg_count:expr, $rt:expr, $producer:path, $timeout:expr, $samples:expr, $measure_secs:expr, $warmup_secs:expr) => {
-        bench_fn!(
-            $c,
-            $group_name,
-            $bench_name,
-            $db_url,
-            $msg_count,
-            $rt,
-            $producer,
-            $timeout,
-            $samples,
-            $measure_secs,
-            $warmup_secs,
-            Duration::from_secs(5)
-        )
-    };
-    ($c:expr, $group_name:expr, $bench_name:expr, $db_url:expr, $msg_count:expr, $rt:expr, $producer:path, $timeout:expr, $samples:expr, $measure_secs:expr, $warmup_secs:expr, $vacuum_cooldown:expr) => {{
+    ($c:expr, $group_name:expr, $bench_name:expr, $db_url:expr, $msg_count:expr, $rt:expr, $producer:path, $timeout:expr, $samples:expr, $measure_secs:expr, $warmup_secs:expr) => {{
         let mut group = $c.benchmark_group($group_name);
         group.throughput(Throughput::Elements($msg_count as u64));
         group.sample_size($samples);
@@ -706,8 +709,7 @@ macro_rules! bench_fn {
                         let iter_id = GLOBAL_ITER_COUNTER.fetch_add(1, Ordering::Relaxed);
                         let queue = iter_queue_name(iter_id);
                         let (db, handle, state) =
-                            setup_pipeline_with($db_url, $msg_count, &queue, $vacuum_cooldown)
-                                .await;
+                            setup_pipeline_with($db_url, $msg_count, &queue).await;
 
                         let start = Instant::now();
                         $producer(handle.outbox(), &db, &queue, $msg_count).await;
@@ -731,6 +733,12 @@ macro_rules! bench_fn {
 // ---------------------------------------------------------------------------
 // Postgres benchmarks
 // ---------------------------------------------------------------------------
+//
+// Validation (<90s): 1p1c_single + 16p16c_single + 16p16c_batch
+//   Quick regression check during development.
+//
+// Long-haul (~5 min): 1m_16p_single + 1m_16p_batch
+//   Stable baseline numbers for performance reporting.
 
 #[cfg(feature = "pg")]
 fn pg_1p1c_single(c: &mut Criterion) {
@@ -744,21 +752,6 @@ fn pg_1p1c_single(c: &mut Criterion) {
         MSG_1P,
         rt,
         produce_single
-    );
-}
-
-#[cfg(feature = "pg")]
-fn pg_1p1c_batch(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let pg = pg_container::get_pg(&rt);
-    bench_fn!(
-        c,
-        "postgres",
-        "1p1c_batch",
-        &pg.url,
-        MSG_1P,
-        rt,
-        produce_batch
     );
 }
 
@@ -848,71 +841,16 @@ fn pg_1m_batch(c: &mut Criterion) {
     );
 }
 
-// --- Postgres long-haul (10M) ---
-
-#[cfg(feature = "pg")]
-fn pg_10m_single(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let pg = pg_container::get_pg(&rt);
-    bench_fn!(
-        c,
-        "postgres_longhaul",
-        "10m_16p_single",
-        &pg.url,
-        MSG_10M,
-        rt,
-        produce_concurrent_single,
-        TIMEOUT_10M,
-        10,
-        600,
-        1
-    );
-}
-
-#[cfg(feature = "pg")]
-fn pg_10m_batch(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let pg = pg_container::get_pg(&rt);
-    bench_fn!(
-        c,
-        "postgres_longhaul",
-        "10m_16p_batch",
-        &pg.url,
-        MSG_10M,
-        rt,
-        produce_concurrent_batch,
-        TIMEOUT_10M,
-        10,
-        600,
-        1
-    );
-}
-
 #[cfg(feature = "pg")]
 criterion_group!(
     postgres_bench,
     pg_1p1c_single,
-    pg_1p1c_batch,
     pg_16p16c_single,
     pg_16p16c_batch
 );
 
 #[cfg(feature = "pg")]
-criterion_group!(
-    postgres_longhaul,
-    pg_1m_single,
-    pg_1m_batch,
-    pg_10m_single,
-    pg_10m_batch
-);
+criterion_group!(postgres_longhaul, pg_1m_single, pg_1m_batch);
 
 // ---------------------------------------------------------------------------
 // MySQL benchmarks
@@ -930,21 +868,6 @@ fn mysql_1p1c_single(c: &mut Criterion) {
         MSG_1P,
         rt,
         produce_single
-    );
-}
-
-#[cfg(feature = "mysql")]
-fn mysql_1p1c_batch(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let mysql = mysql_container::get_mysql(&rt);
-    bench_fn!(
-        c,
-        "mysql",
-        "1p1c_batch",
-        &mysql.url,
-        MSG_1P,
-        rt,
-        produce_batch
     );
 }
 
@@ -1035,68 +958,15 @@ fn mysql_1m_batch(c: &mut Criterion) {
 }
 
 #[cfg(feature = "mysql")]
-fn mysql_10m_single(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let mysql = mysql_container::get_mysql(&rt);
-    bench_fn!(
-        c,
-        "mysql_longhaul",
-        "10m_16p_single",
-        &mysql.url,
-        MSG_10M,
-        rt,
-        produce_concurrent_single,
-        TIMEOUT_10M,
-        10,
-        600,
-        1
-    );
-}
-
-#[cfg(feature = "mysql")]
-fn mysql_10m_batch(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let mysql = mysql_container::get_mysql(&rt);
-    bench_fn!(
-        c,
-        "mysql_longhaul",
-        "10m_16p_batch",
-        &mysql.url,
-        MSG_10M,
-        rt,
-        produce_concurrent_batch,
-        TIMEOUT_10M,
-        10,
-        600,
-        1
-    );
-}
-
-#[cfg(feature = "mysql")]
 criterion_group!(
     mysql_bench,
     mysql_1p1c_single,
-    mysql_1p1c_batch,
     mysql_16p16c_single,
     mysql_16p16c_batch
 );
 
 #[cfg(feature = "mysql")]
-criterion_group!(
-    mysql_longhaul,
-    mysql_1m_single,
-    mysql_1m_batch,
-    mysql_10m_single,
-    mysql_10m_batch
-);
+criterion_group!(mysql_longhaul, mysql_1m_single, mysql_1m_batch);
 
 // ---------------------------------------------------------------------------
 // MariaDB benchmarks
@@ -1114,21 +984,6 @@ fn maria_1p1c_single(c: &mut Criterion) {
         MSG_1P,
         rt,
         produce_single
-    );
-}
-
-#[cfg(feature = "mysql")]
-fn maria_1p1c_batch(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let maria = mariadb_container::get_mariadb(&rt);
-    bench_fn!(
-        c,
-        "mariadb",
-        "1p1c_batch",
-        &maria.url,
-        MSG_1P,
-        rt,
-        produce_batch
     );
 }
 
@@ -1219,71 +1074,18 @@ fn maria_1m_batch(c: &mut Criterion) {
 }
 
 #[cfg(feature = "mysql")]
-fn maria_10m_single(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let maria = mariadb_container::get_mariadb(&rt);
-    bench_fn!(
-        c,
-        "mariadb_longhaul",
-        "10m_16p_single",
-        &maria.url,
-        MSG_10M,
-        rt,
-        produce_concurrent_single,
-        TIMEOUT_10M,
-        10,
-        600,
-        1
-    );
-}
-
-#[cfg(feature = "mysql")]
-fn maria_10m_batch(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let maria = mariadb_container::get_mariadb(&rt);
-    bench_fn!(
-        c,
-        "mariadb_longhaul",
-        "10m_16p_batch",
-        &maria.url,
-        MSG_10M,
-        rt,
-        produce_concurrent_batch,
-        TIMEOUT_10M,
-        10,
-        600,
-        1
-    );
-}
-
-#[cfg(feature = "mysql")]
 criterion_group!(
     mariadb_bench,
     maria_1p1c_single,
-    maria_1p1c_batch,
     maria_16p16c_single,
     maria_16p16c_batch
 );
 
 #[cfg(feature = "mysql")]
-criterion_group!(
-    mariadb_longhaul,
-    maria_1m_single,
-    maria_1m_batch,
-    maria_10m_single,
-    maria_10m_batch
-);
+criterion_group!(mariadb_longhaul, maria_1m_single, maria_1m_batch);
 
 // ---------------------------------------------------------------------------
-// SQLite benchmarks
+// SQLite benchmarks (single-writer — only 1P/1C is meaningful)
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "sqlite")]
@@ -1316,45 +1118,7 @@ fn sqlite_1p1c_batch(c: &mut Criterion) {
     );
 }
 
-#[cfg(feature = "sqlite")]
-fn sqlite_16p16c_single(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let sq = sqlite_setup::get_sqlite(&rt);
-    bench_fn!(
-        c,
-        "sqlite",
-        "16p16c_single",
-        &sq.url,
-        MSG_16P,
-        rt,
-        produce_concurrent_single
-    );
-}
-
-#[cfg(feature = "sqlite")]
-fn sqlite_16p16c_batch(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .unwrap();
-    let sq = sqlite_setup::get_sqlite(&rt);
-    bench_fn!(
-        c,
-        "sqlite",
-        "16p16c_batch",
-        &sq.url,
-        MSG_16P,
-        rt,
-        produce_concurrent_batch
-    );
-}
-
-// SQLite long-haul: only 1P/1C with capped volume (single-writer bottleneck)
+// SQLite long-haul: 100K single-thread (single-writer bottleneck caps volume)
 #[cfg(feature = "sqlite")]
 fn sqlite_longhaul_single(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -1394,13 +1158,7 @@ fn sqlite_longhaul_batch(c: &mut Criterion) {
 }
 
 #[cfg(feature = "sqlite")]
-criterion_group!(
-    sqlite_bench,
-    sqlite_1p1c_single,
-    sqlite_1p1c_batch,
-    sqlite_16p16c_single,
-    sqlite_16p16c_batch
-);
+criterion_group!(sqlite_bench, sqlite_1p1c_single, sqlite_1p1c_batch);
 
 #[cfg(feature = "sqlite")]
 criterion_group!(
@@ -1446,23 +1204,29 @@ compile_error!(
 
 fn main() {
     let guard = setup_tracing();
+    let longhaul = std::env::var("BENCH_LONGHAUL").is_ok();
 
-    // Run criterion benchmark groups
+    // Validation profiles — quick regression check (<90s per engine).
     #[cfg(feature = "pg")]
-    {
-        postgres_bench();
-        postgres_longhaul();
-    }
+    postgres_bench();
     #[cfg(feature = "mysql")]
     {
         mysql_bench();
-        mysql_longhaul();
         mariadb_bench();
-        mariadb_longhaul();
     }
     #[cfg(feature = "sqlite")]
-    {
-        sqlite_bench();
+    sqlite_bench();
+
+    // Long-haul profiles — stable baselines (opt-in via BENCH_LONGHAUL=1).
+    if longhaul {
+        #[cfg(feature = "pg")]
+        postgres_longhaul();
+        #[cfg(feature = "mysql")]
+        {
+            mysql_longhaul();
+            mariadb_longhaul();
+        }
+        #[cfg(feature = "sqlite")]
         sqlite_longhaul_group();
     }
 

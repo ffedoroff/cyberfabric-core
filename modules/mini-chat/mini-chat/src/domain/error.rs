@@ -47,6 +47,26 @@ pub enum DomainError {
 
     #[error("Web search calls exceeded for this message")]
     WebSearchCallsExceeded,
+
+    #[error("Unsupported file type: {mime}")]
+    UnsupportedFileType { mime: String },
+
+    #[error("File too large: {message}")]
+    FileTooLarge { message: String },
+
+    #[error("Document limit exceeded: {message}")]
+    DocumentLimitExceeded { message: String },
+
+    #[error("Storage limit exceeded: {message}")]
+    StorageLimitExceeded { message: String },
+
+    /// Provider returned an error. `sanitized_message` is pre-sanitized by
+    /// `sanitize_provider_message()` at construction — safe for client exposure.
+    #[error("Provider error: {sanitized_message}")]
+    ProviderError {
+        code: String,
+        sanitized_message: String,
+    },
 }
 
 impl DomainError {
@@ -182,6 +202,15 @@ fn map_db_err(db_err: &sea_orm::DbErr) -> DomainError {
         return DomainError::Conflict {
             code: "unique_violation".into(),
             message: msg,
+        };
+    }
+    // Fallback: SeaORM's sql_err() may fail to classify the violation when
+    // the error is wrapped by a connection proxy or driver layer. Use the
+    // robust string-based detector from modkit-db.
+    if modkit_db::secure::is_unique_violation(db_err) {
+        return DomainError::Conflict {
+            code: "unique_violation".into(),
+            message: db_err.to_string(),
         };
     }
     DomainError::database(db_err.to_string())
