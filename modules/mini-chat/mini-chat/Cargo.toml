@@ -47,6 +47,7 @@ pin-project-lite = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 regex = { workspace = true }
+multer = "3.1"
 
 # Encoding
 base64 = { workspace = true }

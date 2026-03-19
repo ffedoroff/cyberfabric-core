@@ -1099,7 +1099,7 @@ For streaming endpoints, failures before any streaming begins MUST be returned a
 | `quota_exceeded` | 429 | Quota exhaustion. Always accompanied by a `quota_scope` field: `"tokens"` (token rate limits across all tiers exhausted, emergency flags, or all models disabled), `"uploads"` (daily upload quota exceeded for the attachment endpoint), `"web_search"` (per-user daily web search call quota exhausted), or `"image_inputs"` (per-turn or per-day image input limit exceeded). |
 | `web_search_disabled` | 400 | Request includes `web_search.enabled=true` but the global `disable_web_search` kill switch is active |
 | `rate_limited` | 429 | Provider upstream throttling (provider 429 after OAGW retry exhaustion) |
-| `file_too_large` | 413 | Uploaded file exceeds size limit |
+| `file_too_large` | 413 | Uploaded file exceeds the effective per-file size limit (`min(ConfigMap, CCM per-model)`). Enforced mid-stream during multipart ingestion — the handler aborts after the byte counter crosses the limit without buffering the full body. |
 | `unsupported_file_type` | 415 | File type not supported for upload |
 | `too_many_images` | 400 | Request includes more than the configured maximum images for a single turn |
 | `image_bytes_exceeded` | 413 | Request includes images whose total configured per-turn byte limit is exceeded |
@@ -1382,10 +1382,15 @@ sequenceDiagram
     participant OG as outbound_gateway
     participant OAI as OpenAI / Azure OpenAI
 
-    UI->>AG: POST /v1/chats/{id}/attachments (multipart)
-    AG->>CS: UploadAttachment(chat_id, file, security_ctx)
-    CS->>DB: Insert attachment metadata (status: pending, attachment_kind derived from MIME)
-    CS->>OG: POST /outbound/llm/files (upload)
+    UI->>AG: POST /v1/chats/{id}/attachments (multipart, streaming)
+    AG->>CS: UploadAttachment(chat_id, multipart_stream, security_ctx)
+
+    Note over CS: Handler: resolve MIME from field headers (before body read)
+    Note over CS: Handler: authz + model resolve → UploadLimits (min(ConfigMap, CCM per-model))
+    Note over CS: Handler: stream chunks with byte counter; abort 413 if limit exceeded
+
+    CS->>DB: Insert attachment metadata (status: pending, size_bytes=hint, attachment_kind from MIME)
+    CS->>OG: POST /outbound/llm/files (streaming multipart via OAGW SDK)
     OG->>OAI: Files API upload
     OAI-->>OG: provider_file_id
     OG-->>CS: provider_file_id
@@ -6687,7 +6692,14 @@ Estimation budgets are embedded **per-model** in the policy snapshot catalog. Ea
 | `thumbnail_max_pixels` | `integer` | `100000000` | **ConfigMap** |
 | `thumbnail_max_decode_bytes` | `integer` | `33554432` | **ConfigMap** |
 
-Note: per-model `max_file_size_mb` is available from **CCM API**: `GET /policies/{v}` → `snapshot.model_catalog[].general_config.max_file_size_mb`.
+**Two-layer per-file size limit resolution**: The effective per-file upload limit is `min(ConfigMap, CCM per-model)`:
+
+- **ConfigMap** (kind-specific): `uploaded_file_max_size_kb` for documents, `uploaded_image_max_size_kb` for images. Deployment-wide operational ceiling.
+- **CCM** (kind-agnostic): `max_file_size_mb` from `snapshot.model_catalog[].general_config.max_file_size_mb`. Per-model provider constraint, runtime-updatable via policy snapshot. Applies to both documents and images.
+
+The handler resolves the effective limit before streaming body bytes. If the CCM snapshot is unavailable, the system falls back to ConfigMap-only limits (safe — ConfigMap is always ≥ CCM).
+
+**Streaming upload**: The upload endpoint uses streaming multipart ingestion (`field.chunk()` loop) with incremental byte counting. Oversize files are rejected mid-stream with HTTP 413 (`file_too_large`) without buffering the full body. An Axum `DefaultBodyLimit` layer (25 MiB + 64 KiB overhead) acts as a coarse outer guard on the upload route, overriding the API gateway's default 16 MiB limit.
 
 ## B.9 Background workers
 

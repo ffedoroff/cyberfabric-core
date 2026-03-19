@@ -7,13 +7,23 @@
 //! live in `infra::llm::providers` and `infra::metrics`.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::stream::Stream;
 use modkit_macros::domain_model;
 use modkit_security::SecurityContext;
 
 use super::error::DomainError;
+
+/// Async byte stream used for streaming file uploads through the domain layer.
+///
+/// Identical shape to `oagw_sdk::BodyStream` — conversion at the infra
+/// boundary is zero-cost. Defined here to keep the domain layer free of
+/// HTTP / infra SDK dependencies (enforced by dylint).
+pub type FileStream =
+    Pin<Box<dyn Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send>>;
 
 pub(crate) mod metric_labels;
 pub(crate) mod metrics;
@@ -69,11 +79,14 @@ impl From<FileStorageError> for DomainError {
 // ── Param structs ───────────────────────────────────────────────────────
 
 /// Parameters for uploading a file to a provider.
+///
+/// `file_stream` is an async byte stream — the provider implementation
+/// forwards chunks to OAGW without buffering the entire file.
 #[domain_model]
 pub struct UploadFileParams {
     pub filename: String,
     pub content_type: String,
-    pub file_bytes: Bytes,
+    pub file_stream: FileStream,
     pub purpose: String,
 }
 
@@ -90,13 +103,13 @@ pub struct AddFileToVectorStoreParams {
 /// Port for file upload/delete operations against a storage provider.
 #[async_trait]
 pub trait FileStorageProvider: Send + Sync {
-    /// Upload a file and return the provider-assigned file ID.
+    /// Upload a file and return `(provider_file_id, bytes_uploaded)`.
     async fn upload_file(
         &self,
         ctx: SecurityContext,
         provider_id: &str,
         params: UploadFileParams,
-    ) -> Result<String, FileStorageError>;
+    ) -> Result<(String, u64), FileStorageError>;
 
     /// Delete a file from the provider. Best-effort — errors are logged, not fatal.
     async fn delete_file(

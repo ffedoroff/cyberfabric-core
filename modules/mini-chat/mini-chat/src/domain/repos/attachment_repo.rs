@@ -25,10 +25,14 @@ pub struct InsertAttachmentParams {
 }
 
 /// Parameters for CAS transition `pending → uploaded`.
+///
+/// `size_bytes` is the exact byte count observed during streaming upload,
+/// set here because the size is unknown at INSERT time (streaming).
 #[domain_model]
 pub struct SetUploadedParams {
     pub id: Uuid,
     pub provider_file_id: String,
+    pub size_bytes: i64,
 }
 
 /// Parameters for CAS transition `uploaded → ready`.

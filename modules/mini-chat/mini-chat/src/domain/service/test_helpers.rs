@@ -379,6 +379,13 @@ pub fn mock_db_provider(db: Db) -> Arc<DBProvider<modkit_db::DbError>> {
     Arc::new(DBProvider::new(db))
 }
 
+// ── Stream helpers ──
+
+/// Convert `Bytes` into a `FileStream` for test use.
+pub fn bytes_to_stream(data: bytes::Bytes) -> crate::domain::ports::FileStream {
+    Box::pin(futures::stream::once(async { Ok(data) }))
+}
+
 // ── Mock Policy Snapshot Provider ──
 
 use mini_chat_sdk::{PolicySnapshot, UserLimits};

@@ -1259,6 +1259,7 @@ dependencies = [
  "heck 0.5.0",
  "http",
  "inventory",
+ "multer",
  "opentelemetry",
  "opentelemetry_sdk",
  "pin-project-lite",

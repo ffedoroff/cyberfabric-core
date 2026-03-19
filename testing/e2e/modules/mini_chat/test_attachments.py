@@ -538,3 +538,144 @@ class TestImageRecognition:
         azure_chat = chat_with_model(AZURE_MODEL)
         cat_bytes = self._load_cat_image()
         self._upload_image_and_ask(azure_chat["id"], cat_bytes, "cat-az.jpg", "image/jpeg", "Azure")
+
+
+# ---------------------------------------------------------------------------
+# Streaming upload: size enforcement and size_bytes accuracy
+# ---------------------------------------------------------------------------
+
+@pytest.mark.openai
+class TestUploadSizeEnforcement:
+    """Upload size limit enforcement — files exceeding the configured limit
+    are rejected with HTTP 413 and error code ``file_too_large``.
+
+    NOTE: these tests rely on the server's default config limits:
+    - ``uploaded_file_max_size_kb``: 25600 (25 MB)
+    - ``uploaded_image_max_size_kb``: 5120 (5 MB)
+
+    Generating a 26 MB payload in-memory is acceptable for e2e.
+    """
+
+    def test_oversize_image_rejected_413(self, chat):
+        """Upload an image exceeding uploaded_image_max_size_kb (5 MB) → 413.
+
+        Uses ~6 MB which is over the image limit but under the API gateway's
+        global 16 MiB body limit, so our handler's streaming size check runs.
+        """
+        chat_id = chat["id"]
+        # 6 MB > 5 MB default image limit, but < 16 MiB gateway limit
+        oversize_payload = b"\x89PNG" + b"\x00" * (6 * 1024 * 1024)
+        resp = upload_file(
+            chat_id,
+            content=oversize_payload,
+            filename="huge.png",
+            content_type="image/png",
+        )
+        assert resp.status_code == 413, (
+            f"Expected 413 for oversize image, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert body.get("code") == "file_too_large" or "file_too_large" in resp.text, (
+            f"Expected file_too_large error code, got: {body}"
+        )
+
+    def test_oversize_document_rejected_by_gateway(self, chat):
+        """Upload a document exceeding the API gateway body limit (16 MiB) → 400.
+
+        Documents can be up to 25 MB, but the gateway's global
+        RequestBodyLimitLayer (16 MiB) rejects before our handler runs.
+        This verifies the gateway guard works as a coarse outer limit.
+        """
+        chat_id = chat["id"]
+        # 17 MB > 16 MiB gateway limit
+        oversize_payload = b"\x00" * (17 * 1024 * 1024)
+        resp = upload_file(
+            chat_id,
+            content=oversize_payload,
+            filename="huge.pdf",
+            content_type="application/pdf",
+        )
+        # Rejected by one of: OAGW body limit (502), gateway RequestBodyLimitLayer (400), or handler (413)
+        assert resp.status_code in (400, 413, 502), (
+            f"Expected 400/413/502 for oversize doc, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_document_within_limit_succeeds(self, chat):
+        """Upload a document just under the limit → succeeds."""
+        chat_id = chat["id"]
+        # 1 MB — well under 25 MB
+        payload = b"x" * (1 * 1024 * 1024)
+        resp = upload_file(
+            chat_id,
+            content=payload,
+            filename="medium.txt",
+            content_type="text/plain",
+        )
+        assert resp.status_code == 201, (
+            f"Expected 201 for within-limit doc, got {resp.status_code}: {resp.text}"
+        )
+        att_id = resp.json()["id"]
+        detail = poll_until_ready(chat_id, att_id)
+        assert detail["status"] == "ready"
+
+
+@pytest.mark.openai
+class TestUploadSizeBytesAccuracy:
+    """Verify that size_bytes in the attachment metadata matches the actual
+    uploaded file size."""
+
+    def test_size_bytes_matches_actual(self, chat):
+        """Upload a file of known size, verify size_bytes in GET response."""
+        chat_id = chat["id"]
+        # Use a specific, non-round size to catch off-by-one issues
+        payload = b"A" * 123_456
+        resp = upload_file(
+            chat_id,
+            content=payload,
+            filename="sized.txt",
+            content_type="text/plain",
+        )
+        assert resp.status_code == 201
+        att_id = resp.json()["id"]
+        detail = poll_until_ready(chat_id, att_id)
+        assert detail["status"] == "ready"
+        assert detail["size_bytes"] == 123_456, (
+            f"Expected size_bytes=123456, got {detail['size_bytes']}"
+        )
+
+
+@pytest.mark.openai
+class TestUploadStreamingPipeline:
+    """End-to-end test with a medium-sized file (~500 KB) through the full
+    streaming upload pipeline: upload → ready → send message → SSE done."""
+
+    @pytest.mark.online_only
+    def test_medium_file_upload_and_stream(self, chat):
+        chat_id = chat["id"]
+        # 500 KB document
+        payload = b"The quick brown fox. " * 25_000  # ~500 KB
+        resp = upload_file(
+            chat_id,
+            content=payload,
+            filename="medium_doc.txt",
+            content_type="text/plain",
+        )
+        assert resp.status_code == 201
+        att_id = resp.json()["id"]
+        detail = poll_until_ready(chat_id, att_id)
+        assert detail["status"] == "ready", f"Expected ready, got: {detail}"
+
+        # Send a message referencing the attachment
+        status, events, raw = stream_message(
+            chat_id,
+            content="Summarize the attached document briefly.",
+            attachment_ids=[att_id],
+        )
+        assert status == 200, f"Stream failed: {status} {raw}"
+
+        started = expect_stream_started(events)
+        assert started is not None, "Expected stream_started event"
+
+        done = expect_done(events)
+        assert done is not None, "Expected done event"
+        assert done.data.get("usage", {}).get("input_tokens", 0) > 0

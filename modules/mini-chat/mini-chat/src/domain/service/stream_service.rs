@@ -2898,6 +2898,7 @@ mod tests {
             description: None,
             multimodal_capabilities: vec![],
             context_window: 128_000,
+            max_file_size_mb: 25,
             system_prompt: String::new(),
         }
     }
@@ -4044,6 +4045,7 @@ mod tests {
                     description: None,
                     multimodal_capabilities: vec![],
                     context_window: 128_000,
+                    max_file_size_mb: 25,
                     system_prompt: String::new(),
                 },
                 false,

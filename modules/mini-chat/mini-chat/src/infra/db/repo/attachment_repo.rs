@@ -87,6 +87,7 @@ impl crate::domain::repos::AttachmentRepository for AttachmentRepository {
                 Column::ProviderFileId,
                 Expr::value(Some(params.provider_file_id)),
             )
+            .col_expr(Column::SizeBytes, Expr::value(params.size_bytes))
             .col_expr(Column::UpdatedAt, Expr::value(now))
             .filter(
                 Condition::all()

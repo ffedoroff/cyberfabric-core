@@ -670,12 +670,12 @@ fn default_max_total_upload_mb_per_chat() -> u32 {
     100
 }
 
-fn default_max_document_size_kb() -> u32 {
+fn default_uploaded_file_max_size_kb() -> u32 {
     // 25 MB in KB
     25 * 1024
 }
 
-fn default_max_image_size_kb() -> u32 {
+fn default_uploaded_image_max_size_kb() -> u32 {
     // 5 MB in KB
     5 * 1024
 }
@@ -692,13 +692,13 @@ pub struct RagConfig {
     #[serde(default = "default_max_total_upload_mb_per_chat")]
     pub max_total_upload_mb_per_chat: u32,
 
-    /// Maximum single document file size in KB.
-    #[serde(default = "default_max_document_size_kb")]
-    pub max_document_size_kb: u32,
+    /// Maximum single uploaded file (document) size in KB.
+    #[serde(default = "default_uploaded_file_max_size_kb")]
+    pub uploaded_file_max_size_kb: u32,
 
-    /// Maximum single image file size in KB.
-    #[serde(default = "default_max_image_size_kb")]
-    pub max_image_size_kb: u32,
+    /// Maximum single uploaded image size in KB.
+    #[serde(default = "default_uploaded_image_max_size_kb")]
+    pub uploaded_image_max_size_kb: u32,
 
     /// Accept `text/csv` uploads remapped to `text/plain` for `file_search`.
     #[serde(default = "default_true")]
@@ -710,8 +710,8 @@ impl Default for RagConfig {
         Self {
             max_documents_per_chat: default_max_documents_per_chat(),
             max_total_upload_mb_per_chat: default_max_total_upload_mb_per_chat(),
-            max_document_size_kb: default_max_document_size_kb(),
-            max_image_size_kb: default_max_image_size_kb(),
+            uploaded_file_max_size_kb: default_uploaded_file_max_size_kb(),
+            uploaded_image_max_size_kb: default_uploaded_image_max_size_kb(),
             allow_csv_upload: true,
         }
     }
@@ -725,11 +725,11 @@ impl RagConfig {
         if self.max_total_upload_mb_per_chat == 0 {
             return Err("rag max_total_upload_mb_per_chat must be > 0".into());
         }
-        if self.max_document_size_kb == 0 {
-            return Err("rag max_document_size_kb must be > 0".into());
+        if self.uploaded_file_max_size_kb == 0 {
+            return Err("rag uploaded_file_max_size_kb must be > 0".into());
         }
-        if self.max_image_size_kb == 0 {
-            return Err("rag max_image_size_kb must be > 0".into());
+        if self.uploaded_image_max_size_kb == 0 {
+            return Err("rag uploaded_image_max_size_kb must be > 0".into());
         }
         Ok(())
     }
