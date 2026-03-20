@@ -195,7 +195,7 @@ Issues:
 ### Missing Dependencies
 
 - [ ] If `{upstream_reqs_template}` cannot be loaded → STOP, cannot proceed without template
-- [ ] If `{upstream_reqs_checklist}` cannot be loaded → warn user, skip semantic validation
+- [ ] If `{upstream_reqs_checklist}` cannot be loaded → STOP, cannot proceed without semantic validation checklist
 
 ### Escalation
 
