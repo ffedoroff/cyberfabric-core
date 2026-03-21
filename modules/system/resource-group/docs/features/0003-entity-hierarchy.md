@@ -1,6 +1,6 @@
 # Feature: Group Entity & Hierarchy Engine
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-entity-hierarchy-implemented`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-entity-hierarchy`
 
 - [ ] `p1` - `cpt-cf-resource-group-feature-entity-hierarchy`
 
@@ -66,7 +66,7 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 
 ### Create Group
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-create-group`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-create-group`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -82,29 +82,29 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 - Depth or width limit exceeded → LimitViolation
 
 **Steps**:
-1. [ ] - `p1` - Actor sends POST /api/resource-group/v1/groups with {type, name, metadata, hierarchy: {parent_id, tenant_id}} - `inst-create-group-1`
-2. [ ] - `p1` - DB: BEGIN transaction (SERIALIZABLE isolation) - `inst-create-group-2`
-3. [ ] - `p1` - Resolve type GTS path to surrogate ID; verify type exists - `inst-create-group-3`
-4. [ ] - `p1` - **IF** parent_id is provided - `inst-create-group-4`
-   1. [ ] - `p1` - DB: SELECT id, gts_type_id, tenant_id FROM resource_group WHERE id = {parent_id} — load parent in tx - `inst-create-group-4a`
-   2. [ ] - `p1` - **IF** parent not found → **RETURN** NotFound - `inst-create-group-4b`
-   3. [ ] - `p1` - Validate child type's allowed_parents includes parent's type - `inst-create-group-4c`
-   4. [ ] - `p1` - **IF** type incompatible → **RETURN** InvalidParentType - `inst-create-group-4d`
-   5. [ ] - `p1` - Invoke query profile enforcement: check depth limit - `inst-create-group-4e`
-   6. [ ] - `p1` - Invoke query profile enforcement: check width limit (sibling count under parent) - `inst-create-group-4f`
-5. [ ] - `p1` - **ELSE** (root group) - `inst-create-group-5`
-   1. [ ] - `p1` - **IF** type does not allow root placement (can_be_root=false) → **RETURN** Validation error - `inst-create-group-5a`
-6. [ ] - `p1` - DB: INSERT INTO resource_group (id, parent_id, gts_type_id, name, metadata, tenant_id) - `inst-create-group-6`
-7. [ ] - `p1` - DB: INSERT INTO resource_group_closure (ancestor_id=id, descendant_id=id, depth=0) — self-row - `inst-create-group-7`
-8. [ ] - `p1` - **IF** parent_id is provided - `inst-create-group-8`
-   1. [ ] - `p1` - DB: INSERT INTO resource_group_closure — ancestor rows from parent's ancestors with depth+1 - `inst-create-group-8a`
-9. [ ] - `p1` - DB: COMMIT - `inst-create-group-9`
-10. [ ] - `p1` - **IF** serialization conflict → rollback and retry (bounded retry policy) - `inst-create-group-10`
-11. [ ] - `p1` - **RETURN** created ResourceGroup with id, type, name, metadata, hierarchy - `inst-create-group-11`
+1. [x] - `p1` - Actor sends POST /api/resource-group/v1/groups with {type, name, metadata, hierarchy: {parent_id, tenant_id}} - `inst-create-group-1`
+2. [x] - `p1` - DB: BEGIN transaction (SERIALIZABLE isolation) - `inst-create-group-2`
+3. [x] - `p1` - Resolve type GTS path to surrogate ID; verify type exists - `inst-create-group-3`
+4. [x] - `p1` - **IF** parent_id is provided - `inst-create-group-4`
+   1. [x] - `p1` - DB: SELECT id, gts_type_id, tenant_id FROM resource_group WHERE id = {parent_id} — load parent in tx - `inst-create-group-4a`
+   2. [x] - `p1` - **IF** parent not found → **RETURN** NotFound - `inst-create-group-4b`
+   3. [x] - `p1` - Validate child type's allowed_parents includes parent's type - `inst-create-group-4c`
+   4. [x] - `p1` - **IF** type incompatible → **RETURN** InvalidParentType - `inst-create-group-4d`
+   5. [x] - `p1` - Invoke query profile enforcement: check depth limit - `inst-create-group-4e`
+   6. [x] - `p1` - Invoke query profile enforcement: check width limit (sibling count under parent) - `inst-create-group-4f`
+5. [x] - `p1` - **ELSE** (root group) - `inst-create-group-5`
+   1. [x] - `p1` - **IF** type does not allow root placement (can_be_root=false) → **RETURN** Validation error - `inst-create-group-5a`
+6. [x] - `p1` - DB: INSERT INTO resource_group (id, parent_id, gts_type_id, name, metadata, tenant_id) - `inst-create-group-6`
+7. [x] - `p1` - DB: INSERT INTO resource_group_closure (ancestor_id=id, descendant_id=id, depth=0) — self-row - `inst-create-group-7`
+8. [x] - `p1` - **IF** parent_id is provided - `inst-create-group-8`
+   1. [x] - `p1` - DB: INSERT INTO resource_group_closure — ancestor rows from parent's ancestors with depth+1 - `inst-create-group-8a`
+9. [x] - `p1` - DB: COMMIT - `inst-create-group-9`
+10. [x] - `p1` - **IF** serialization conflict → rollback and retry (bounded retry policy) - `inst-create-group-10`
+11. [x] - `p1` - **RETURN** created ResourceGroup with id, type, name, metadata, hierarchy - `inst-create-group-11`
 
 ### Update Group
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-update-group`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-update-group`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -118,20 +118,20 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 - Children's types do not include new type in their allowed_parents → InvalidParentType
 
 **Steps**:
-1. [ ] - `p1` - Actor sends PUT /api/resource-group/v1/groups/{group_id} with {name, type, metadata} - `inst-update-group-1`
-2. [ ] - `p1` - DB: SELECT FROM resource_group WHERE id = {group_id} — load existing group - `inst-update-group-2`
-3. [ ] - `p1` - **IF** group not found → **RETURN** NotFound - `inst-update-group-3`
-4. [ ] - `p1` - **IF** type is changed - `inst-update-group-4`
-   1. [ ] - `p1` - Validate new type's allowed_parents permits current parent's type (or new type allows root if no parent) - `inst-update-group-4a`
-   2. [ ] - `p1` - DB: SELECT gts_type_id FROM resource_group WHERE parent_id = {group_id} — load children types - `inst-update-group-4b`
-   3. [ ] - `p1` - **FOR EACH** child: verify child's type includes new type in allowed_parents - `inst-update-group-4c`
-   4. [ ] - `p1` - **IF** any child would become invalid → **RETURN** InvalidParentType with child details - `inst-update-group-4d`
-5. [ ] - `p1` - DB: UPDATE resource_group SET name, gts_type_id, metadata, updated_at — apply changes - `inst-update-group-5`
-6. [ ] - `p1` - **RETURN** updated ResourceGroup - `inst-update-group-6`
+1. [x] - `p1` - Actor sends PUT /api/resource-group/v1/groups/{group_id} with {name, type, metadata} - `inst-update-group-1`
+2. [x] - `p1` - DB: SELECT FROM resource_group WHERE id = {group_id} — load existing group - `inst-update-group-2`
+3. [x] - `p1` - **IF** group not found → **RETURN** NotFound - `inst-update-group-3`
+4. [x] - `p1` - **IF** type is changed - `inst-update-group-4`
+   1. [x] - `p1` - Validate new type's allowed_parents permits current parent's type (or new type allows root if no parent) - `inst-update-group-4a`
+   2. [x] - `p1` - DB: SELECT gts_type_id FROM resource_group WHERE parent_id = {group_id} — load children types - `inst-update-group-4b`
+   3. [x] - `p1` - **FOR EACH** child: verify child's type includes new type in allowed_parents - `inst-update-group-4c`
+   4. [x] - `p1` - **IF** any child would become invalid → **RETURN** InvalidParentType with child details - `inst-update-group-4d`
+5. [x] - `p1` - DB: UPDATE resource_group SET name, gts_type_id, metadata, updated_at — apply changes - `inst-update-group-5`
+6. [x] - `p1` - **RETURN** updated ResourceGroup - `inst-update-group-6`
 
 ### Move Group (Subtree)
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-move-group`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-move-group`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -147,23 +147,23 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 - Depth or width limit exceeded at new position → LimitViolation
 
 **Steps**:
-1. [ ] - `p1` - Actor sends PUT /api/resource-group/v1/groups/{group_id} with new hierarchy.parent_id - `inst-move-group-1`
-2. [ ] - `p1` - DB: BEGIN transaction (SERIALIZABLE isolation) - `inst-move-group-2`
-3. [ ] - `p1` - Load group and new parent in transaction - `inst-move-group-3`
-4. [ ] - `p1` - **IF** new_parent_id == group_id → **RETURN** CycleDetected (self-parent) - `inst-move-group-4`
-5. [ ] - `p1` - Invoke cycle detection: check new parent is NOT in subtree of group - `inst-move-group-5`
-6. [ ] - `p1` - **IF** cycle detected → **RETURN** CycleDetected with involved node IDs - `inst-move-group-6`
-7. [ ] - `p1` - Validate parent type compatibility for group's type against new parent's type - `inst-move-group-7`
-8. [ ] - `p1` - Invoke query profile enforcement: check depth at new position - `inst-move-group-8`
-9. [ ] - `p1` - Invoke closure rebuild algorithm for subtree under group - `inst-move-group-9`
-10. [ ] - `p1` - DB: UPDATE resource_group SET parent_id = {new_parent_id}, updated_at = now() - `inst-move-group-10`
-11. [ ] - `p1` - DB: COMMIT - `inst-move-group-11`
-12. [ ] - `p1` - **IF** serialization conflict → rollback and retry (bounded retry policy) - `inst-move-group-12`
-13. [ ] - `p1` - **RETURN** updated ResourceGroup - `inst-move-group-13`
+1. [x] - `p1` - Actor sends PUT /api/resource-group/v1/groups/{group_id} with new hierarchy.parent_id - `inst-move-group-1`
+2. [x] - `p1` - DB: BEGIN transaction (SERIALIZABLE isolation) - `inst-move-group-2`
+3. [x] - `p1` - Load group and new parent in transaction - `inst-move-group-3`
+4. [x] - `p1` - **IF** new_parent_id == group_id → **RETURN** CycleDetected (self-parent) - `inst-move-group-4`
+5. [x] - `p1` - Invoke cycle detection: check new parent is NOT in subtree of group - `inst-move-group-5`
+6. [x] - `p1` - **IF** cycle detected → **RETURN** CycleDetected with involved node IDs - `inst-move-group-6`
+7. [x] - `p1` - Validate parent type compatibility for group's type against new parent's type - `inst-move-group-7`
+8. [x] - `p1` - Invoke query profile enforcement: check depth at new position - `inst-move-group-8`
+9. [x] - `p1` - Invoke closure rebuild algorithm for subtree under group - `inst-move-group-9`
+10. [x] - `p1` - DB: UPDATE resource_group SET parent_id = {new_parent_id}, updated_at = now() - `inst-move-group-10`
+11. [x] - `p1` - DB: COMMIT - `inst-move-group-11`
+12. [x] - `p1` - **IF** serialization conflict → rollback and retry (bounded retry policy) - `inst-move-group-12`
+13. [x] - `p1` - **RETURN** updated ResourceGroup - `inst-move-group-13`
 
 ### Delete Group
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-delete-group`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-entity-hier-delete-group`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -176,73 +176,73 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 - Has children or memberships (without force) → ConflictActiveReferences
 
 **Steps**:
-1. [ ] - `p1` - Actor sends DELETE /api/resource-group/v1/groups/{group_id}?force={true|false} - `inst-delete-group-1`
-2. [ ] - `p1` - DB: SELECT FROM resource_group WHERE id = {group_id} - `inst-delete-group-2`
-3. [ ] - `p1` - **IF** group not found → **RETURN** NotFound - `inst-delete-group-3`
-4. [ ] - `p1` - **IF** force = false - `inst-delete-group-4`
-   1. [ ] - `p1` - DB: SELECT COUNT(*) FROM resource_group WHERE parent_id = {group_id} — check children - `inst-delete-group-4a`
-   2. [ ] - `p1` - DB: SELECT COUNT(*) FROM resource_group_membership WHERE group_id = {group_id} — check memberships - `inst-delete-group-4b`
-   3. [ ] - `p1` - **IF** children > 0 OR memberships > 0 → **RETURN** ConflictActiveReferences - `inst-delete-group-4c`
-5. [ ] - `p1` - **IF** force = true - `inst-delete-group-5`
-   1. [ ] - `p1` - Collect entire subtree: DB: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = {group_id} - `inst-delete-group-5a`
-   2. [ ] - `p1` - DB: DELETE FROM resource_group_membership WHERE group_id IN (subtree IDs) — cascade memberships - `inst-delete-group-5b`
-   3. [ ] - `p1` - DB: DELETE FROM resource_group_closure WHERE ancestor_id IN (subtree IDs) OR descendant_id IN (subtree IDs) — cascade closure - `inst-delete-group-5c`
-   4. [ ] - `p1` - DB: DELETE FROM resource_group WHERE id IN (subtree IDs) — delete groups bottom-up - `inst-delete-group-5d`
-6. [ ] - `p1` - **ELSE** (leaf delete without force) - `inst-delete-group-6`
-   1. [ ] - `p1` - DB: DELETE FROM resource_group_closure WHERE descendant_id = {group_id} — remove closure rows - `inst-delete-group-6a`
-   2. [ ] - `p1` - DB: DELETE FROM resource_group WHERE id = {group_id} - `inst-delete-group-6b`
-7. [ ] - `p1` - **RETURN** success (204 No Content) - `inst-delete-group-7`
+1. [x] - `p1` - Actor sends DELETE /api/resource-group/v1/groups/{group_id}?force={true|false} - `inst-delete-group-1`
+2. [x] - `p1` - DB: SELECT FROM resource_group WHERE id = {group_id} - `inst-delete-group-2`
+3. [x] - `p1` - **IF** group not found → **RETURN** NotFound - `inst-delete-group-3`
+4. [x] - `p1` - **IF** force = false - `inst-delete-group-4`
+   1. [x] - `p1` - DB: SELECT COUNT(*) FROM resource_group WHERE parent_id = {group_id} — check children - `inst-delete-group-4a`
+   2. [x] - `p1` - DB: SELECT COUNT(*) FROM resource_group_membership WHERE group_id = {group_id} — check memberships - `inst-delete-group-4b`
+   3. [x] - `p1` - **IF** children > 0 OR memberships > 0 → **RETURN** ConflictActiveReferences - `inst-delete-group-4c`
+5. [x] - `p1` - **IF** force = true - `inst-delete-group-5`
+   1. [x] - `p1` - Collect entire subtree: DB: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = {group_id} - `inst-delete-group-5a`
+   2. [x] - `p1` - DB: DELETE FROM resource_group_membership WHERE group_id IN (subtree IDs) — cascade memberships - `inst-delete-group-5b`
+   3. [x] - `p1` - DB: DELETE FROM resource_group_closure WHERE ancestor_id IN (subtree IDs) OR descendant_id IN (subtree IDs) — cascade closure - `inst-delete-group-5c`
+   4. [x] - `p1` - DB: DELETE FROM resource_group WHERE id IN (subtree IDs) — delete groups bottom-up - `inst-delete-group-5d`
+6. [x] - `p1` - **ELSE** (leaf delete without force) - `inst-delete-group-6`
+   1. [x] - `p1` - DB: DELETE FROM resource_group_closure WHERE descendant_id = {group_id} — remove closure rows - `inst-delete-group-6a`
+   2. [x] - `p1` - DB: DELETE FROM resource_group WHERE id = {group_id} - `inst-delete-group-6b`
+7. [x] - `p1` - **RETURN** success (204 No Content) - `inst-delete-group-7`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### Cycle Detection
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-cycle-detect`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-cycle-detect`
 
 **Input**: Group ID being moved, proposed new parent ID
 
 **Output**: Pass or CycleDetected with involved node IDs
 
 **Steps**:
-1. [ ] - `p1` - **IF** new_parent_id == group_id → **RETURN** CycleDetected (self-parent) - `inst-cycle-1`
-2. [ ] - `p1` - DB: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = {group_id} — get all descendants of the moving group - `inst-cycle-2`
-3. [ ] - `p1` - **IF** new_parent_id IN descendants → **RETURN** CycleDetected: new parent is a descendant of the moving group - `inst-cycle-3`
-4. [ ] - `p1` - **RETURN** pass - `inst-cycle-4`
+1. [x] - `p1` - **IF** new_parent_id == group_id → **RETURN** CycleDetected (self-parent) - `inst-cycle-1`
+2. [x] - `p1` - DB: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = {group_id} — get all descendants of the moving group - `inst-cycle-2`
+3. [x] - `p1` - **IF** new_parent_id IN descendants → **RETURN** CycleDetected: new parent is a descendant of the moving group - `inst-cycle-3`
+4. [x] - `p1` - **RETURN** pass - `inst-cycle-4`
 
 ### Closure Table Rebuild for Subtree Move
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-closure-rebuild`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-closure-rebuild`
 
 **Input**: Group ID being moved, old parent ID, new parent ID
 
 **Output**: Updated closure table rows (within active transaction)
 
 **Steps**:
-1. [ ] - `p1` - Collect subtree: DB: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = {group_id} — includes group itself - `inst-closure-rebuild-1`
-2. [ ] - `p1` - Delete affected paths: DB: DELETE FROM resource_group_closure WHERE descendant_id IN (subtree) AND ancestor_id NOT IN (subtree) — remove old ancestor paths above the moving group - `inst-closure-rebuild-2`
-3. [ ] - `p1` - Compute new ancestor paths from new parent: DB: SELECT ancestor_id, depth FROM resource_group_closure WHERE descendant_id = {new_parent_id} — get new parent's ancestors - `inst-closure-rebuild-3`
-4. [ ] - `p1` - **FOR EACH** new_ancestor in new parent's ancestors (including new parent) - `inst-closure-rebuild-4`
-   1. [ ] - `p1` - **FOR EACH** subtree_node in subtree - `inst-closure-rebuild-4a`
-      1. [ ] - `p1` - DB: INSERT INTO resource_group_closure (ancestor_id = new_ancestor, descendant_id = subtree_node, depth = new_ancestor_depth + subtree_node_relative_depth + 1) - `inst-closure-rebuild-4a1`
-5. [ ] - `p1` - **RETURN** (closure rows updated within transaction — commit handled by caller) - `inst-closure-rebuild-5`
+1. [x] - `p1` - Collect subtree: DB: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = {group_id} — includes group itself - `inst-closure-rebuild-1`
+2. [x] - `p1` - Delete affected paths: DB: DELETE FROM resource_group_closure WHERE descendant_id IN (subtree) AND ancestor_id NOT IN (subtree) — remove old ancestor paths above the moving group - `inst-closure-rebuild-2`
+3. [x] - `p1` - Compute new ancestor paths from new parent: DB: SELECT ancestor_id, depth FROM resource_group_closure WHERE descendant_id = {new_parent_id} — get new parent's ancestors - `inst-closure-rebuild-3`
+4. [x] - `p1` - **FOR EACH** new_ancestor in new parent's ancestors (including new parent) - `inst-closure-rebuild-4`
+   1. [x] - `p1` - **FOR EACH** subtree_node in subtree - `inst-closure-rebuild-4a`
+      1. [x] - `p1` - DB: INSERT INTO resource_group_closure (ancestor_id = new_ancestor, descendant_id = subtree_node, depth = new_ancestor_depth + subtree_node_relative_depth + 1) - `inst-closure-rebuild-4a1`
+5. [x] - `p1` - **RETURN** (closure rows updated within transaction — commit handled by caller) - `inst-closure-rebuild-5`
 
 ### Query Profile Enforcement
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-enforce-query-profile`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-enforce-query-profile`
 
 **Input**: Operation context (create/move), current group position, profile config (max_depth, max_width)
 
 **Output**: Pass or LimitViolation (DepthLimitExceeded / WidthLimitExceeded)
 
 **Steps**:
-1. [ ] - `p1` - Load profile config: max_depth (optional), max_width (optional) - `inst-profile-1`
-2. [ ] - `p1` - **IF** max_depth is enabled (not null) - `inst-profile-2`
-   1. [ ] - `p1` - Compute resulting depth: depth of new parent + 1 + max descendant depth in subtree (for move) or 0 (for create) - `inst-profile-2a`
-   2. [ ] - `p1` - **IF** resulting depth > max_depth → **RETURN** LimitViolation: DepthLimitExceeded with current depth and limit - `inst-profile-2b`
-3. [ ] - `p1` - **IF** max_width is enabled (not null) - `inst-profile-3`
-   1. [ ] - `p1` - DB: SELECT COUNT(*) FROM resource_group WHERE parent_id = {parent_id} — current sibling count - `inst-profile-3a`
-   2. [ ] - `p1` - **IF** sibling_count + 1 > max_width → **RETURN** LimitViolation: WidthLimitExceeded with current width and limit - `inst-profile-3b`
-4. [ ] - `p1` - **RETURN** pass - `inst-profile-4`
+1. [x] - `p1` - Load profile config: max_depth (optional), max_width (optional) - `inst-profile-1`
+2. [x] - `p1` - **IF** max_depth is enabled (not null) - `inst-profile-2`
+   1. [x] - `p1` - Compute resulting depth: depth of new parent + 1 + max descendant depth in subtree (for move) or 0 (for create) - `inst-profile-2a`
+   2. [x] - `p1` - **IF** resulting depth > max_depth → **RETURN** LimitViolation: DepthLimitExceeded with current depth and limit - `inst-profile-2b`
+3. [x] - `p1` - **IF** max_width is enabled (not null) - `inst-profile-3`
+   1. [x] - `p1` - DB: SELECT COUNT(*) FROM resource_group WHERE parent_id = {parent_id} — current sibling count - `inst-profile-3a`
+   2. [x] - `p1` - **IF** sibling_count + 1 > max_width → **RETURN** LimitViolation: WidthLimitExceeded with current width and limit - `inst-profile-3b`
+4. [x] - `p1` - **RETURN** pass - `inst-profile-4`
 
 ### Group Data Seeding
 
@@ -269,7 +269,7 @@ Not applicable. Groups exist as hierarchy nodes without lifecycle states. A grou
 
 ### Entity Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-entity-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-entity-service`
 
 The system **MUST** implement an Entity Service that provides create, get, update, move, and delete operations for group entities with forest invariant enforcement.
 
@@ -295,7 +295,7 @@ The system **MUST** implement an Entity Service that provides create, get, updat
 
 ### Hierarchy Engine
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-hierarchy-engine`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-hierarchy-engine`
 
 The system **MUST** implement a Hierarchy Service that maintains the closure table and serves ancestor/descendant queries.
 
@@ -319,7 +319,7 @@ The system **MUST** implement a Hierarchy Service that maintains the closure tab
 
 ### Group REST Handlers and Hierarchy Endpoint
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-rest-handlers`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-rest-handlers`
 
 The system **MUST** implement REST endpoint handlers for group management under `/api/resource-group/v1/groups` and the hierarchy depth endpoint.
 

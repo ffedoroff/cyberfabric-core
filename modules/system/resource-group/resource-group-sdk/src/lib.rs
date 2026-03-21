@@ -18,9 +18,10 @@ pub mod models;
 pub mod odata;
 
 // Re-export main types at crate root for convenience
-pub use api::ResourceGroupClient;
+pub use api::{ResourceGroupClient, ResourceGroupReadHierarchy, ResourceGroupReadPluginClient};
 pub use error::ResourceGroupError;
 pub use models::{
-    CreateGroupRequest, CreateTypeRequest, GroupHierarchy, GroupHierarchyWithDepth, ResourceGroup,
-    ResourceGroupType, ResourceGroupWithDepth, UpdateGroupRequest, UpdateTypeRequest,
+    CreateGroupRequest, CreateTypeRequest, GroupHierarchy, GroupHierarchyWithDepth,
+    ResourceGroup, ResourceGroupMembership, ResourceGroupType, ResourceGroupWithDepth,
+    UpdateGroupRequest, UpdateTypeRequest,
 };

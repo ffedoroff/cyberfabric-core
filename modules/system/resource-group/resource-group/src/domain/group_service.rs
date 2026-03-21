@@ -41,6 +41,8 @@ impl Default for QueryProfile {
     }
 }
 
+// @cpt-dod:cpt-cf-resource-group-dod-entity-hier-entity-service:p1
+// @cpt-dod:cpt-cf-resource-group-dod-integration-auth-tenant-scope:p1
 /// Service for resource group entity lifecycle management.
 #[derive(Clone)]
 pub struct GroupService {
@@ -55,6 +57,7 @@ impl GroupService {
         Self { db, profile }
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-create-group:p1
     /// Create a new resource group.
     pub async fn create_group(
         &self,
@@ -92,6 +95,7 @@ impl GroupService {
                 )));
             }
 
+            // @cpt-algo:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1
             // Validate tenant compatibility (child must be same tenant as parent)
             if parent.tenant_id != tenant_id {
                 return Err(DomainError::validation(format!(
@@ -191,6 +195,7 @@ impl GroupService {
         GroupRepository::list_groups(&conn, query).await
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-update-group:p1
     /// Update a resource group (full replacement via PUT).
     pub async fn update_group(
         &self,
@@ -283,6 +288,7 @@ impl GroupService {
             .ok_or_else(|| DomainError::group_not_found(group_id))
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-move-group:p1
     /// Move a group to a new parent (or make it a root).
     pub async fn move_group(
         &self,
@@ -319,6 +325,7 @@ impl GroupService {
             .ok_or_else(|| DomainError::group_not_found(group_id))
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-delete-group:p1
     /// Delete a resource group.
     pub async fn delete_group(&self, group_id: Uuid, force: bool) -> Result<(), DomainError> {
         let conn = self.db.conn()?;
@@ -371,6 +378,8 @@ impl GroupService {
 
     // -- Internal helpers --
 
+    // @cpt-algo:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1
+    // @cpt-algo:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1
     /// Internal move logic shared between `move_group` and `update_group`.
     async fn move_group_internal(
         &self,

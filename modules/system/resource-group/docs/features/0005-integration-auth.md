@@ -1,6 +1,6 @@
 # Feature: Integration Read Port & Dual Authentication Modes
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth-implemented`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth`
 
 - [ ] `p1` - `cpt-cf-resource-group-feature-integration-auth`
 
@@ -61,7 +61,7 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
 
 ### JWT Request to RG REST API
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-integration-auth-jwt-request`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-integration-auth-jwt-request`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -74,20 +74,20 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
 - AuthZ service unavailable → 503
 
 **Steps**:
-1. [ ] - `p1` - Actor sends request to any RG REST endpoint with JWT bearer token - `inst-jwt-1`
-2. [ ] - `p1` - API Gateway: authenticate JWT via AuthNResolverClient → SecurityContext {subject_id, subject_tenant_id} - `inst-jwt-2`
-3. [ ] - `p1` - RG Gateway: call PolicyEnforcer.access_scope(ctx, resource_type, action) - `inst-jwt-3`
-4. [ ] - `p1` - PolicyEnforcer → AuthZ Resolver: evaluate(EvaluationRequest) - `inst-jwt-4`
-5. [ ] - `p1` - AuthZ plugin internally: call ResourceGroupReadHierarchy.list_group_depth() for tenant hierarchy resolution (via MTLS or in-process ClientHub — bypasses AuthZ) - `inst-jwt-5`
-6. [ ] - `p1` - AuthZ plugin: produce constraints (e.g., owner_tenant_id IN (...)) - `inst-jwt-6`
-7. [ ] - `p1` - PolicyEnforcer: compile_to_access_scope() → AccessScope - `inst-jwt-7`
-8. [ ] - `p1` - RG Gateway: apply AccessScope via SecureORM (WHERE tenant_id IN (...)) to query - `inst-jwt-8`
-9. [ ] - `p1` - RG Service: execute query with SQL predicates, return results - `inst-jwt-9`
-10. [ ] - `p1` - **RETURN** response to actor - `inst-jwt-10`
+1. [x] - `p1` - Actor sends request to any RG REST endpoint with JWT bearer token - `inst-jwt-1`
+2. [x] - `p1` - API Gateway: authenticate JWT via AuthNResolverClient → SecurityContext {subject_id, subject_tenant_id} - `inst-jwt-2`
+3. [x] - `p1` - RG Gateway: call PolicyEnforcer.access_scope(ctx, resource_type, action) - `inst-jwt-3`
+4. [x] - `p1` - PolicyEnforcer → AuthZ Resolver: evaluate(EvaluationRequest) - `inst-jwt-4`
+5. [x] - `p1` - AuthZ plugin internally: call ResourceGroupReadHierarchy.list_group_depth() for tenant hierarchy resolution (via MTLS or in-process ClientHub — bypasses AuthZ) - `inst-jwt-5`
+6. [x] - `p1` - AuthZ plugin: produce constraints (e.g., owner_tenant_id IN (...)) - `inst-jwt-6`
+7. [x] - `p1` - PolicyEnforcer: compile_to_access_scope() → AccessScope - `inst-jwt-7`
+8. [x] - `p1` - RG Gateway: apply AccessScope via SecureORM (WHERE tenant_id IN (...)) to query - `inst-jwt-8`
+9. [x] - `p1` - RG Service: execute query with SQL predicates, return results - `inst-jwt-9`
+10. [x] - `p1` - **RETURN** response to actor - `inst-jwt-10`
 
 ### MTLS Request from AuthZ Plugin
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-integration-auth-mtls-request`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-integration-auth-mtls-request`
 
 **Actor**: `cpt-cf-resource-group-actor-authz-plugin-consumer`
 
@@ -100,20 +100,20 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
 - Endpoint not in MTLS allowlist → 403 Forbidden
 
 **Steps**:
-1. [ ] - `p1` - AuthZ plugin sends GET /api/resource-group/v1/groups/{group_id}/hierarchy with MTLS client certificate - `inst-mtls-1`
-2. [ ] - `p1` - RG Gateway: extract client certificate from TLS handshake - `inst-mtls-2`
-3. [ ] - `p1` - Validate certificate against trusted CA bundle (ca_cert): chain, expiration, revocation - `inst-mtls-3`
-4. [ ] - `p1` - Match client identity (certificate CN/SAN) against allowed_clients list - `inst-mtls-4`
-5. [ ] - `p1` - **IF** client not in allowed_clients → **RETURN** 403 Forbidden - `inst-mtls-5`
-6. [ ] - `p1` - Check endpoint against allowed_endpoints allowlist (method + path) - `inst-mtls-6`
-7. [ ] - `p1` - **IF** endpoint not in allowlist → **RETURN** 403 Forbidden - `inst-mtls-7`
-8. [ ] - `p1` - Create system SecurityContext (no AuthZ evaluation — trusted system principal) - `inst-mtls-8`
-9. [ ] - `p1` - RG Hierarchy Service: execute list_group_depth(system_ctx, group_id, query) directly - `inst-mtls-9`
-10. [ ] - `p1` - **RETURN** Page<ResourceGroupWithDepth> — hierarchy data with tenant_id per group, metadata including barrier - `inst-mtls-10`
+1. [x] - `p1` - AuthZ plugin sends GET /api/resource-group/v1/groups/{group_id}/hierarchy with MTLS client certificate - `inst-mtls-1`
+2. [x] - `p1` - RG Gateway: extract client certificate from TLS handshake - `inst-mtls-2`
+3. [x] - `p1` - Validate certificate against trusted CA bundle (ca_cert): chain, expiration, revocation - `inst-mtls-3`
+4. [x] - `p1` - Match client identity (certificate CN/SAN) against allowed_clients list - `inst-mtls-4`
+5. [x] - `p1` - **IF** client not in allowed_clients → **RETURN** 403 Forbidden - `inst-mtls-5`
+6. [x] - `p1` - Check endpoint against allowed_endpoints allowlist (method + path) - `inst-mtls-6`
+7. [x] - `p1` - **IF** endpoint not in allowlist → **RETURN** 403 Forbidden - `inst-mtls-7`
+8. [x] - `p1` - Create system SecurityContext (no AuthZ evaluation — trusted system principal) - `inst-mtls-8`
+9. [x] - `p1` - RG Hierarchy Service: execute list_group_depth(system_ctx, group_id, query) directly - `inst-mtls-9`
+10. [x] - `p1` - **RETURN** Page<ResourceGroupWithDepth> — hierarchy data with tenant_id per group, metadata including barrier - `inst-mtls-10`
 
 ### Plugin Gateway Routing
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-integration-auth-plugin-routing`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-integration-auth-plugin-routing`
 
 **Actor**: `cpt-cf-resource-group-actor-authz-plugin-consumer`
 
@@ -121,54 +121,54 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
 - Read request routed to built-in provider or vendor-specific plugin based on configuration
 
 **Steps**:
-1. [ ] - `p1` - Integration read request arrives via ResourceGroupReadHierarchy trait - `inst-plugin-1`
-2. [ ] - `p1` - RG Module resolves configured provider from module config - `inst-plugin-2`
-3. [ ] - `p1` - **IF** built-in provider configured - `inst-plugin-3`
-   1. [ ] - `p1` - Route to local persistence path: execute query against RG database - `inst-plugin-3a`
-4. [ ] - `p1` - **IF** vendor-specific provider configured - `inst-plugin-4`
-   1. [ ] - `p1` - Resolve plugin instance by configured vendor via types-registry (scoped by GTS instance ID) - `inst-plugin-4a`
-   2. [ ] - `p1` - Delegate to ResourceGroupReadPluginClient with SecurityContext passthrough - `inst-plugin-4b`
-5. [ ] - `p1` - **RETURN** results from selected provider - `inst-plugin-5`
+1. [x] - `p1` - Integration read request arrives via ResourceGroupReadHierarchy trait - `inst-plugin-1`
+2. [x] - `p1` - RG Module resolves configured provider from module config - `inst-plugin-2`
+3. [x] - `p1` - **IF** built-in provider configured - `inst-plugin-3`
+   1. [x] - `p1` - Route to local persistence path: execute query against RG database - `inst-plugin-3a`
+4. [x] - `p1` - **IF** vendor-specific provider configured - `inst-plugin-4`
+   1. [x] - `p1` - Resolve plugin instance by configured vendor via types-registry (scoped by GTS instance ID) - `inst-plugin-4a`
+   2. [x] - `p1` - Delegate to ResourceGroupReadPluginClient with SecurityContext passthrough - `inst-plugin-4b`
+5. [x] - `p1` - **RETURN** results from selected provider - `inst-plugin-5`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### Tenant Scope Enforcement for Ownership-Graph Writes
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement`
 
 **Input**: Write operation context (create/move group or add membership), caller SecurityContext, target group/parent tenant_id
 
 **Output**: Pass or TenantIncompatibility
 
 **Steps**:
-1. [ ] - `p1` - Extract caller effective tenant scope from SecurityContext.subject_tenant_id - `inst-tenant-enforce-1`
-2. [ ] - `p1` - **IF** caller is privileged platform-admin (provisioning exception) → **RETURN** pass (but data invariants still checked) - `inst-tenant-enforce-2`
-3. [ ] - `p1` - **IF** parent-child edge: validate parent and child are in same tenant or related via configured tenant hierarchy scope - `inst-tenant-enforce-3`
-4. [ ] - `p1` - **IF** membership write: validate target group's tenant_id is compatible with caller's effective tenant scope - `inst-tenant-enforce-4`
-5. [ ] - `p1` - **IF** tenant-incompatible → **RETURN** TenantIncompatibility with tenant details - `inst-tenant-enforce-5`
-6. [ ] - `p1` - **RETURN** pass - `inst-tenant-enforce-6`
+1. [x] - `p1` - Extract caller effective tenant scope from SecurityContext.subject_tenant_id - `inst-tenant-enforce-1`
+2. [x] - `p1` - **IF** caller is privileged platform-admin (provisioning exception) → **RETURN** pass (but data invariants still checked) - `inst-tenant-enforce-2`
+3. [x] - `p1` - **IF** parent-child edge: validate parent and child are in same tenant or related via configured tenant hierarchy scope - `inst-tenant-enforce-3`
+4. [x] - `p1` - **IF** membership write: validate target group's tenant_id is compatible with caller's effective tenant scope - `inst-tenant-enforce-4`
+5. [x] - `p1` - **IF** tenant-incompatible → **RETURN** TenantIncompatibility with tenant details - `inst-tenant-enforce-5`
+6. [x] - `p1` - **RETURN** pass - `inst-tenant-enforce-6`
 
 ### Authentication Mode Decision
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-integration-auth-auth-mode-decision`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-integration-auth-auth-mode-decision`
 
 **Input**: Incoming request with authentication credentials
 
 **Output**: Authentication mode (JWT or MTLS) and resulting SecurityContext
 
 **Steps**:
-1. [ ] - `p1` - Inspect request for authentication method - `inst-auth-decide-1`
-2. [ ] - `p1` - **IF** request has MTLS client certificate - `inst-auth-decide-2`
-   1. [ ] - `p1` - Verify certificate against CA bundle - `inst-auth-decide-2a`
-   2. [ ] - `p1` - Match CN against allowed_clients - `inst-auth-decide-2b`
-   3. [ ] - `p1` - Check endpoint in MTLS allowlist - `inst-auth-decide-2c`
-   4. [ ] - `p1` - **IF** all checks pass → create system SecurityContext, skip AuthZ → **RETURN** MTLS mode - `inst-auth-decide-2d`
-   5. [ ] - `p1` - **ELSE** → **RETURN** 403 Forbidden - `inst-auth-decide-2e`
-3. [ ] - `p1` - **IF** request has JWT bearer token - `inst-auth-decide-3`
-   1. [ ] - `p1` - Authenticate via AuthNResolverClient → SecurityContext - `inst-auth-decide-3a`
-   2. [ ] - `p1` - Run PolicyEnforcer.access_scope() → AccessScope - `inst-auth-decide-3b`
-   3. [ ] - `p1` - **RETURN** JWT mode with SecurityContext + AccessScope - `inst-auth-decide-3c`
-4. [ ] - `p1` - **ELSE** → **RETURN** 401 Unauthorized - `inst-auth-decide-4`
+1. [x] - `p1` - Inspect request for authentication method - `inst-auth-decide-1`
+2. [x] - `p1` - **IF** request has MTLS client certificate - `inst-auth-decide-2`
+   1. [x] - `p1` - Verify certificate against CA bundle - `inst-auth-decide-2a`
+   2. [x] - `p1` - Match CN against allowed_clients - `inst-auth-decide-2b`
+   3. [x] - `p1` - Check endpoint in MTLS allowlist - `inst-auth-decide-2c`
+   4. [x] - `p1` - **IF** all checks pass → create system SecurityContext, skip AuthZ → **RETURN** MTLS mode - `inst-auth-decide-2d`
+   5. [x] - `p1` - **ELSE** → **RETURN** 403 Forbidden - `inst-auth-decide-2e`
+3. [x] - `p1` - **IF** request has JWT bearer token - `inst-auth-decide-3`
+   1. [x] - `p1` - Authenticate via AuthNResolverClient → SecurityContext - `inst-auth-decide-3a`
+   2. [x] - `p1` - Run PolicyEnforcer.access_scope() → AccessScope - `inst-auth-decide-3b`
+   3. [x] - `p1` - **RETURN** JWT mode with SecurityContext + AccessScope - `inst-auth-decide-3c`
+4. [x] - `p1` - **ELSE** → **RETURN** 401 Unauthorized - `inst-auth-decide-4`
 
 ## 4. States (CDSL)
 
@@ -178,7 +178,7 @@ Not applicable. This feature configures authentication routing and integration r
 
 ### Integration Read Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-integration-auth-read-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-integration-auth-read-service`
 
 The system **MUST** implement an Integration Read Service that exposes `ResourceGroupReadHierarchy` via ClientHub for external consumers.
 
@@ -198,7 +198,7 @@ The system **MUST** implement an Integration Read Service that exposes `Resource
 
 ### Dual Authentication Mode Routing
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-integration-auth-dual-auth`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-integration-auth-dual-auth`
 
 The system **MUST** implement dual authentication mode routing in the RG gateway.
 
@@ -231,7 +231,7 @@ The system **MUST** implement dual authentication mode routing in the RG gateway
 
 ### Tenant Scope Enforcement for Ownership-Graph Profile
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-integration-auth-tenant-scope`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-integration-auth-tenant-scope`
 
 The system **MUST** enforce tenant-hierarchy-compatible writes in ownership-graph profile.
 

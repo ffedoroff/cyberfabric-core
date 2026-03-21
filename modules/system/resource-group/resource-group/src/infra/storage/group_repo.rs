@@ -35,6 +35,7 @@ fn system_scope() -> AccessScope {
     AccessScope::allow_all()
 }
 
+// @cpt-dod:cpt-cf-resource-group-dod-entity-hier-hierarchy-engine:p1
 /// Repository for resource group persistence operations.
 pub struct GroupRepository;
 
@@ -507,6 +508,7 @@ impl GroupRepository {
         Ok(())
     }
 
+    // @cpt-algo:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1
     /// Rebuild closure rows for a subtree after a move operation.
     /// This deletes old ancestor paths for the entire subtree and
     /// inserts new paths based on the new parent.
