@@ -160,7 +160,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 ### 2.3 Group Entity & Hierarchy Engine &mdash; HIGH
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-entity-hierarchy`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-entity-hierarchy`
 
 - **Purpose**: Implement group entity lifecycle (create, get, update, move, delete) with strict forest invariants, closure-table-based hierarchy engine for efficient ancestor/descendant queries, query profile enforcement, subtree operations, and the hierarchy depth endpoint with relative depth computation.
 

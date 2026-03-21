@@ -44,9 +44,8 @@ impl MembershipService {
     // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-mbr-add-1
     /// Add a membership link between a resource and a group.
     ///
-    /// Resolves the GTS type path to a surrogate ID, validates that the group
-    /// exists, and inserts the membership row. Returns the created membership
-    /// with the resolved type path.
+    /// Validates group existence, resource_type registration, allowed_memberships
+    /// compatibility, and tenant scope before inserting the membership row.
     pub async fn add_membership(
         &self,
         group_id: Uuid,
@@ -55,18 +54,59 @@ impl MembershipService {
     ) -> Result<ResourceGroupMembership, DomainError> {
         let conn = self.conn()?;
 
-        // Verify the group exists
-        GroupRepository::find_by_id(&conn, group_id)
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
+        // Verify the group exists and get its type info
+        let group_model = GroupRepository::find_model_by_id(&conn, group_id)
             .await?
             .ok_or(DomainError::GroupNotFound { id: group_id })?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
 
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
         // Resolve the GTS type path to a surrogate SMALLINT ID
         let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
             .await?
             .ok_or_else(|| DomainError::validation(format!("Unknown resource type: {resource_type}")))?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
 
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
+        // Load group type's allowed_memberships and validate
+        let allowed = TypeRepository::load_full_type_by_id(&conn, group_model.gts_type_id).await?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
+
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-8
+        if !allowed.allowed_memberships.iter().any(|m| m == resource_type) {
+            return Err(DomainError::validation(format!(
+                "Resource type '{resource_type}' is not in allowed_memberships for group type '{}'",
+                allowed.code
+            )));
+        }
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-8
+
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
+        // Tenant compatibility: check existing memberships for this resource
+        let existing_tenants = MembershipRepository::get_existing_membership_tenant_ids(
+            &conn,
+            gts_type_id,
+            resource_id,
+        )
+        .await?;
+        // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
+
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-4
+        if !existing_tenants.is_empty()
+            && !existing_tenants.contains(&group_model.tenant_id)
+        {
+            return Err(DomainError::tenant_incompatibility(format!(
+                "Resource ({resource_type}, {resource_id}) is already linked in tenant {:?}, cannot add to tenant {}",
+                existing_tenants, group_model.tenant_id
+            )));
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-4
+
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-11
         // Insert the membership (repo handles duplicate detection)
         let model = MembershipRepository::insert(&conn, group_id, gts_type_id, resource_id).await?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-11
 
         // Resolve back to GTS path for the SDK model
         Ok(ResourceGroupMembership {
@@ -98,8 +138,8 @@ impl MembershipService {
         MembershipRepository::find_by_composite_key(&conn, group_id, gts_type_id, resource_id)
             .await?
             .ok_or_else(|| {
-                DomainError::validation(format!(
-                    "Membership not found: ({group_id}, {resource_type}, {resource_id})"
+                DomainError::type_not_found(format!(
+                    "Membership ({group_id}, {resource_type}, {resource_id})"
                 ))
             })?;
 

@@ -1,8 +1,8 @@
 # Feature: Group Entity & Hierarchy Engine
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-entity-hierarchy`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-entity-hierarchy`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-entity-hierarchy`
+- [x] `p1` - `cpt-cf-resource-group-feature-entity-hierarchy`
 
 <!-- toc -->
 
@@ -60,7 +60,7 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 - **PRD**: [PRD.md](../PRD.md) — sections 5.2, 5.4, 5.5, 5.6, 8.2
 - **Design**: [DESIGN.md](../DESIGN.md) — sections 3.1, 3.2 (Entity Service, Hierarchy Service), 3.6 (sequences), 3.7 (resource_group, resource_group_closure), 3.8 (Query Profile)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) entry 2.3
-- **Dependencies**: `cpt-cf-resource-group-feature-type-management` (type validation for parent-child compatibility)
+- **Dependencies**: Feature 0002 — type validation for parent-child compatibility
 
 ## 2. Actor Flows (CDSL)
 
@@ -246,20 +246,20 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
 
 ### Group Data Seeding
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-seed-groups`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-entity-hier-seed-groups`
 
 **Input**: List of group seed definitions with parent references and type assignments
 
 **Output**: Seed result (groups created, updated, unchanged count)
 
 **Steps**:
-1. [ ] - `p1` - Load seed definitions, order by dependency (parents before children) - `inst-seed-groups-1`
-2. [ ] - `p1` - **FOR EACH** seed_def in ordered definitions - `inst-seed-groups-2`
-   1. [ ] - `p1` - DB: SELECT FROM resource_group WHERE id = {seed_def.id} or name/type match - `inst-seed-groups-2a`
-   2. [ ] - `p1` - **IF** group exists AND definition matches → skip (unchanged) - `inst-seed-groups-2b`
-   3. [ ] - `p1` - **IF** group exists AND definition differs → update via update flow - `inst-seed-groups-2c`
-   4. [ ] - `p1` - **IF** group does not exist → create via create flow (validates type compat, builds closure) - `inst-seed-groups-2d`
-3. [ ] - `p1` - **RETURN** seed result: {created: N, updated: N, unchanged: N} - `inst-seed-groups-3`
+1. [x] - `p1` - Load seed definitions, order by dependency (parents before children) - `inst-seed-groups-1`
+2. [x] - `p1` - **FOR EACH** seed_def in ordered definitions - `inst-seed-groups-2`
+   1. [x] - `p1` - DB: SELECT FROM resource_group WHERE id = {seed_def.id} or name/type match - `inst-seed-groups-2a`
+   2. [x] - `p1` - **IF** group exists AND definition matches → skip (unchanged) - `inst-seed-groups-2b`
+   3. [x] - `p1` - **IF** group exists AND definition differs → update via update flow - `inst-seed-groups-2c`
+   4. [x] - `p1` - **IF** group does not exist → create via create flow (validates type compat, builds closure) - `inst-seed-groups-2d`
+3. [x] - `p1` - **RETURN** seed result: {created: N, updated: N, unchanged: N} - `inst-seed-groups-3`
 
 ## 4. States (CDSL)
 
@@ -342,7 +342,7 @@ The system **MUST** implement REST endpoint handlers for group management under 
 
 ### Group Data Seeding
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-seeding`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-entity-hier-seeding`
 
 The system **MUST** provide an idempotent group seeding mechanism for deployment bootstrapping.
 
@@ -361,23 +361,23 @@ The system **MUST** provide an idempotent group seeding mechanism for deployment
 
 ## 6. Acceptance Criteria
 
-- [ ] Root group (can_be_root=true, no parent) is created with self-referencing closure row (depth=0)
-- [ ] Child group is created with closure rows linking to all ancestors at correct depths
-- [ ] Creating group with parent of incompatible type returns `InvalidParentType` (409)
-- [ ] Creating group with nonexistent parent returns `NotFound` (404)
-- [ ] Creating root group when type has can_be_root=false returns validation error (400)
-- [ ] Moving group to new parent rebuilds closure paths transactionally for entire subtree
-- [ ] Moving group under its own descendant returns `CycleDetected` (409)
-- [ ] Moving group under itself (self-parent) returns `CycleDetected` (409)
-- [ ] Moving group to incompatible parent type returns `InvalidParentType` (409)
-- [ ] Updating group type validates both parent and children compatibility
-- [ ] Deleting leaf group (no children, no memberships) succeeds (204) and removes closure rows
-- [ ] Deleting group with children without force returns `ConflictActiveReferences` (409)
-- [ ] Force delete removes entire subtree including memberships and closure rows
-- [ ] Hierarchy endpoint returns ancestors (negative depth) and descendants (positive depth) with correct relative distances
-- [ ] OData `$filter` on `hierarchy/depth` supports eq, ne, gt, ge, lt, le operators
-- [ ] Write operations that exceed max_depth are rejected with `DepthLimitExceeded`
-- [ ] Write operations that exceed max_width are rejected with `WidthLimitExceeded`
-- [ ] Reads return full stored data even when profile was tightened (no truncation)
-- [ ] Concurrent hierarchy mutations use SERIALIZABLE isolation with bounded retry
-- [ ] Group seeding creates hierarchy with correct parent-child links and closure rows (idempotent)
+- [x] Root group (can_be_root=true, no parent) is created with self-referencing closure row (depth=0)
+- [x] Child group is created with closure rows linking to all ancestors at correct depths
+- [x] Creating group with parent of incompatible type returns `InvalidParentType` (409)
+- [x] Creating group with nonexistent parent returns `NotFound` (404)
+- [x] Creating root group when type has can_be_root=false returns validation error (400)
+- [x] Moving group to new parent rebuilds closure paths transactionally for entire subtree
+- [x] Moving group under its own descendant returns `CycleDetected` (409)
+- [x] Moving group under itself (self-parent) returns `CycleDetected` (409)
+- [x] Moving group to incompatible parent type returns `InvalidParentType` (409)
+- [x] Updating group type validates both parent and children compatibility
+- [x] Deleting leaf group (no children, no memberships) succeeds (204) and removes closure rows
+- [x] Deleting group with children without force returns `ConflictActiveReferences` (409)
+- [x] Force delete removes entire subtree including memberships and closure rows
+- [x] Hierarchy endpoint returns ancestors (negative depth) and descendants (positive depth) with correct relative distances
+- [x] OData `$filter` on `hierarchy/depth` supports eq, ne, gt, ge, lt, le operators
+- [x] Write operations that exceed max_depth are rejected with `DepthLimitExceeded`
+- [x] Write operations that exceed max_width are rejected with `WidthLimitExceeded`
+- [x] Reads return full stored data even when profile was tightened (no truncation)
+- [x] Concurrent hierarchy mutations use SERIALIZABLE isolation with bounded retry
+- [x] Group seeding creates hierarchy with correct parent-child links and closure rows (idempotent)

@@ -52,7 +52,7 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 - **PRD**: [PRD.md](../PRD.md) — sections 5.3, 8.3
 - **Design**: [DESIGN.md](../DESIGN.md) — sections 3.2 (Membership Service), 3.3 (API), 3.7 (resource_group_membership)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) entry 2.4
-- **Dependencies**: `cpt-cf-resource-group-feature-sdk-module-foundation`, `cpt-cf-resource-group-feature-entity-hierarchy` (group existence, tenant scope)
+- **Dependencies**: Features 0001, 0003 — SDK foundation, group existence, tenant scope
 
 ## 2. Actor Flows (CDSL)
 
@@ -229,18 +229,18 @@ The system **MUST** provide an idempotent membership seeding mechanism for deplo
 
 ## 6. Acceptance Criteria
 
-- [ ] Adding membership `(G1, User, R1)` creates link and returns 201 with membership body
-- [ ] Adding membership to nonexistent group returns `NotFound` (404)
-- [ ] Adding duplicate membership `(G1, User, R1)` returns `Conflict` (409)
-- [ ] Adding membership with unregistered resource_type GTS path returns validation error (400)
-- [ ] Adding membership with resource_type not in group type's allowed_memberships returns validation error (400)
-- [ ] Multiple resource types can coexist in the same group: `(G1, User, U1)` and `(G1, Document, D1)` both succeed
-- [ ] Adding membership for resource already linked in incompatible tenant returns `TenantIncompatibility` (409)
-- [ ] Removing existing membership returns 204 No Content
-- [ ] Removing nonexistent membership returns `NotFound` (404)
-- [ ] List memberships with `$filter=group_id eq 'G1'` returns all memberships for group G1
-- [ ] List memberships with `$filter=resource_type eq 'User' and resource_id eq 'R1'` returns all groups containing that resource
-- [ ] Membership responses do not include `tenant_id` — tenant scope derived from group
-- [ ] No SMALLINT surrogate IDs exposed in membership REST responses
-- [ ] Membership seeding creates links, skips duplicates, validates tenant compatibility (idempotent)
+- [x] Adding membership `(G1, User, R1)` creates link and returns 201 with membership body
+- [x] Adding membership to nonexistent group returns `NotFound` (404)
+- [x] Adding duplicate membership `(G1, User, R1)` returns `Conflict` (409)
+- [x] Adding membership with unregistered resource_type GTS path returns validation error (400)
+- [x] Adding membership with resource_type not in group type's allowed_memberships returns validation error (400)
+- [x] Multiple resource types can coexist in the same group: `(G1, User, U1)` and `(G1, Document, D1)` both succeed
+- [x] Adding membership for resource already linked in incompatible tenant returns `TenantIncompatibility` (409)
+- [x] Removing existing membership returns 204 No Content
+- [x] Removing nonexistent membership returns `NotFound` (404)
+- [x] List memberships with `$filter=group_id eq 'G1'` returns all memberships for group G1
+- [x] List memberships with `$filter=resource_type eq 'User' and resource_id eq 'R1'` returns all groups containing that resource
+- [x] Membership responses do not include `tenant_id` — tenant scope derived from group
+- [x] No SMALLINT surrogate IDs exposed in membership REST responses
+- [x] Membership seeding creates links, skips duplicates, validates tenant compatibility (idempotent)
 - [ ] Tenant deprovisioning cascade-deletes associated memberships
