@@ -1,7 +1,7 @@
 # Decomposition: Resource Group (RG)
 
 **Overall implementation status:**
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-status-overall`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-status-overall`
 
 <!-- toc -->
 
@@ -55,27 +55,27 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-fr-rest-api`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-odata-query`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-deterministic-errors`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-deterministic-errors`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-compatibility`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-production-scale`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-transactional-consistency`
-  - [ ] `p1` - `cpt-cf-resource-group-interface-resource-group-client`
-  - [ ] `p1` - `cpt-cf-resource-group-interface-integration-read-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-rest-api`
+  - [x] `p1` - `cpt-cf-resource-group-fr-odata-query`
+  - [x] `p1` - `cpt-cf-resource-group-fr-deterministic-errors`
+  - [x] `p1` - `cpt-cf-resource-group-fr-no-authz-and-sql-logic`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-deterministic-errors`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-compatibility`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-production-scale`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-transactional-consistency`
+  - [x] `p1` - `cpt-cf-resource-group-interface-resource-group-client`
+  - [x] `p1` - `cpt-cf-resource-group-interface-integration-read-hierarchy`
 
 - **Design Principles Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
+  - [x] `p1` - `cpt-cf-resource-group-principle-policy-agnostic`
 
 - **Design Constraints Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-db-agnostic`
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-surrogate-ids-internal`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-authz-decision`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-db-agnostic`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-surrogate-ids-internal`
 
 - **Domain Model Entities**:
   - ResourceGroupType
@@ -88,8 +88,8 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Design Components**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-component-module`
-  - [ ] `p1` - `cpt-cf-resource-group-component-persistence-adapter`
+  - [x] `p1` - `cpt-cf-resource-group-component-module`
+  - [x] `p1` - `cpt-cf-resource-group-component-persistence-adapter`
 
 - **API**:
   - Module initialization and ClientHub registration (no domain REST endpoints in this feature)
@@ -124,16 +124,16 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-fr-manage-types`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-validate-type-code`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-reject-duplicate-type`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-seed-types`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-validate-type-update-hierarchy`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-delete-type-only-if-empty`
+  - [x] `p1` - `cpt-cf-resource-group-fr-manage-types`
+  - [x] `p1` - `cpt-cf-resource-group-fr-validate-type-code`
+  - [x] `p1` - `cpt-cf-resource-group-fr-reject-duplicate-type`
+  - [x] `p1` - `cpt-cf-resource-group-fr-seed-types`
+  - [x] `p1` - `cpt-cf-resource-group-fr-validate-type-update-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-delete-type-only-if-empty`
 
 - **Design Principles Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-principle-dynamic-types`
+  - [x] `p1` - `cpt-cf-resource-group-principle-dynamic-types`
 
 - **Design Constraints Covered**:
 
@@ -145,7 +145,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Design Components**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-component-type-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-type-service`
 
 - **API**:
   - GET /api/types-registry/v1/types
@@ -188,29 +188,29 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-fr-manage-entities`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-enforce-forest-hierarchy`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-validate-parent-type`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-delete-entity-no-active-references`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-seed-groups`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-closure-table`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-query-group-hierarchy`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-subtree-operations`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-query-profile`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-profile-change-no-rewrite`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-reduced-constraints-behavior`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-list-groups-depth`
-  - [ ] `p2` - `cpt-cf-resource-group-fr-force-delete`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-hierarchy-query-latency`
+  - [x] `p1` - `cpt-cf-resource-group-fr-manage-entities`
+  - [x] `p1` - `cpt-cf-resource-group-fr-enforce-forest-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-validate-parent-type`
+  - [x] `p1` - `cpt-cf-resource-group-fr-delete-entity-no-active-references`
+  - [x] `p1` - `cpt-cf-resource-group-fr-seed-groups`
+  - [x] `p1` - `cpt-cf-resource-group-fr-closure-table`
+  - [x] `p1` - `cpt-cf-resource-group-fr-query-group-hierarchy`
+  - [x] `p1` - `cpt-cf-resource-group-fr-subtree-operations`
+  - [x] `p1` - `cpt-cf-resource-group-fr-query-profile`
+  - [x] `p1` - `cpt-cf-resource-group-fr-profile-change-no-rewrite`
+  - [x] `p1` - `cpt-cf-resource-group-fr-reduced-constraints-behavior`
+  - [x] `p1` - `cpt-cf-resource-group-fr-list-groups-depth`
+  - [x] `p2` - `cpt-cf-resource-group-fr-force-delete`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-hierarchy-query-latency`
 
 - **Design Principles Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-principle-strict-forest`
-  - [ ] `p1` - `cpt-cf-resource-group-principle-query-profile-guardrail`
+  - [x] `p1` - `cpt-cf-resource-group-principle-strict-forest`
+  - [x] `p1` - `cpt-cf-resource-group-principle-query-profile-guardrail`
 
 - **Design Constraints Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-constraint-profile-change-safety`
+  - [x] `p1` - `cpt-cf-resource-group-constraint-profile-change-safety`
 
 - **Domain Model Entities**:
   - ResourceGroupEntity
@@ -219,8 +219,8 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Design Components**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-component-entity-service`
-  - [ ] `p1` - `cpt-cf-resource-group-component-hierarchy-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-entity-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-hierarchy-service`
 
 - **API**:
   - GET /api/resource-group/v1/groups
@@ -237,7 +237,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 ### 2.4 Membership Management &mdash; MEDIUM
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-membership`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-membership`
 
 - **Purpose**: Implement membership lifecycle (add, remove, list) with composite key semantics, deterministic lookups by group and by resource, tenant compatibility validation derived from the referenced group, and idempotent membership seeding.
 
@@ -261,11 +261,11 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-fr-manage-membership`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-query-membership-relations`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-seed-memberships`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-membership-query-latency`
-  - [ ] `p1` - `cpt-cf-resource-group-nfr-data-lifecycle`
+  - [x] `p1` - `cpt-cf-resource-group-fr-manage-membership`
+  - [x] `p1` - `cpt-cf-resource-group-fr-query-membership-relations`
+  - [x] `p1` - `cpt-cf-resource-group-fr-seed-memberships`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-membership-query-latency`
+  - [x] `p1` - `cpt-cf-resource-group-nfr-data-lifecycle`
 
 - **Design Principles Covered**:
 
@@ -280,7 +280,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Design Components**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-component-membership-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-membership-service`
 
 - **API**:
   - GET /api/resource-group/v1/memberships
@@ -293,7 +293,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 ### 2.5 Integration Read Port & Dual Authentication Modes &mdash; MEDIUM
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-integration-auth`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-integration-auth`
 
 - **Purpose**: Expose the integration read service for external consumers (AuthZ plugin via `ResourceGroupReadHierarchy`), implement dual authentication modes (JWT with full AuthZ evaluation, MTLS with hierarchy-only bypass), enforce tenant scope for ownership-graph profile writes, and configure plugin gateway routing for vendor-specific provider support.
 
@@ -318,14 +318,14 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-fr-integration-read-port`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-dual-auth-modes`
-  - [ ] `p1` - `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`
+  - [x] `p1` - `cpt-cf-resource-group-fr-integration-read-port`
+  - [x] `p1` - `cpt-cf-resource-group-fr-dual-auth-modes`
+  - [x] `p1` - `cpt-cf-resource-group-fr-tenant-scope-ownership-graph`
 
 - **Design Principles Covered**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
-  - [ ] `p1` - `cpt-cf-resource-group-principle-barrier-as-data`
+  - [x] `p1` - `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
+  - [x] `p1` - `cpt-cf-resource-group-principle-barrier-as-data`
 
 - **Design Constraints Covered**:
 
@@ -337,7 +337,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 - **Design Components**:
 
-  - [ ] `p1` - `cpt-cf-resource-group-component-integration-read-service`
+  - [x] `p1` - `cpt-cf-resource-group-component-integration-read-service`
 
 - **API**:
   - GET /api/resource-group/v1/groups/{group_id}/hierarchy (JWT + MTLS)

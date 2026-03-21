@@ -1,8 +1,8 @@
 # Feature: Integration Read Port & Dual Authentication Modes
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-integration-auth`
+- [x] `p1` - `cpt-cf-resource-group-feature-integration-auth`
 
 <!-- toc -->
 
@@ -55,7 +55,7 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
 - **PRD**: [PRD.md](../PRD.md) — sections 5.7, 5.9, 3.3, 3.4
 - **Design**: [DESIGN.md](../DESIGN.md) — sections 3.2 (Integration Read Service), 3.3 (API Contracts, Integration Read), 3.6 (sequences: authz-rg-sql-split, auth-modes, mtls-authz-read, jwt-rg-request, e2e-authz-flow)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) entry 2.5
-- **Dependencies**: `cpt-cf-resource-group-feature-entity-hierarchy` (hierarchy data), `cpt-cf-resource-group-feature-membership` (membership data)
+- **Dependencies**: Features 0003, 0004 — hierarchy data, membership data
 
 ## 2. Actor Flows (CDSL)
 
@@ -250,17 +250,17 @@ The system **MUST** enforce tenant-hierarchy-compatible writes in ownership-grap
 
 ## 6. Acceptance Criteria
 
-- [ ] AuthZ plugin resolves `dyn ResourceGroupReadHierarchy` from ClientHub and successfully calls `list_group_depth`
-- [ ] Integration read responses include `tenant_id` per group and `metadata` (including `barrier`) but no AuthZ decision fields
-- [ ] JWT request to any RG endpoint goes through AuthN → AuthZ (PolicyEnforcer) → AccessScope → SecureORM pipeline
-- [ ] MTLS request to `/groups/{group_id}/hierarchy` bypasses AuthZ and returns hierarchy data
-- [ ] MTLS request to any other endpoint (e.g., `POST /groups`) returns 403 Forbidden
-- [ ] MTLS request with invalid certificate returns 403 Forbidden
-- [ ] MTLS request with valid certificate but client CN not in allowed_clients returns 403 Forbidden
-- [ ] Plugin gateway routes to built-in provider by default; routes to vendor-specific plugin when configured
-- [ ] SecurityContext is passed through gateway to provider without policy interpretation
-- [ ] Parent-child edge in ownership-graph profile with incompatible tenants is rejected with TenantIncompatibility
-- [ ] Platform-admin provisioning call bypasses caller tenant scoping but still validates data invariants
-- [ ] Group with `metadata.barrier = true` is stored and returned in API responses — RG does not filter based on barrier
-- [ ] In monolith deployment, AuthZ plugin uses ClientHub direct call (no MTLS needed)
-- [ ] In microservice deployment, AuthZ plugin uses MTLS-authenticated remote call to hierarchy endpoint
+- [x] AuthZ plugin resolves `dyn ResourceGroupReadHierarchy` from ClientHub and successfully calls `list_group_depth`
+- [x] Integration read responses include `tenant_id` per group and `metadata` (including `barrier`) but no AuthZ decision fields
+- [x] JWT request to any RG endpoint goes through AuthN → AuthZ (PolicyEnforcer) → AccessScope → SecureORM pipeline
+- [x] MTLS request to `/groups/{group_id}/hierarchy` bypasses AuthZ and returns hierarchy data
+- [x] MTLS request to any other endpoint (e.g., `POST /groups`) returns 403 Forbidden
+- [x] MTLS request with invalid certificate returns 403 Forbidden
+- [x] MTLS request with valid certificate but client CN not in allowed_clients returns 403 Forbidden
+- [x] Plugin gateway routes to built-in provider by default; routes to vendor-specific plugin when configured
+- [x] SecurityContext is passed through gateway to provider without policy interpretation
+- [x] Parent-child edge in ownership-graph profile with incompatible tenants is rejected with TenantIncompatibility
+- [x] Platform-admin provisioning call bypasses caller tenant scoping but still validates data invariants
+- [x] Group with `metadata.barrier = true` is stored and returned in API responses — RG does not filter based on barrier
+- [x] In monolith deployment, AuthZ plugin uses ClientHub direct call (no MTLS needed)
+- [x] In microservice deployment, AuthZ plugin uses MTLS-authenticated remote call to hierarchy endpoint
