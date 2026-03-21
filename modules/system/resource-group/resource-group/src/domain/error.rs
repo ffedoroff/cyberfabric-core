@@ -123,10 +123,14 @@ impl From<DomainError> for ResourceGroupError {
             DomainError::TypeAlreadyExists { code } => {
                 ResourceGroupError::type_already_exists(code)
             }
-            DomainError::Validation { message }
-            | DomainError::InvalidParentType { message }
-            | DomainError::CycleDetected { message }
-            | DomainError::LimitViolation { message } => ResourceGroupError::validation(message),
+            DomainError::Validation { message } => ResourceGroupError::validation(message),
+            DomainError::InvalidParentType { message } => {
+                ResourceGroupError::invalid_parent_type(message)
+            }
+            DomainError::CycleDetected { message } => ResourceGroupError::cycle_detected(message),
+            DomainError::LimitViolation { message } => {
+                ResourceGroupError::limit_violation(message)
+            }
             DomainError::AllowedParentsViolation { message } => {
                 ResourceGroupError::allowed_parents_violation(message)
             }

@@ -1,8 +1,8 @@
 # Feature: GTS Type Management
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-type-management`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-type-management`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-type-management`
+- [x] `p1` - `cpt-cf-resource-group-feature-type-management`
 
 <!-- toc -->
 
@@ -54,7 +54,7 @@ Types define the structural rules for the resource group hierarchy — which par
 - **PRD**: [PRD.md](../PRD.md) — sections 5.1, 8.1
 - **Design**: [DESIGN.md](../DESIGN.md) — sections 3.1, 3.2 (Type Service), 3.3, 3.7 (gts_type tables)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) entry 2.2
-- **Dependencies**: `cpt-cf-resource-group-feature-sdk-module-foundation` (SDK traits, persistence adapter, error mapping)
+- **Dependencies**: Feature 0001 — SDK traits, persistence adapter, error mapping
 
 ## 2. Actor Flows (CDSL)
 
@@ -193,20 +193,20 @@ Types define the structural rules for the resource group hierarchy — which par
 
 ### Type Seeding
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-type-mgmt-seed-types`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-type-mgmt-seed-types`
 
 **Input**: List of type seed definitions from deployment configuration
 
 **Output**: Seed result (types created, types updated, unchanged count)
 
 **Steps**:
-1. [ ] - `p1` - Load seed definitions from configuration source - `inst-seed-1`
-2. [ ] - `p1` - **FOR EACH** seed_def in seed definitions - `inst-seed-2`
-   1. [ ] - `p1` - DB: SELECT FROM gts_type WHERE schema_id = {seed_def.schema_id} - `inst-seed-2a`
-   2. [ ] - `p1` - **IF** type exists AND definition matches → skip (unchanged) - `inst-seed-2b`
-   3. [ ] - `p1` - **IF** type exists AND definition differs → update type via update flow - `inst-seed-2c`
-   4. [ ] - `p1` - **IF** type does not exist → create type via create flow - `inst-seed-2d`
-3. [ ] - `p1` - **RETURN** seed result: {created: N, updated: N, unchanged: N} - `inst-seed-3`
+1. [x] - `p1` - Load seed definitions from configuration source - `inst-seed-1`
+2. [x] - `p1` - **FOR EACH** seed_def in seed definitions - `inst-seed-2`
+   1. [x] - `p1` - DB: SELECT FROM gts_type WHERE schema_id = {seed_def.schema_id} - `inst-seed-2a`
+   2. [x] - `p1` - **IF** type exists AND definition matches → skip (unchanged) - `inst-seed-2b`
+   3. [x] - `p1` - **IF** type exists AND definition differs → update type via update flow - `inst-seed-2c`
+   4. [x] - `p1` - **IF** type does not exist → create type via create flow - `inst-seed-2d`
+3. [x] - `p1` - **RETURN** seed result: {created: N, updated: N, unchanged: N} - `inst-seed-3`
 
 ## 4. States (CDSL)
 
@@ -265,7 +265,7 @@ All endpoints **MUST** resolve GTS type paths to SMALLINT surrogate IDs at the p
 
 ### Type Data Seeding
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-type-mgmt-seeding`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-type-mgmt-seeding`
 
 The system **MUST** provide an idempotent type seeding mechanism for deployment bootstrapping.
 
@@ -284,15 +284,15 @@ The system **MUST** provide an idempotent type seeding mechanism for deployment 
 
 ## 6. Acceptance Criteria
 
-- [ ] Type with valid schema_id and allowed_parents is created and persisted with junction table entries
-- [ ] Creating type with duplicate schema_id returns `TypeAlreadyExists` (409)
-- [ ] Creating type with invalid GTS type path format returns validation error (400) with field details
-- [ ] Creating type without `can_be_root` and without `allowed_parents` returns validation error (placement invariant)
-- [ ] Updating type to remove allowed_parent that is in use by existing groups returns `AllowedParentsViolation` (409)
-- [ ] Updating type to set `can_be_root=false` when root groups exist returns `AllowedParentsViolation` (409)
-- [ ] Updating type to add new allowed_parent succeeds when no existing groups violate new rules
-- [ ] Deleting unused type succeeds (204) and removes junction table entries via CASCADE
-- [ ] Deleting type with existing groups returns `ConflictActiveReferences` (409)
-- [ ] Type seeding creates missing types, updates changed types, skips unchanged types (idempotent)
-- [ ] List types endpoint supports OData `$filter` on `code` field with `eq`, `ne`, `in` operators
-- [ ] All REST responses use GTS type paths — no SMALLINT surrogate IDs exposed
+- [x] Type with valid schema_id and allowed_parents is created and persisted with junction table entries
+- [x] Creating type with duplicate schema_id returns `TypeAlreadyExists` (409)
+- [x] Creating type with invalid GTS type path format returns validation error (400) with field details
+- [x] Creating type without `can_be_root` and without `allowed_parents` returns validation error (placement invariant)
+- [x] Updating type to remove allowed_parent that is in use by existing groups returns `AllowedParentsViolation` (409)
+- [x] Updating type to set `can_be_root=false` when root groups exist returns `AllowedParentsViolation` (409)
+- [x] Updating type to add new allowed_parent succeeds when no existing groups violate new rules
+- [x] Deleting unused type succeeds (204) and removes junction table entries via CASCADE
+- [x] Deleting type with existing groups returns `ConflictActiveReferences` (409)
+- [x] Type seeding creates missing types, updates changed types, skips unchanged types (idempotent)
+- [x] List types endpoint supports OData `$filter` on `code` field with `eq`, `ne`, `in` operators
+- [x] All REST responses use GTS type paths — no SMALLINT surrogate IDs exposed

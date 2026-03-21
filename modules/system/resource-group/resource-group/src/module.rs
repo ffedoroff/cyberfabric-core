@@ -5,12 +5,15 @@ use modkit::api::OpenApiRegistry;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
 use modkit_db::DBProvider;
 use modkit_db::DbError;
+use resource_group_sdk::{ResourceGroupClient, ResourceGroupReadHierarchy};
 use sea_orm_migration::MigrationTrait;
 use tracing::info;
 
 use crate::api::rest::routes;
 use crate::domain::group_service::{GroupService, QueryProfile};
 use crate::domain::membership_service::MembershipService;
+use crate::domain::read_service::RgReadService;
+use crate::domain::rg_service::RgService;
 use crate::domain::type_service::TypeService;
 
 // @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-module-scaffold:p1
@@ -60,10 +63,24 @@ impl Module for ResourceGroup {
         // Create MembershipService
         let membership_service = Arc::new(MembershipService::new(db));
         self.membership_service
-            .set(membership_service)
+            .set(membership_service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
-        info!("Resource Group module initialized");
+        // Phase 1 (SystemCapability): register SDK clients in ClientHub
+        let type_svc = self.type_service.get().expect("just set").clone();
+        let group_svc = self.group_service.get().expect("just set").clone();
+
+        let rg_client: Arc<dyn ResourceGroupClient> =
+            Arc::new(RgService::new(type_svc, group_svc.clone(), membership_service));
+        ctx.client_hub()
+            .register::<dyn ResourceGroupClient>(rg_client);
+
+        let read_client: Arc<dyn ResourceGroupReadHierarchy> =
+            Arc::new(RgReadService::new(group_svc));
+        ctx.client_hub()
+            .register::<dyn ResourceGroupReadHierarchy>(read_client);
+
+        info!("Resource Group module initialized (ClientHub: ResourceGroupClient + ResourceGroupReadHierarchy)");
         Ok(())
     }
 }

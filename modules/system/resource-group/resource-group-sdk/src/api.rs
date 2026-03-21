@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::error::ResourceGroupError;
 use crate::models::{
-    CreateTypeRequest, ResourceGroupMembership, ResourceGroupType, ResourceGroupWithDepth,
-    UpdateTypeRequest,
+    CreateGroupRequest, CreateTypeRequest, ResourceGroup, ResourceGroupMembership,
+    ResourceGroupType, ResourceGroupWithDepth, UpdateGroupRequest, UpdateTypeRequest,
 };
 
 /// Client trait for resource-group type management.
@@ -58,6 +58,79 @@ pub trait ResourceGroupClient: Send + Sync {
         ctx: &SecurityContext,
         code: &str,
     ) -> Result<(), ResourceGroupError>;
+
+    // -- Group lifecycle --
+
+    /// Create a new resource group.
+    async fn create_group(
+        &self,
+        ctx: &SecurityContext,
+        request: CreateGroupRequest,
+    ) -> Result<ResourceGroup, ResourceGroupError>;
+
+    /// Get a resource group by ID.
+    async fn get_group(
+        &self,
+        ctx: &SecurityContext,
+        id: Uuid,
+    ) -> Result<ResourceGroup, ResourceGroupError>;
+
+    /// List resource groups with OData filtering and cursor-based pagination.
+    async fn list_groups(
+        &self,
+        ctx: &SecurityContext,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroup>, ResourceGroupError>;
+
+    /// Update a resource group (full replacement).
+    async fn update_group(
+        &self,
+        ctx: &SecurityContext,
+        id: Uuid,
+        request: UpdateGroupRequest,
+    ) -> Result<ResourceGroup, ResourceGroupError>;
+
+    /// Delete a resource group. Fails if child groups or memberships exist.
+    async fn delete_group(
+        &self,
+        ctx: &SecurityContext,
+        id: Uuid,
+    ) -> Result<(), ResourceGroupError>;
+
+    /// List group hierarchy with relative depth from a reference group.
+    async fn list_group_depth(
+        &self,
+        ctx: &SecurityContext,
+        group_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
+
+    // -- Membership lifecycle --
+
+    /// Add a membership link between a resource and a group.
+    async fn add_membership(
+        &self,
+        ctx: &SecurityContext,
+        group_id: Uuid,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<ResourceGroupMembership, ResourceGroupError>;
+
+    /// Remove a membership link.
+    async fn remove_membership(
+        &self,
+        ctx: &SecurityContext,
+        group_id: Uuid,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<(), ResourceGroupError>;
+
+    /// List memberships with OData filtering and cursor-based pagination.
+    async fn list_memberships(
+        &self,
+        ctx: &SecurityContext,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
 }
 
 // @cpt-dod:cpt-cf-resource-group-dod-integration-auth-read-service:p1

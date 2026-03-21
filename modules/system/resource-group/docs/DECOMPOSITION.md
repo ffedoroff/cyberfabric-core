@@ -32,7 +32,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 ### 2.1 SDK Contracts, Error Types & Module Foundation &mdash; HIGH
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-sdk-module-foundation`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-sdk-module-foundation`
 
 - **Purpose**: Establish the SDK crate with trait contracts, domain models, and error taxonomy; scaffold the module with ClientHub registration, persistence adapter, DB migrations, REST/OData infrastructure, and the cross-cutting error mapping layer that all subsequent features depend on.
 
@@ -100,7 +100,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 
 ### 2.2 GTS Type Management &mdash; HIGH
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-feature-type-management`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-type-management`
 
 - **Purpose**: Implement the full type lifecycle (create, list, get, update, delete) with code format validation, uniqueness enforcement, hierarchy-safe updates, delete-if-unused policy, and idempotent type seeding for deployment bootstrapping.
 

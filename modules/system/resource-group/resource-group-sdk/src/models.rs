@@ -5,8 +5,132 @@
 //! and its consumers. They are transport-agnostic and use string-based
 //! GTS type paths (no surrogate SMALLINT IDs).
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+// -- GtsTypePath value object --
+
+// @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-1
+/// Maximum length of a GTS type path.
+const GTS_TYPE_PATH_MAX_LEN: usize = 255;
+
+/// Validated GTS type path value object.
+///
+/// A GTS type path follows the pattern `gts.<segment>~(<segment>~)*` where
+/// each segment consists of lowercase alphanumeric characters, underscores,
+/// and dots. Examples: `gts.x.system.rg.type.v1~`, `gts.x.system.rg.type.v1~x.system.tn.tenant.v1~`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct GtsTypePath(String);
+
+impl GtsTypePath {
+    /// Create a new `GtsTypePath` from a raw string, applying validation.
+    ///
+    /// # Errors
+    /// Returns an error if the string is empty, exceeds 255 characters,
+    /// or does not match the GTS type path format.
+    pub fn new(raw: impl Into<String>) -> Result<Self, String> {
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-2
+        let raw = raw.into();
+        let s = raw.trim().to_lowercase();
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-2
+
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3
+        if s.is_empty() {
+            // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3a
+            return Err("GTS type path must not be empty".to_string());
+            // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3a
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3
+
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5
+        if s.len() > GTS_TYPE_PATH_MAX_LEN {
+            // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5a
+            return Err("GTS type path exceeds maximum length".to_string());
+            // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5a
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5
+
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4
+        // Validate format: ^gts\.[a-z0-9_.]+~([a-z0-9_.]+~)*$
+        if !Self::matches_format(&s) {
+            // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4a
+            return Err("Invalid GTS type path format".to_string());
+            // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4a
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4
+
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-6
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-7
+        Ok(Self(s))
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-7
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-6
+    }
+
+    /// Return the inner string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Validate format: `gts.<segment>~(<segment>~)*`
+    /// where segment = `[a-z0-9_.]+`
+    fn matches_format(s: &str) -> bool {
+        // Must start with "gts." and end with "~"
+        let Some(rest) = s.strip_prefix("gts.") else {
+            return false;
+        };
+        if rest.is_empty() || !rest.ends_with('~') {
+            return false;
+        }
+        // Split by '~', last element will be "" due to trailing '~'
+        let segments: Vec<&str> = rest.split('~').collect();
+        // Need at least one real segment + trailing empty
+        if segments.len() < 2 {
+            return false;
+        }
+        // All segments except the last (empty) must be non-empty and valid chars
+        for seg in &segments[..segments.len() - 1] {
+            if seg.is_empty() {
+                return false;
+            }
+            if !seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.') {
+                return false;
+            }
+        }
+        // Last element must be empty (from trailing ~)
+        segments.last().map_or(false, |s| s.is_empty())
+    }
+}
+
+impl fmt::Display for GtsTypePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<GtsTypePath> for String {
+    fn from(p: GtsTypePath) -> Self {
+        p.0
+    }
+}
+
+impl TryFrom<String> for GtsTypePath {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for GtsTypePath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+// @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-1
 
 // -- Type --
 

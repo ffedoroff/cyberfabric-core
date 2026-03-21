@@ -179,6 +179,8 @@ impl GroupRepository {
                     next_cursor: None,
                     prev_cursor: None,
                     limit: query.limit.unwrap_or(25).min(200),
+                    has_next_page: false,
+                    has_previous_page: false,
                 },
             });
         }
@@ -248,6 +250,8 @@ impl GroupRepository {
                 },
                 prev_cursor: None,
                 limit: limit_val,
+                has_next_page: has_next,
+                has_previous_page: false,
             },
         })
     }
