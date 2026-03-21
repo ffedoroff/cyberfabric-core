@@ -30,7 +30,8 @@ impl FilterField for MembershipFilterField {
     fn kind(&self) -> FieldKind {
         match self {
             Self::GroupId => FieldKind::Uuid,
-            Self::ResourceType | Self::ResourceId => FieldKind::String,
+            Self::ResourceType => FieldKind::I64,
+            Self::ResourceId => FieldKind::String,
         }
     }
 }

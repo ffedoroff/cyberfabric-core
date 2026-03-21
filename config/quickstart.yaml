@@ -197,6 +197,14 @@ modules:
       #       prefix: ""
       #       secret_ref: "azure-openai-key-tenant-b"
 
+  resource-group:
+    database:
+      dsn: "postgres://hyperspot:hyperspot@127.0.0.1:5433/resource_group"
+      pool:
+        max_conns: 5
+        acquire_timeout: "30s"
+    config: {}
+
   simple-user-settings:
     # Module-specific database configuration
     database:

@@ -36,7 +36,10 @@ impl FilterField for GroupFilterField {
 
     fn kind(&self) -> FieldKind {
         match self {
-            Self::Type | Self::Name => FieldKind::String,
+            // Type is SMALLINT in DB; filter values are resolved from string to
+            // integer at the persistence boundary before OData processing.
+            Self::Type => FieldKind::I64,
+            Self::Name => FieldKind::String,
             Self::HierarchyParentId | Self::Id => FieldKind::Uuid,
         }
     }
