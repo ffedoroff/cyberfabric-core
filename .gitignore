@@ -54,3 +54,6 @@ CLAUDE.local.md
 testing/e2e/.env.e2e
 testing/e2e/.env.e2e.*
 testing/e2e/.venv/
+
+gts-spec
+swagger.html
