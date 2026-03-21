@@ -23,6 +23,7 @@ use crate::infra::storage::entity::{
     resource_group_membership::{self as membership_entity, Entity as MembershipEntity},
 };
 use crate::infra::storage::odata_mapper::GroupODataMapper;
+use crate::infra::storage::type_repo::TypeRepository;
 
 /// Default `OData` pagination limits for groups.
 const GROUP_LIMIT_CFG: LimitCfg = LimitCfg {
@@ -81,17 +82,25 @@ impl GroupRepository {
     }
 
     /// List groups with `OData` filtering and pagination.
+    ///
+    /// The `type` filter field accepts GTS type path strings from the API
+    /// (e.g. `$filter=type eq 'gts.x.system.rg.type.v1~x.test.org.v1~'`).
+    /// Before passing to SeaORM, string values for the `type` field are
+    /// resolved to SMALLINT surrogate IDs at the persistence boundary.
     pub async fn list_groups(
         db: &impl DBRunner,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroup>, DomainError> {
+        // Pre-resolve: transform `type` string values → SMALLINT IDs in filter AST
+        let resolved_query = Self::resolve_type_filter(db, query).await?;
+
         let scope = system_scope();
         let base_query = ResourceGroupEntity::find().secure().scope_with(&scope);
 
         let page = paginate_odata::<GroupFilterField, GroupODataMapper, _, _, _, _>(
             base_query,
             db,
-            query,
+            &resolved_query,
             ("id", SortDir::Desc),
             GROUP_LIMIT_CFG,
             |m: rg_entity::Model| m,
@@ -109,6 +118,95 @@ impl GroupRepository {
         Ok(Page {
             items: groups,
             page_info: page.page_info,
+        })
+    }
+
+    /// Resolve GTS type path strings in `type` filter values to SMALLINT IDs.
+    ///
+    /// The API exposes `type` as a string field, but the DB column `gts_type_id`
+    /// is SMALLINT. This method walks the filter AST and replaces string values
+    /// adjacent to `type` identifiers with their resolved SMALLINT IDs.
+    async fn resolve_type_filter(
+        db: &impl DBRunner,
+        query: &ODataQuery,
+    ) -> Result<ODataQuery, DomainError> {
+        let Some(filter) = &query.filter else {
+            return Ok(query.clone());
+        };
+
+        let resolved = Self::resolve_type_expr(db, filter).await?;
+        let mut q = query.clone();
+        q.filter = Some(resolved);
+        Ok(q)
+    }
+
+    /// Resolve `type` field string values to SMALLINT IDs in a filter AST.
+    ///
+    /// Non-recursive: only transforms leaf `Compare` and `In` nodes where the
+    /// identifier is `"type"`. Recurses through `And`/`Or`/`Not` via `Box::pin`.
+    fn resolve_type_expr<'a>(
+        db: &'a (impl DBRunner + 'a),
+        expr: &'a modkit_odata::ast::Expr,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<modkit_odata::ast::Expr>, DomainError>> + Send + 'a>> {
+        use modkit_odata::ast::{Expr as E, Value as V};
+
+        Box::pin(async move {
+            Ok(Box::new(match expr {
+                E::And(l, r) => E::And(
+                    Self::resolve_type_expr(db, l).await?,
+                    Self::resolve_type_expr(db, r).await?,
+                ),
+                E::Or(l, r) => E::Or(
+                    Self::resolve_type_expr(db, l).await?,
+                    Self::resolve_type_expr(db, r).await?,
+                ),
+                E::Not(inner) => E::Not(Self::resolve_type_expr(db, inner).await?),
+                E::Compare(left, op, right) => {
+                    if let E::Identifier(name) = left.as_ref() {
+                        if name == "type" {
+                            if let E::Value(V::String(path)) = right.as_ref() {
+                                let id = TypeRepository::resolve_id(db, path)
+                                    .await?
+                                    .ok_or_else(|| {
+                                        DomainError::validation(format!(
+                                            "Unknown type in filter: {path}"
+                                        ))
+                                    })?;
+                                return Ok(Box::new(E::Compare(
+                                    left.clone(),
+                                    *op,
+                                    Box::new(E::Value(V::Number(id.into()))),
+                                )));
+                            }
+                        }
+                    }
+                    expr.clone()
+                }
+                E::In(left, list) => {
+                    if let E::Identifier(name) = left.as_ref() {
+                        if name == "type" {
+                            let mut resolved = Vec::with_capacity(list.len());
+                            for item in list {
+                                if let E::Value(V::String(path)) = item {
+                                    let id = TypeRepository::resolve_id(db, path)
+                                        .await?
+                                        .ok_or_else(|| {
+                                            DomainError::validation(format!(
+                                                "Unknown type in filter: {path}"
+                                            ))
+                                        })?;
+                                    resolved.push(E::Value(V::Number(id.into())));
+                                } else {
+                                    resolved.push(item.clone());
+                                }
+                            }
+                            return Ok(Box::new(E::In(left.clone(), resolved)));
+                        }
+                    }
+                    expr.clone()
+                }
+                _ => expr.clone(),
+            }))
         })
     }
 
