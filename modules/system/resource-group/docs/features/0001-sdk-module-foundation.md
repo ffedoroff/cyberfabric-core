@@ -1,6 +1,6 @@
 # Feature: SDK Contracts, Error Types & Module Foundation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-sdk-module-foundation-implemented`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-sdk-module-foundation`
 
 - [ ] `p1` - `cpt-cf-resource-group-feature-sdk-module-foundation`
 
@@ -65,48 +65,48 @@ Not applicable. This feature provides SDK contracts and module infrastructure wi
 
 ### GTS Type Path Validation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path`
 
 **Input**: Raw string candidate for a GTS type path
 
 **Output**: Validated `GtsTypePath` value object or validation error
 
 **Steps**:
-1. [ ] - `p1` - Receive raw string input - `inst-gts-val-1`
-2. [ ] - `p1` - Trim whitespace and normalize to lowercase - `inst-gts-val-2`
-3. [ ] - `p1` - **IF** string is empty - `inst-gts-val-3`
-   1. [ ] - `p1` - **RETURN** Validation error: "GTS type path must not be empty" - `inst-gts-val-3a`
-4. [ ] - `p1` - **IF** string does not match pattern `^gts\.[a-z0-9_.]+~([a-z0-9_.]+~)*$` - `inst-gts-val-4`
-   1. [ ] - `p1` - **RETURN** Validation error: "Invalid GTS type path format" - `inst-gts-val-4a`
-5. [ ] - `p1` - **IF** string length exceeds maximum (255 chars) - `inst-gts-val-5`
-   1. [ ] - `p1` - **RETURN** Validation error: "GTS type path exceeds maximum length" - `inst-gts-val-5a`
-6. [ ] - `p1` - Construct `GtsTypePath` value object wrapping the validated string - `inst-gts-val-6`
-7. [ ] - `p1` - **RETURN** validated `GtsTypePath` - `inst-gts-val-7`
+1. [x] - `p1` - Receive raw string input - `inst-gts-val-1`
+2. [x] - `p1` - Trim whitespace and normalize to lowercase - `inst-gts-val-2`
+3. [x] - `p1` - **IF** string is empty - `inst-gts-val-3`
+   1. [x] - `p1` - **RETURN** Validation error: "GTS type path must not be empty" - `inst-gts-val-3a`
+4. [x] - `p1` - **IF** string does not match pattern `^gts\.[a-z0-9_.]+~([a-z0-9_.]+~)*$` - `inst-gts-val-4`
+   1. [x] - `p1` - **RETURN** Validation error: "Invalid GTS type path format" - `inst-gts-val-4a`
+5. [x] - `p1` - **IF** string length exceeds maximum (255 chars) - `inst-gts-val-5`
+   1. [x] - `p1` - **RETURN** Validation error: "GTS type path exceeds maximum length" - `inst-gts-val-5a`
+6. [x] - `p1` - Construct `GtsTypePath` value object wrapping the validated string - `inst-gts-val-6`
+7. [x] - `p1` - **RETURN** validated `GtsTypePath` - `inst-gts-val-7`
 
 ### Domain Error to Problem Mapping
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-sdk-foundation-map-domain-error`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-sdk-foundation-map-domain-error`
 
 **Input**: `ResourceGroupError` domain error variant
 
 **Output**: RFC-9457 Problem response with HTTP status, type URI, title, and detail
 
 **Steps**:
-1. [ ] - `p1` - Receive `ResourceGroupError` variant - `inst-err-map-1`
-2. [ ] - `p1` - Match error variant to HTTP status and Problem fields - `inst-err-map-2`
-   1. [ ] - `p1` - `Validation` -> 400 Bad Request, type "validation", field-level details - `inst-err-map-2a`
-   2. [ ] - `p1` - `NotFound` -> 404 Not Found, type "not-found", entity identifier in detail - `inst-err-map-2b`
-   3. [ ] - `p1` - `TypeAlreadyExists` -> 409 Conflict, type "type-already-exists", conflicting code in detail - `inst-err-map-2c`
-   4. [ ] - `p1` - `InvalidParentType` -> 409 Conflict, type "invalid-parent-type", type mismatch in detail - `inst-err-map-2d`
-   5. [ ] - `p1` - `AllowedParentsViolation` -> 409 Conflict, type "allowed-parents-violation", violating groups in detail - `inst-err-map-2e`
-   6. [ ] - `p1` - `CycleDetected` -> 409 Conflict, type "cycle-detected", involved node IDs in detail - `inst-err-map-2f`
-   7. [ ] - `p1` - `ConflictActiveReferences` -> 409 Conflict, type "active-references", reference count in detail - `inst-err-map-2g`
-   8. [ ] - `p1` - `LimitViolation` -> 409 Conflict, type "limit-violation", limit name and values in detail - `inst-err-map-2h`
-   9. [ ] - `p1` - `TenantIncompatibility` -> 409 Conflict, type "tenant-incompatibility", tenant IDs in detail - `inst-err-map-2i`
-   10. [ ] - `p1` - `ServiceUnavailable` -> 503 Service Unavailable, type "service-unavailable" - `inst-err-map-2j`
-   11. [ ] - `p1` - `Internal` -> 500 Internal Server Error, type "internal", no internal details exposed - `inst-err-map-2k`
-3. [ ] - `p1` - Construct Problem response with `type`, `title`, `status`, `detail` fields - `inst-err-map-3`
-4. [ ] - `p1` - **RETURN** Problem response - `inst-err-map-4`
+1. [x] - `p1` - Receive `ResourceGroupError` variant - `inst-err-map-1`
+2. [x] - `p1` - Match error variant to HTTP status and Problem fields - `inst-err-map-2`
+   1. [x] - `p1` - `Validation` -> 400 Bad Request, type "validation", field-level details - `inst-err-map-2a`
+   2. [x] - `p1` - `NotFound` -> 404 Not Found, type "not-found", entity identifier in detail - `inst-err-map-2b`
+   3. [x] - `p1` - `TypeAlreadyExists` -> 409 Conflict, type "type-already-exists", conflicting code in detail - `inst-err-map-2c`
+   4. [x] - `p1` - `InvalidParentType` -> 409 Conflict, type "invalid-parent-type", type mismatch in detail - `inst-err-map-2d`
+   5. [x] - `p1` - `AllowedParentsViolation` -> 409 Conflict, type "allowed-parents-violation", violating groups in detail - `inst-err-map-2e`
+   6. [x] - `p1` - `CycleDetected` -> 409 Conflict, type "cycle-detected", involved node IDs in detail - `inst-err-map-2f`
+   7. [x] - `p1` - `ConflictActiveReferences` -> 409 Conflict, type "active-references", reference count in detail - `inst-err-map-2g`
+   8. [x] - `p1` - `LimitViolation` -> 409 Conflict, type "limit-violation", limit name and values in detail - `inst-err-map-2h`
+   9. [x] - `p1` - `TenantIncompatibility` -> 409 Conflict, type "tenant-incompatibility", tenant IDs in detail - `inst-err-map-2i`
+   10. [x] - `p1` - `ServiceUnavailable` -> 503 Service Unavailable, type "service-unavailable" - `inst-err-map-2j`
+   11. [x] - `p1` - `Internal` -> 500 Internal Server Error, type "internal", no internal details exposed - `inst-err-map-2k`
+3. [x] - `p1` - Construct Problem response with `type`, `title`, `status`, `detail` fields - `inst-err-map-3`
+4. [x] - `p1` - **RETURN** Problem response - `inst-err-map-4`
 
 ## 4. States (CDSL)
 
@@ -116,7 +116,7 @@ Not applicable. This feature defines SDK contracts, module scaffold, and persist
 
 ### SDK Models and Value Objects
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-sdk-models`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-sdk-models`
 
 The system **MUST** define SDK model types in `resource-group-sdk/src/models.rs` that represent the public API surface for all RG domain entities and query constructs.
 
@@ -140,7 +140,7 @@ The system **MUST** define SDK model types in `resource-group-sdk/src/models.rs`
 
 ### SDK Trait Contracts
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-sdk-traits`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-sdk-traits`
 
 The system **MUST** define SDK trait contracts in `resource-group-sdk/src/api.rs` that represent the stable public interface for all RG operations.
 
@@ -156,7 +156,7 @@ The system **MUST** define SDK trait contracts in `resource-group-sdk/src/api.rs
 
 ### SDK Error Taxonomy
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-sdk-errors`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-sdk-errors`
 
 The system **MUST** define `ResourceGroupError` enum in `resource-group-sdk/src/error.rs` covering all deterministic failure categories.
 
@@ -172,7 +172,7 @@ Each variant **MUST** carry structured context (field details for Validation, en
 
 ### Persistence Adapter and DB Migrations
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-persistence`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-persistence`
 
 The system **MUST** define SeaORM entity models and DB migration scripts for all 6 RG tables.
 
@@ -191,7 +191,7 @@ The system **MUST** define SeaORM entity models and DB migration scripts for all
 
 ### Module Scaffold and Initialization
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-module-scaffold`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-module-scaffold`
 
 The system **MUST** provide an RG module annotated with `#[modkit::module]` that registers SDK clients in ClientHub and establishes the phased initialization order for circular dependency resolution with AuthZ.
 
@@ -211,7 +211,7 @@ The system **MUST** provide an RG module annotated with `#[modkit::module]` that
 
 ### REST and OData Infrastructure
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-rest-odata`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-sdk-foundation-rest-odata`
 
 The system **MUST** wire OperationBuilder-based REST API routing with OData `$filter` parsing and cursor-based pagination for all list endpoints.
 

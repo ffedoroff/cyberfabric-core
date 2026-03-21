@@ -33,6 +33,12 @@ pub enum DomainError {
     #[error("Limit violation: {message}")]
     LimitViolation { message: String },
 
+    #[error("Conflict: {message}")]
+    Conflict { message: String },
+
+    #[error("Tenant incompatibility: {message}")]
+    TenantIncompatibility { message: String },
+
     #[error("Database error: {message}")]
     Database { message: String },
 
@@ -90,6 +96,18 @@ impl DomainError {
         }
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::Conflict {
+            message: message.into(),
+        }
+    }
+
+    pub fn tenant_incompatibility(message: impl Into<String>) -> Self {
+        Self::TenantIncompatibility {
+            message: message.into(),
+        }
+    }
+
     pub fn database(message: impl Into<String>) -> Self {
         Self::Database {
             message: message.into(),
@@ -116,6 +134,12 @@ impl From<DomainError> for ResourceGroupError {
                 ResourceGroupError::conflict_active_references(message)
             }
             DomainError::GroupNotFound { id } => ResourceGroupError::not_found(id.to_string()),
+            DomainError::Conflict { message } => {
+                ResourceGroupError::conflict_active_references(message)
+            }
+            DomainError::TenantIncompatibility { message } => {
+                ResourceGroupError::tenant_incompatibility(message)
+            }
             DomainError::Database { .. } | DomainError::InternalError => {
                 ResourceGroupError::internal()
             }

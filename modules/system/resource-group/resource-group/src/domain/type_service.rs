@@ -17,6 +17,7 @@ const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
 /// Type alias for the database provider used by the service.
 type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 
+// @cpt-dod:cpt-cf-resource-group-dod-type-mgmt-service-crud:p1
 /// Service for GTS type lifecycle management.
 #[derive(Clone)]
 pub struct TypeService {
@@ -30,6 +31,7 @@ impl TypeService {
         Self { db }
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-type-mgmt-create-type:p1
     /// Create a new GTS type definition.
     pub async fn create_type(
         &self,
@@ -100,6 +102,7 @@ impl TypeService {
         Ok(types)
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-type-mgmt-update-type:p1
     /// Update a GTS type definition (full replacement).
     pub async fn update_type(
         &self,
@@ -159,6 +162,7 @@ impl TypeService {
         TypeRepository::load_full_type(&conn, &updated_model).await
     }
 
+    // @cpt-flow:cpt-cf-resource-group-flow-type-mgmt-delete-type:p1
     /// Delete a GTS type definition.
     pub async fn delete_type(&self, code: &str) -> Result<(), DomainError> {
         let conn = self.db.conn()?;
@@ -180,6 +184,8 @@ impl TypeService {
 
     // -- Validation helpers --
 
+    // @cpt-algo:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1
+    // @cpt-algo:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1
     fn validate_type_code(code: &str) -> Result<(), DomainError> {
         if code.is_empty() {
             return Err(DomainError::validation("Type code must not be empty"));
@@ -209,6 +215,7 @@ impl TypeService {
         Ok(())
     }
 
+    // @cpt-algo:cpt-cf-resource-group-algo-type-mgmt-check-hierarchy-safety:p1
     async fn check_hierarchy_safety(
         conn: &impl DBRunner,
         type_id: i16,

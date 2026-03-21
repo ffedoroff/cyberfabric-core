@@ -1,3 +1,4 @@
+// @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-sdk-models:p1
 //! SDK model types for the resource-group module.
 //!
 //! These types form the public contract between the resource-group module
@@ -161,4 +162,18 @@ pub struct UpdateGroupRequest {
     /// Type-specific metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+}
+
+// -- Membership --
+
+/// A membership link between a resource and a group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceGroupMembership {
+    /// Group this resource belongs to.
+    pub group_id: Uuid,
+    /// GTS type path of the resource.
+    pub resource_type: String,
+    /// External resource identifier.
+    pub resource_id: String,
 }

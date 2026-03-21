@@ -1,8 +1,8 @@
 //! REST DTOs for resource-group type and group management.
 
 use resource_group_sdk::models::{
-    CreateGroupRequest, CreateTypeRequest, ResourceGroup, ResourceGroupType,
-    ResourceGroupWithDepth, UpdateGroupRequest, UpdateTypeRequest,
+    CreateGroupRequest, CreateTypeRequest, ResourceGroup, ResourceGroupMembership,
+    ResourceGroupType, ResourceGroupWithDepth, UpdateGroupRequest, UpdateTypeRequest,
 };
 use uuid::Uuid;
 
@@ -245,6 +245,34 @@ impl From<UpdateGroupDto> for UpdateGroupRequest {
             name: dto.name,
             parent_id: dto.parent_id,
             metadata: dto.metadata,
+        }
+    }
+}
+
+// -- Membership DTOs --
+
+/// REST DTO for membership representation.
+///
+/// Membership responses do NOT include `tenant_id` (derived from group).
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct MembershipDto {
+    /// Group identifier.
+    pub group_id: Uuid,
+    /// GTS type path of the resource type.
+    pub resource_type: String,
+    /// Resource identifier.
+    pub resource_id: String,
+}
+
+// -- Membership conversions --
+
+impl From<ResourceGroupMembership> for MembershipDto {
+    fn from(m: ResourceGroupMembership) -> Self {
+        Self {
+            group_id: m.group_id,
+            resource_type: m.resource_type,
+            resource_id: m.resource_id,
         }
     }
 }

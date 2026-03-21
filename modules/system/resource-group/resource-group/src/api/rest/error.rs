@@ -1,3 +1,4 @@
+// @cpt-algo:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1
 //! Map domain errors to RFC 9457 Problem Details for REST responses.
 
 use modkit::api::problem::Problem;
@@ -47,6 +48,14 @@ impl From<DomainError> for Problem {
             DomainError::LimitViolation { message } => {
                 Problem::new(http::StatusCode::CONFLICT, "Limit violation", message)
             }
+            DomainError::Conflict { message } => {
+                Problem::new(http::StatusCode::CONFLICT, "Conflict", message)
+            }
+            DomainError::TenantIncompatibility { message } => Problem::new(
+                http::StatusCode::CONFLICT,
+                "Tenant incompatibility",
+                message,
+            ),
             DomainError::Database { .. } => {
                 tracing::error!(error = ?e, "Database error occurred");
                 Problem::new(

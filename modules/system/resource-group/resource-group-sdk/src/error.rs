@@ -1,3 +1,4 @@
+// @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-sdk-errors:p1
 //! Public error types for the resource-group module.
 //!
 //! These errors are safe to expose to other modules and consumers.
@@ -27,6 +28,10 @@ pub enum ResourceGroupError {
     /// Cannot delete a type because groups of this type still exist.
     #[error("Active references exist: {message}")]
     ConflictActiveReferences { message: String },
+
+    /// Tenant scope incompatibility.
+    #[error("Tenant incompatibility: {message}")]
+    TenantIncompatibility { message: String },
 
     /// An internal error occurred.
     #[error("Internal error")]
@@ -61,6 +66,13 @@ impl ResourceGroupError {
     /// Create a `ConflictActiveReferences` error.
     pub fn conflict_active_references(message: impl Into<String>) -> Self {
         Self::ConflictActiveReferences {
+            message: message.into(),
+        }
+    }
+
+    /// Create a `TenantIncompatibility` error.
+    pub fn tenant_incompatibility(message: impl Into<String>) -> Self {
+        Self::TenantIncompatibility {
             message: message.into(),
         }
     }

@@ -1,3 +1,4 @@
+// @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-persistence:p1
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::ConnectionTrait;
 

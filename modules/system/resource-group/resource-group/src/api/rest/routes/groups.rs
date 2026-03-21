@@ -1,3 +1,5 @@
+// @cpt-dod:cpt-cf-resource-group-dod-entity-hier-rest-handlers:p1
+// @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-rest-odata:p1
 use super::{dto, handlers};
 use axum::Router;
 use modkit::api::OpenApiRegistry;

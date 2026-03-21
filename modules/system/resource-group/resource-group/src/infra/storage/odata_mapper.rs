@@ -10,7 +10,12 @@ use crate::infra::storage::entity::gts_type::{
 use crate::infra::storage::entity::resource_group::{
     Column as GroupColumn, Entity as GroupEntity, Model as GroupModel,
 };
-use resource_group_sdk::odata::{GroupFilterField, HierarchyFilterField, TypeFilterField};
+use crate::infra::storage::entity::resource_group_membership::{
+    Column as MembershipColumn, Entity as MembershipEntity, Model as MembershipModel,
+};
+use resource_group_sdk::odata::{
+    GroupFilterField, HierarchyFilterField, MembershipFilterField, TypeFilterField,
+};
 
 /// `OData` mapper for GTS types.
 pub struct TypeODataMapper;
@@ -91,6 +96,42 @@ impl ODataFieldMapping<HierarchyFilterField> for HierarchyODataMapper {
         match field {
             HierarchyFilterField::HierarchyDepth => sea_orm::Value::Int(None),
             HierarchyFilterField::Type => sea_orm::Value::SmallInt(Some(model.gts_type_id)),
+        }
+    }
+}
+
+/// `OData` mapper for memberships.
+pub struct MembershipODataMapper;
+
+impl FieldToColumn<MembershipFilterField> for MembershipODataMapper {
+    type Column = MembershipColumn;
+
+    fn map_field(field: MembershipFilterField) -> MembershipColumn {
+        match field {
+            MembershipFilterField::GroupId => MembershipColumn::GroupId,
+            MembershipFilterField::ResourceType => MembershipColumn::GtsTypeId,
+            MembershipFilterField::ResourceId => MembershipColumn::ResourceId,
+        }
+    }
+}
+
+impl ODataFieldMapping<MembershipFilterField> for MembershipODataMapper {
+    type Entity = MembershipEntity;
+
+    fn extract_cursor_value(
+        model: &MembershipModel,
+        field: MembershipFilterField,
+    ) -> sea_orm::Value {
+        match field {
+            MembershipFilterField::GroupId => {
+                sea_orm::Value::Uuid(Some(Box::new(model.group_id)))
+            }
+            MembershipFilterField::ResourceType => {
+                sea_orm::Value::SmallInt(Some(model.gts_type_id))
+            }
+            MembershipFilterField::ResourceId => {
+                sea_orm::Value::String(Some(Box::new(model.resource_id.clone())))
+            }
         }
     }
 }

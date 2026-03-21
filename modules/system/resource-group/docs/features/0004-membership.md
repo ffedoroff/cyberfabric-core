@@ -1,6 +1,6 @@
 # Feature: Membership Management
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-membership-implemented`
+- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-membership`
 
 - [ ] `p1` - `cpt-cf-resource-group-feature-membership`
 
@@ -58,7 +58,7 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 
 ### Add Membership
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-add`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-add`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -74,23 +74,23 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 - Tenant-incompatible: resource already linked in incompatible tenant → TenantIncompatibility
 
 **Steps**:
-1. [ ] - `p1` - Actor sends POST /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-add-memb-1`
-2. [ ] - `p1` - Validate resource_type is a valid GtsTypePath - `inst-add-memb-2`
-3. [ ] - `p1` - DB: SELECT id, gts_type_id, tenant_id FROM resource_group WHERE id = {group_id} — load target group - `inst-add-memb-3`
-4. [ ] - `p1` - **IF** group not found → **RETURN** NotFound - `inst-add-memb-4`
-5. [ ] - `p1` - Resolve resource_type GTS path to surrogate ID; verify type exists in gts_type - `inst-add-memb-5`
-6. [ ] - `p1` - **IF** resource_type not registered → **RETURN** Validation error - `inst-add-memb-6`
-7. [ ] - `p1` - Load group type's allowed_memberships from gts_type_allowed_membership junction - `inst-add-memb-7`
-8. [ ] - `p1` - **IF** resource_type not in allowed_memberships → **RETURN** Validation error: "resource_type not permitted for this group type" - `inst-add-memb-8`
-9. [ ] - `p1` - Invoke tenant compatibility check for resource across existing memberships - `inst-add-memb-9`
-10. [ ] - `p1` - **IF** tenant incompatible → **RETURN** TenantIncompatibility - `inst-add-memb-10`
-11. [ ] - `p1` - DB: INSERT INTO resource_group_membership (group_id, gts_type_id, resource_id, created_at) with UNIQUE constraint - `inst-add-memb-11`
-12. [ ] - `p1` - **IF** unique constraint violation → **RETURN** Conflict: membership already exists - `inst-add-memb-12`
-13. [ ] - `p1` - **RETURN** created ResourceGroupMembership with group_id, resource_type, resource_id - `inst-add-memb-13`
+1. [x] - `p1` - Actor sends POST /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-add-memb-1`
+2. [x] - `p1` - Validate resource_type is a valid GtsTypePath - `inst-add-memb-2`
+3. [x] - `p1` - DB: SELECT id, gts_type_id, tenant_id FROM resource_group WHERE id = {group_id} — load target group - `inst-add-memb-3`
+4. [x] - `p1` - **IF** group not found → **RETURN** NotFound - `inst-add-memb-4`
+5. [x] - `p1` - Resolve resource_type GTS path to surrogate ID; verify type exists in gts_type - `inst-add-memb-5`
+6. [x] - `p1` - **IF** resource_type not registered → **RETURN** Validation error - `inst-add-memb-6`
+7. [x] - `p1` - Load group type's allowed_memberships from gts_type_allowed_membership junction - `inst-add-memb-7`
+8. [x] - `p1` - **IF** resource_type not in allowed_memberships → **RETURN** Validation error: "resource_type not permitted for this group type" - `inst-add-memb-8`
+9. [x] - `p1` - Invoke tenant compatibility check for resource across existing memberships - `inst-add-memb-9`
+10. [x] - `p1` - **IF** tenant incompatible → **RETURN** TenantIncompatibility - `inst-add-memb-10`
+11. [x] - `p1` - DB: INSERT INTO resource_group_membership (group_id, gts_type_id, resource_id, created_at) with UNIQUE constraint - `inst-add-memb-11`
+12. [x] - `p1` - **IF** unique constraint violation → **RETURN** Conflict: membership already exists - `inst-add-memb-12`
+13. [x] - `p1` - **RETURN** created ResourceGroupMembership with group_id, resource_type, resource_id - `inst-add-memb-13`
 
 ### Remove Membership
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-remove`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-remove`
 
 **Actor**: `cpt-cf-resource-group-actor-tenant-administrator`
 
@@ -101,15 +101,15 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 - Membership not found → NotFound
 
 **Steps**:
-1. [ ] - `p1` - Actor sends DELETE /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-remove-memb-1`
-2. [ ] - `p1` - Resolve resource_type GTS path to surrogate ID - `inst-remove-memb-2`
-3. [ ] - `p1` - DB: DELETE FROM resource_group_membership WHERE group_id = {group_id} AND gts_type_id = {type_id} AND resource_id = {resource_id} - `inst-remove-memb-3`
-4. [ ] - `p1` - **IF** no rows affected → **RETURN** NotFound: membership does not exist - `inst-remove-memb-4`
-5. [ ] - `p1` - **RETURN** success (204 No Content) - `inst-remove-memb-5`
+1. [x] - `p1` - Actor sends DELETE /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id} - `inst-remove-memb-1`
+2. [x] - `p1` - Resolve resource_type GTS path to surrogate ID - `inst-remove-memb-2`
+3. [x] - `p1` - DB: DELETE FROM resource_group_membership WHERE group_id = {group_id} AND gts_type_id = {type_id} AND resource_id = {resource_id} - `inst-remove-memb-3`
+4. [x] - `p1` - **IF** no rows affected → **RETURN** NotFound: membership does not exist - `inst-remove-memb-4`
+5. [x] - `p1` - **RETURN** success (204 No Content) - `inst-remove-memb-5`
 
 ### List Memberships
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-list`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-flow-membership-list`
 
 **Actor**: `cpt-cf-resource-group-actor-apps`
 
@@ -117,48 +117,48 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 - Paginated list of memberships matching filter criteria returned
 
 **Steps**:
-1. [ ] - `p1` - Actor sends GET /api/resource-group/v1/memberships?$filter={expr}&cursor={token}&limit={n} - `inst-list-memb-1`
-2. [ ] - `p1` - Parse OData $filter: supported fields `resource_id` (eq, ne, in), `resource_type` (eq, ne, in), `group_id` (eq, ne, in) - `inst-list-memb-2`
-3. [ ] - `p1` - Resolve any GTS type paths in filter values to surrogate IDs at persistence boundary - `inst-list-memb-3`
-4. [ ] - `p1` - DB: SELECT group_id, gts_type_id, resource_id FROM resource_group_membership WHERE {filter} ORDER BY {stable} LIMIT {limit+1} - `inst-list-memb-4`
-5. [ ] - `p1` - Resolve surrogate IDs back to GTS type paths for response - `inst-list-memb-5`
-6. [ ] - `p1` - Build Page response with items, has_next_page, cursor tokens - `inst-list-memb-6`
-7. [ ] - `p1` - **RETURN** Page<ResourceGroupMembership> - `inst-list-memb-7`
+1. [x] - `p1` - Actor sends GET /api/resource-group/v1/memberships?$filter={expr}&cursor={token}&limit={n} - `inst-list-memb-1`
+2. [x] - `p1` - Parse OData $filter: supported fields `resource_id` (eq, ne, in), `resource_type` (eq, ne, in), `group_id` (eq, ne, in) - `inst-list-memb-2`
+3. [x] - `p1` - Resolve any GTS type paths in filter values to surrogate IDs at persistence boundary - `inst-list-memb-3`
+4. [x] - `p1` - DB: SELECT group_id, gts_type_id, resource_id FROM resource_group_membership WHERE {filter} ORDER BY {stable} LIMIT {limit+1} - `inst-list-memb-4`
+5. [x] - `p1` - Resolve surrogate IDs back to GTS type paths for response - `inst-list-memb-5`
+6. [x] - `p1` - Build Page response with items, has_next_page, cursor tokens - `inst-list-memb-6`
+7. [x] - `p1` - **RETURN** Page<ResourceGroupMembership> - `inst-list-memb-7`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### Tenant Compatibility Check for Membership
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-membership-check-tenant-compat`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-membership-check-tenant-compat`
 
 **Input**: resource_type, resource_id, target group's tenant_id
 
 **Output**: Pass or TenantIncompatibility with conflicting tenant details
 
 **Steps**:
-1. [ ] - `p1` - DB: SELECT rgm.group_id, rg.tenant_id FROM resource_group_membership rgm JOIN resource_group rg ON rgm.group_id = rg.id WHERE rgm.gts_type_id = {resource_type_id} AND rgm.resource_id = {resource_id} — find existing memberships for this resource - `inst-tenant-check-1`
-2. [ ] - `p1` - **IF** no existing memberships → **RETURN** pass (first membership, any tenant allowed) - `inst-tenant-check-2`
-3. [ ] - `p1` - Collect distinct tenant_ids from existing memberships - `inst-tenant-check-3`
-4. [ ] - `p1` - **IF** target group's tenant_id is in the same tenant scope as existing memberships (same tenant or related via tenant hierarchy) → **RETURN** pass - `inst-tenant-check-4`
-5. [ ] - `p1` - **RETURN** TenantIncompatibility: resource already linked in tenant {existing_tenant}, cannot add to tenant {target_tenant} - `inst-tenant-check-5`
+1. [x] - `p1` - DB: SELECT rgm.group_id, rg.tenant_id FROM resource_group_membership rgm JOIN resource_group rg ON rgm.group_id = rg.id WHERE rgm.gts_type_id = {resource_type_id} AND rgm.resource_id = {resource_id} — find existing memberships for this resource - `inst-tenant-check-1`
+2. [x] - `p1` - **IF** no existing memberships → **RETURN** pass (first membership, any tenant allowed) - `inst-tenant-check-2`
+3. [x] - `p1` - Collect distinct tenant_ids from existing memberships - `inst-tenant-check-3`
+4. [x] - `p1` - **IF** target group's tenant_id is in the same tenant scope as existing memberships (same tenant or related via tenant hierarchy) → **RETURN** pass - `inst-tenant-check-4`
+5. [x] - `p1` - **RETURN** TenantIncompatibility: resource already linked in tenant {existing_tenant}, cannot add to tenant {target_tenant} - `inst-tenant-check-5`
 
 ### Membership Data Seeding
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-algo-membership-seed`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-algo-membership-seed`
 
 **Input**: List of membership seed definitions (group_id, resource_type, resource_id)
 
 **Output**: Seed result (memberships created, skipped, failed count)
 
 **Steps**:
-1. [ ] - `p1` - Load seed definitions - `inst-seed-memb-1`
-2. [ ] - `p1` - **FOR EACH** seed_def in definitions - `inst-seed-memb-2`
-   1. [ ] - `p1` - Verify group exists: DB: SELECT id, tenant_id FROM resource_group WHERE id = {seed_def.group_id} - `inst-seed-memb-2a`
-   2. [ ] - `p1` - **IF** group not found → log warning, skip - `inst-seed-memb-2b`
-   3. [ ] - `p1` - Invoke tenant compatibility check - `inst-seed-memb-2c`
-   4. [ ] - `p1` - **IF** incompatible → log warning, skip - `inst-seed-memb-2d`
-   5. [ ] - `p1` - DB: INSERT INTO resource_group_membership ON CONFLICT DO NOTHING — idempotent upsert - `inst-seed-memb-2e`
-3. [ ] - `p1` - **RETURN** seed result: {created: N, skipped: N, failed: N} - `inst-seed-memb-3`
+1. [x] - `p1` - Load seed definitions - `inst-seed-memb-1`
+2. [x] - `p1` - **FOR EACH** seed_def in definitions - `inst-seed-memb-2`
+   1. [x] - `p1` - Verify group exists: DB: SELECT id, tenant_id FROM resource_group WHERE id = {seed_def.group_id} - `inst-seed-memb-2a`
+   2. [x] - `p1` - **IF** group not found → log warning, skip - `inst-seed-memb-2b`
+   3. [x] - `p1` - Invoke tenant compatibility check - `inst-seed-memb-2c`
+   4. [x] - `p1` - **IF** incompatible → log warning, skip - `inst-seed-memb-2d`
+   5. [x] - `p1` - DB: INSERT INTO resource_group_membership ON CONFLICT DO NOTHING — idempotent upsert - `inst-seed-memb-2e`
+3. [x] - `p1` - **RETURN** seed result: {created: N, skipped: N, failed: N} - `inst-seed-memb-3`
 
 ## 4. States (CDSL)
 
@@ -168,7 +168,7 @@ Not applicable. Memberships are stateless links — they exist or do not exist. 
 
 ### Membership Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-service`
 
 The system **MUST** implement a Membership Service that provides add, remove, and list operations for membership links with composite key semantics and tenant compatibility enforcement.
 
@@ -192,7 +192,7 @@ The system **MUST** implement a Membership Service that provides add, remove, an
 
 ### Membership REST Handlers
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-rest-handlers`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-rest-handlers`
 
 The system **MUST** implement REST endpoint handlers for membership management under `/api/resource-group/v1/memberships`.
 
@@ -211,7 +211,7 @@ The system **MUST** implement REST endpoint handlers for membership management u
 
 ### Membership Data Seeding
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-seeding`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-membership-seeding`
 
 The system **MUST** provide an idempotent membership seeding mechanism for deployment bootstrapping.
 
