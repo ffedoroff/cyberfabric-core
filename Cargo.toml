@@ -51,6 +51,8 @@ members = [
     "modules/system/grpc-hub",
     "modules/system/nodes-registry/nodes-registry",
     "modules/system/nodes-registry/nodes-registry-sdk",
+    "modules/system/resource-group/resource-group-sdk",
+    "modules/system/resource-group/resource-group",
     "modules/system/module-orchestrator",
     "examples/modkit/users-info/users-info-sdk",
     "examples/modkit/users-info/users-info",
@@ -78,6 +80,8 @@ members = [
     "modules/system/oagw/oagw-sdk",
     "modules/mini-chat/mini-chat-sdk",
     "modules/mini-chat/mini-chat",
+    "modules/system/resource-group/resource-group-sdk",
+    "modules/system/resource-group/resource-group",
 ]
 exclude = ["fuzz"]
 resolver = "3"
@@ -242,6 +246,9 @@ credstore-sdk = { package = "cf-credstore-sdk", version = "0.1.15", path = "modu
 
 # mini-chat
 mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.9.0", path = "modules/mini-chat/mini-chat-sdk" }
+
+# resource-group
+resource-group-sdk = { package = "cf-resource-group-sdk", version = "0.5.10", path = "modules/system/resource-group/resource-group-sdk" }
 
 # system modules
 grpc_hub = { package = "cf-grpc-hub", version = "0.1.18", path = "modules/system/grpc-hub" }
