@@ -64,6 +64,8 @@ impl ResourceGroupReadPluginClient for RgReadService {
                 next_cursor: None,
                 prev_cursor: None,
                 limit: _query.limit.unwrap_or(20),
+                has_next_page: false,
+                has_previous_page: false,
             },
         })
     }

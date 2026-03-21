@@ -21,7 +21,7 @@ pub mod odata;
 pub use api::{ResourceGroupClient, ResourceGroupReadHierarchy, ResourceGroupReadPluginClient};
 pub use error::ResourceGroupError;
 pub use models::{
-    CreateGroupRequest, CreateTypeRequest, GroupHierarchy, GroupHierarchyWithDepth,
+    CreateGroupRequest, CreateTypeRequest, GroupHierarchy, GroupHierarchyWithDepth, GtsTypePath,
     ResourceGroup, ResourceGroupMembership, ResourceGroupType, ResourceGroupWithDepth,
     UpdateGroupRequest, UpdateTypeRequest,
 };

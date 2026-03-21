@@ -1,8 +1,8 @@
 # Feature: SDK Contracts, Error Types & Module Foundation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-sdk-module-foundation`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-sdk-module-foundation`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-sdk-module-foundation`
+- [x] `p1` - `cpt-cf-resource-group-feature-sdk-module-foundation`
 
 <!-- toc -->
 
@@ -230,13 +230,13 @@ The system **MUST** wire OperationBuilder-based REST API routing with OData `$fi
 
 ## 6. Acceptance Criteria
 
-- [ ] SDK crate (`resource-group-sdk`) compiles with all model types, trait contracts, and error types defined
-- [ ] `GtsTypePath::new("gts.x.system.rg.type.v1~")` succeeds; `GtsTypePath::new("invalid")` returns validation error
-- [ ] All 6 DB tables are created by migration scripts with correct constraints and indexes
-- [ ] SeaORM entities compile and map to the DB schema without runtime errors
-- [ ] Module registers `dyn ResourceGroupClient` and `dyn ResourceGroupReadHierarchy` in ClientHub during Phase 1 init
-- [ ] All `ResourceGroupError` variants map to correct HTTP status codes and RFC-9457 Problem responses
-- [ ] OData `$filter` parser handles `eq`, `ne`, `in` operators and nested path syntax (`hierarchy/parent_id`)
-- [ ] Cursor-based pagination returns correct `PageInfo` with `has_next_page` and cursor tokens
-- [ ] No SMALLINT surrogate IDs appear in any SDK type, REST response schema, or trait method signature
-- [ ] Module does not contain any AuthZ decision logic, SQL filter generation, or policy evaluation code
+- [x] SDK crate (`resource-group-sdk`) compiles with all model types, trait contracts, and error types defined
+- [x] `GtsTypePath::new("gts.x.system.rg.type.v1~")` succeeds; `GtsTypePath::new("invalid")` returns validation error
+- [x] All 6 DB tables are created by migration scripts with correct constraints and indexes
+- [x] SeaORM entities compile and map to the DB schema without runtime errors
+- [x] Module registers `dyn ResourceGroupClient` and `dyn ResourceGroupReadHierarchy` in ClientHub during Phase 1 init
+- [x] All `ResourceGroupError` variants map to correct HTTP status codes and RFC-9457 Problem responses
+- [x] OData `$filter` parser handles `eq`, `ne`, `in` operators and nested path syntax (`hierarchy/parent_id`)
+- [x] Cursor-based pagination returns correct `PageInfo` with `has_next_page` and cursor tokens
+- [x] No SMALLINT surrogate IDs appear in any SDK type, REST response schema, or trait method signature
+- [x] Module does not contain any AuthZ decision logic, SQL filter generation, or policy evaluation code
