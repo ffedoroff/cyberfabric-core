@@ -1,8 +1,8 @@
 # Feature: Membership Management
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-membership`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-membership`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-membership`
+- [x] `p1` - `cpt-cf-resource-group-feature-membership`
 
 <!-- toc -->
 
@@ -243,4 +243,4 @@ The system **MUST** provide an idempotent membership seeding mechanism for deplo
 - [x] Membership responses do not include `tenant_id` — tenant scope derived from group
 - [x] No SMALLINT surrogate IDs exposed in membership REST responses
 - [x] Membership seeding creates links, skips duplicates, validates tenant compatibility (idempotent)
-- [ ] Tenant deprovisioning cascade-deletes associated memberships
+- [x] Tenant deprovisioning cascade-deletes associated memberships

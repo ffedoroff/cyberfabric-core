@@ -122,6 +122,8 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-nfr-transactional-consistency` | transactional write consistency | transaction boundary in persistence adapter | canonical + closure updates commit together    | integration tests |
 | `cpt-cf-resource-group-nfr-deterministic-errors`      | stable failures                 | unified error mapper                        | all domain/infra failures mapped to SDK errors | unit tests        |
 | `cpt-cf-resource-group-nfr-production-scale`          | projected production volumes    | schema design + index strategy              | composite indexes, partitioning candidate for membership table (~455M rows, ~110 GB) | capacity planning |
+| `cpt-cf-resource-group-nfr-compatibility`             | API and SDK compatibility       | SDK trait contracts + REST versioning       | path-based API versioning, trait backward compat | integration tests |
+| `cpt-cf-resource-group-nfr-data-lifecycle`            | data lifecycle on deprovisioning | force delete cascade + tenant scope        | cascade-delete memberships/groups via force delete on tenant removal | integration tests |
 
 
 #### Architecture Decision Records
@@ -160,19 +162,19 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 
 #### Policy-Agnostic Core
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-policy-agnostic`
 
 RG handles graph/membership data only.
 
 #### Strict Forest Integrity
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-strict-forest`
 
 Hierarchy guarantees single parent and cycle prevention for all writes.
 
 #### Dynamic Type Governance
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-dynamic-types`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-dynamic-types`
 
 Type rules are runtime-configurable through API/seed data with deterministic validation.
 
@@ -182,19 +184,19 @@ Type rules are runtime-configurable through API/seed data with deterministic val
 
 #### Query Profile as Guardrail
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-query-profile-guardrail`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-query-profile-guardrail`
 
 `(max_depth, max_width)` is a service profile controlling write admissibility and SLO classification.
 
 #### Tenant Scope for Ownership Graph
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-tenant-scope-ownership-graph`
 
 In ownership-graph usage, groups are tenant-scoped and links must be tenant-hierarchy-compatible (same-tenant or allowed related-tenant link per tenant hierarchy rules).
 
 #### Barrier as Data (Not Enforcement)
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-principle-barrier-as-data`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-principle-barrier-as-data`
 
 `barrier` is not a dedicated database column. For GTS types that support barrier semantics (e.g. tenant types), `barrier` is stored inside the `metadata` JSONB field as `metadata.barrier` (boolean). **ADRs**: `cpt-cf-resource-group-adr-p1-gts-type-system`. **RG stores and returns it without enforcement** — RG does not filter, restrict, or alter query results based on the barrier value. RG stores it in `metadata` and returns it in API responses within the `metadata` object, nothing more.
 
@@ -218,19 +220,19 @@ This aligns with the core constraint "No AuthZ Decision Logic" — RG is a data 
 
 #### No AuthZ Decision Logic
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-authz-decision`
 
 RG cannot return allow/deny decisions.
 
 #### No SQL/ORM Filter Generation
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
 RG cannot generate SQL fragments or access-scope objects.
 
 #### Database-Agnostic Persistence
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-db-agnostic`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-db-agnostic`
 
 RG persistence layer uses SeaORM abstractions and standard SQL. The module **MUST NOT** depend on vendor-specific SQL extensions or features of a particular RDBMS. Any SQL-compatible database supported by SeaORM can be used as the storage backend.
 
@@ -238,7 +240,7 @@ RG persistence layer uses SeaORM abstractions and standard SQL. The module **MUS
 
 #### Surrogate IDs Are Internal Only
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-surrogate-ids-internal`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-surrogate-ids-internal`
 
 SMALLINT surrogate IDs (`gts_type.id`, `gts_type_id` FK columns) are a **DB-internal optimization**. They MUST NOT appear in any API response, SDK type, REST contract, or OpenAPI schema. All external interfaces (REST API, SDK traits, gRPC) use GTS type paths (strings) exclusively. The server resolves GTS paths to/from SMALLINT IDs at the persistence layer boundary.
 
@@ -261,7 +263,7 @@ This ensures the hierarchy is always governed by the RG type contract (`can_be_r
 
 #### Profile Change Safety
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-constraint-profile-change-safety`
 
 Reducing enabled `max_depth`/`max_width` cannot rewrite existing rows. Writes that worsen violation are rejected until external migration runs. Limits may also be disabled.
 
@@ -331,7 +333,7 @@ AuthZ plugin depends only on the narrow `ResourceGroupReadHierarchy` trait (hier
 
 #### RG Module (Gateway)
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-module`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-module`
 
 Responsibilities:
 
@@ -348,7 +350,7 @@ Boundaries:
 
 #### Type Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-type-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-type-service`
 
 Responsibilities:
 
@@ -358,7 +360,7 @@ Responsibilities:
 
 #### Entity Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-entity-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-entity-service`
 
 Responsibilities:
 
@@ -369,7 +371,7 @@ Responsibilities:
 
 #### Hierarchy Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-hierarchy-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-hierarchy-service`
 
 Responsibilities:
 
@@ -379,7 +381,7 @@ Responsibilities:
 
 #### Membership Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-membership-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-membership-service`
 
 Responsibilities:
 
@@ -388,7 +390,7 @@ Responsibilities:
 
 #### Integration Read Service
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-integration-read-service`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-integration-read-service`
 
 Responsibilities:
 
@@ -397,7 +399,7 @@ Responsibilities:
 
 #### Persistence Adapter
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-component-persistence-adapter`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-component-persistence-adapter`
 
 Responsibilities:
 
