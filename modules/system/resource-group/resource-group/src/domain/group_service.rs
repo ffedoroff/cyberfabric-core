@@ -6,8 +6,10 @@
 
 use std::sync::Arc;
 
+use authz_resolver_sdk::pep::{PolicyEnforcer, ResourceType};
 use modkit_db::secure::DBRunner;
 use modkit_odata::{ODataQuery, Page};
+use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::models::{
     CreateGroupRequest, ResourceGroup, ResourceGroupWithDepth, UpdateGroupRequest,
 };
@@ -16,6 +18,12 @@ use uuid::Uuid;
 use crate::domain::error::DomainError;
 use crate::infra::storage::group_repo::GroupRepository;
 use crate::infra::storage::type_repo::TypeRepository;
+
+/// AuthZ resource type descriptor for resource groups.
+pub const RG_GROUP_RESOURCE: ResourceType = ResourceType {
+    name: "gts.x.system.rg.group.v1~",
+    supported_properties: &[pep_properties::OWNER_TENANT_ID],
+};
 
 /// GTS type path prefix required for resource group types.
 const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
@@ -48,13 +56,19 @@ impl Default for QueryProfile {
 pub struct GroupService {
     db: Arc<DbProvider>,
     profile: QueryProfile,
+    enforcer: PolicyEnforcer,
 }
 
 impl GroupService {
-    /// Create a new `GroupService` with the given database provider and query profile.
+    /// Create a new `GroupService` with the given database provider, query profile,
+    /// and `PolicyEnforcer` for AuthZ-scoped queries.
     #[must_use]
-    pub fn new(db: Arc<DbProvider>, profile: QueryProfile) -> Self {
-        Self { db, profile }
+    pub fn new(db: Arc<DbProvider>, profile: QueryProfile, enforcer: PolicyEnforcer) -> Self {
+        Self {
+            db,
+            profile,
+            enforcer,
+        }
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-create-group:p1
@@ -144,7 +158,8 @@ impl GroupService {
             GroupRepository::insert_closure_self_row(&conn, group_id).await?;
             GroupRepository::insert_ancestor_closure_rows(&conn, group_id, parent_id).await?;
 
-            GroupRepository::find_by_id(&conn, group_id)
+            let sys = modkit_security::AccessScope::allow_all();
+            GroupRepository::find_by_id(&conn, &sys, group_id)
                 .await?
                 .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
         } else {
@@ -172,27 +187,43 @@ impl GroupService {
             // Insert closure: self-row only
             GroupRepository::insert_closure_self_row(&conn, group_id).await?;
 
-            GroupRepository::find_by_id(&conn, group_id)
+            let sys = modkit_security::AccessScope::allow_all();
+            GroupRepository::find_by_id(&conn, &sys, group_id)
                 .await?
                 .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
         }
     }
 
-    /// Get a resource group by ID.
-    pub async fn get_group(&self, group_id: Uuid) -> Result<ResourceGroup, DomainError> {
+    /// Get a resource group by ID (AuthZ-scoped).
+    pub async fn get_group(
+        &self,
+        ctx: &SecurityContext,
+        group_id: Uuid,
+    ) -> Result<ResourceGroup, DomainError> {
+        let scope = self
+            .enforcer
+            .access_scope(ctx, &RG_GROUP_RESOURCE, "get", Some(group_id))
+            .await
+            .map_err(DomainError::from)?;
         let conn = self.db.conn()?;
-        GroupRepository::find_by_id(&conn, group_id)
+        GroupRepository::find_by_id(&conn, &scope, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))
     }
 
-    /// List resource groups with `OData` filtering and pagination.
+    /// List resource groups with `OData` filtering and pagination (AuthZ-scoped).
     pub async fn list_groups(
         &self,
+        ctx: &SecurityContext,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroup>, DomainError> {
+        let scope = self
+            .enforcer
+            .access_scope(ctx, &RG_GROUP_RESOURCE, "list", None)
+            .await
+            .map_err(DomainError::from)?;
         let conn = self.db.conn()?;
-        GroupRepository::list_groups(&conn, query).await
+        GroupRepository::list_groups(&conn, &scope, query).await
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-update-group:p1
@@ -283,7 +314,8 @@ impl GroupService {
         )
         .await?;
 
-        GroupRepository::find_by_id(&conn, group_id)
+        let sys = modkit_security::AccessScope::allow_all();
+        GroupRepository::find_by_id(&conn, &sys, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))
     }
@@ -320,7 +352,8 @@ impl GroupService {
         )
         .await?;
 
-        GroupRepository::find_by_id(&conn, group_id)
+        let sys = modkit_security::AccessScope::allow_all();
+        GroupRepository::find_by_id(&conn, &sys, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))
     }
@@ -360,12 +393,18 @@ impl GroupService {
         }
     }
 
-    /// List hierarchy for a group.
+    /// List hierarchy for a group (AuthZ-scoped).
     pub async fn list_group_hierarchy(
         &self,
+        ctx: &SecurityContext,
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, DomainError> {
+        let scope = self
+            .enforcer
+            .access_scope(ctx, &RG_GROUP_RESOURCE, "list", Some(group_id))
+            .await
+            .map_err(DomainError::from)?;
         let conn = self.db.conn()?;
 
         // Verify group exists
@@ -373,7 +412,7 @@ impl GroupService {
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
 
-        GroupRepository::list_hierarchy(&conn, group_id, query).await
+        GroupRepository::list_hierarchy(&conn, &scope, group_id, query).await
     }
 
     // -- Internal helpers --

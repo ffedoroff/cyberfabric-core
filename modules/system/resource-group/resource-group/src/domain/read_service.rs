@@ -38,12 +38,12 @@ impl RgReadService {
 impl ResourceGroupReadHierarchy for RgReadService {
     async fn list_group_depth(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError> {
         self.group_service
-            .list_group_hierarchy(group_id, query)
+            .list_group_hierarchy(ctx, group_id, query)
             .await
             .map_err(ResourceGroupError::from)
     }

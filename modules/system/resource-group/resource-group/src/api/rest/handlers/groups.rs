@@ -22,17 +22,17 @@ pub struct DeleteGroupQuery {
 
 /// List resource groups with optional `OData` filtering and pagination.
 #[tracing::instrument(
-    skip(svc, _ctx, query),
+    skip(svc, ctx, query),
     fields(request_id = Empty)
 )]
 pub async fn list_groups(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<GroupService>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<GroupDto>>> {
     info!("Listing resource groups");
 
-    let page = svc.list_groups(&query).await?;
+    let page = svc.list_groups(&ctx, &query).await?;
     let dto_page = page.map_items(GroupDto::from);
 
     Ok(Json(dto_page))
@@ -69,14 +69,14 @@ pub async fn create_group(
 
 /// Get a resource group by ID.
 #[tracing::instrument(
-    skip(svc, _ctx),
+    skip(svc, ctx),
     fields(
         group.id = %group_id,
         request_id = Empty,
     )
 )]
 pub async fn get_group(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<GroupService>>,
     Path(group_id): Path<uuid::Uuid>,
 ) -> ApiResult<Json<GroupDto>> {
@@ -85,7 +85,7 @@ pub async fn get_group(
         "Getting resource group"
     );
 
-    let group = svc.get_group(group_id).await?;
+    let group = svc.get_group(&ctx, group_id).await?;
     Ok(Json(GroupDto::from(group)))
 }
 
@@ -139,14 +139,14 @@ pub async fn delete_group(
 
 /// List hierarchy for a resource group.
 #[tracing::instrument(
-    skip(svc, _ctx, query),
+    skip(svc, ctx, query),
     fields(
         group.id = %group_id,
         request_id = Empty,
     )
 )]
 pub async fn list_group_hierarchy(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<GroupService>>,
     Path(group_id): Path<uuid::Uuid>,
     OData(query): OData,
@@ -156,7 +156,7 @@ pub async fn list_group_hierarchy(
         "Listing group hierarchy"
     );
 
-    let page = svc.list_group_hierarchy(group_id, &query).await?;
+    let page = svc.list_group_hierarchy(&ctx, group_id, &query).await?;
     let dto_page = page.map_items(GroupWithDepthDto::from);
 
     Ok(Json(dto_page))

@@ -118,22 +118,22 @@ impl ResourceGroupClient for RgService {
 
     async fn get_group(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         id: Uuid,
     ) -> Result<ResourceGroup, ResourceGroupError> {
         self.group_service
-            .get_group(id)
+            .get_group(ctx, id)
             .await
             .map_err(ResourceGroupError::from)
     }
 
     async fn list_groups(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroup>, ResourceGroupError> {
         self.group_service
-            .list_groups(query)
+            .list_groups(ctx, query)
             .await
             .map_err(ResourceGroupError::from)
     }
@@ -163,12 +163,12 @@ impl ResourceGroupClient for RgService {
 
     async fn list_group_depth(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError> {
         self.group_service
-            .list_group_hierarchy(group_id, query)
+            .list_group_hierarchy(ctx, group_id, query)
             .await
             .map_err(ResourceGroupError::from)
     }

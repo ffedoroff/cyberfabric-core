@@ -1,5 +1,6 @@
 //! Domain error types for the resource-group module.
 
+use authz_resolver_sdk::pep::EnforcerError;
 use resource_group_sdk::ResourceGroupError;
 use thiserror::Error;
 
@@ -38,6 +39,9 @@ pub enum DomainError {
 
     #[error("Tenant incompatibility: {message}")]
     TenantIncompatibility { message: String },
+
+    #[error("Access denied: {message}")]
+    AccessDenied { message: String },
 
     #[error("Database error: {message}")]
     Database { message: String },
@@ -144,6 +148,7 @@ impl From<DomainError> for ResourceGroupError {
             DomainError::TenantIncompatibility { message } => {
                 ResourceGroupError::tenant_incompatibility(message)
             }
+            DomainError::AccessDenied { .. } => ResourceGroupError::internal(),
             DomainError::Database { .. } | DomainError::InternalError => {
                 ResourceGroupError::internal()
             }
@@ -160,5 +165,20 @@ impl From<sea_orm::DbErr> for DomainError {
 impl From<modkit_db::DbError> for DomainError {
     fn from(e: modkit_db::DbError) -> Self {
         DomainError::database(e.to_string())
+    }
+}
+
+impl From<EnforcerError> for DomainError {
+    fn from(e: EnforcerError) -> Self {
+        match e {
+            EnforcerError::Denied { .. } => DomainError::AccessDenied {
+                message: e.to_string(),
+            },
+            EnforcerError::EvaluationFailed(_) | EnforcerError::CompileFailed(_) => {
+                DomainError::AccessDenied {
+                    message: e.to_string(),
+                }
+            }
+        }
     }
 }

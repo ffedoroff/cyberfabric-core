@@ -95,7 +95,8 @@ pub async fn seed_groups(
 ) -> Result<SeedResult, DomainError> {
     let mut result = SeedResult::default();
     for seed in seeds {
-        match group_service.get_group(seed.id).await {
+        let anon = modkit_security::SecurityContext::anonymous();
+        match group_service.get_group(&anon, seed.id).await {
             Ok(_existing) => {
                 // Group exists -- idempotent skip
                 result.unchanged += 1;

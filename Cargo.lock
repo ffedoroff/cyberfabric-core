@@ -1830,6 +1830,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "cf-authz-resolver-sdk",
  "cf-modkit",
  "cf-modkit-db",
  "cf-modkit-db-macros",

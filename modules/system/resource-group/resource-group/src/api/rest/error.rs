@@ -56,6 +56,11 @@ impl From<DomainError> for Problem {
                 "Tenant incompatibility",
                 message,
             ),
+            DomainError::AccessDenied { message } => Problem::new(
+                http::StatusCode::FORBIDDEN,
+                "Access denied",
+                message,
+            ),
             DomainError::Database { .. } => {
                 tracing::error!(error = ?e, "Database error occurred");
                 Problem::new(

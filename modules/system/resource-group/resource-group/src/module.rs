@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
 use modkit::api::OpenApiRegistry;
 use modkit::{DatabaseCapability, Module, ModuleCtx, RestApiCapability};
 use modkit_db::DBProvider;
@@ -45,6 +46,13 @@ impl Module for ResourceGroup {
         // Acquire DB capability (secure wrapper)
         let db: Arc<DBProvider<DbError>> = Arc::new(ctx.db_required()?);
 
+        // Resolve AuthZ client from ClientHub and create PolicyEnforcer
+        let authz = ctx
+            .client_hub()
+            .get::<dyn AuthZResolverClient>()
+            .map_err(|e| anyhow::anyhow!("failed to get AuthZ resolver: {e}"))?;
+        let enforcer = PolicyEnforcer::new(authz);
+
         // Create TypeService
         let type_service = Arc::new(TypeService::new(db.clone()));
 
@@ -52,9 +60,9 @@ impl Module for ResourceGroup {
             .set(type_service)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
-        // Create GroupService with default query profile
+        // Create GroupService with default query profile and PolicyEnforcer
         let profile = QueryProfile::default();
-        let group_service = Arc::new(GroupService::new(db.clone(), profile));
+        let group_service = Arc::new(GroupService::new(db.clone(), profile, enforcer));
 
         self.group_service
             .set(group_service)

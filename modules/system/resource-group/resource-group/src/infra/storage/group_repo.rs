@@ -44,15 +44,17 @@ impl GroupRepository {
     // -- Read operations --
 
     /// Find a resource group by its UUID, returning the SDK model with resolved type path.
+    ///
+    /// Uses the provided `AccessScope` for tenant-level filtering (SecureORM).
     pub async fn find_by_id(
         db: &impl DBRunner,
+        scope: &AccessScope,
         id: Uuid,
     ) -> Result<Option<ResourceGroup>, DomainError> {
-        let scope = system_scope();
         let model = ResourceGroupEntity::find()
             .filter(rg_entity::Column::Id.eq(id))
             .secure()
-            .scope_with(&scope)
+            .scope_with(scope)
             .one(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
@@ -87,15 +89,18 @@ impl GroupRepository {
     /// (e.g. `$filter=type eq 'gts.x.system.rg.type.v1~x.test.org.v1~'`).
     /// Before passing to SeaORM, string values for the `type` field are
     /// resolved to SMALLINT surrogate IDs at the persistence boundary.
+    /// List groups with `OData` filtering and pagination.
+    ///
+    /// Uses the provided `AccessScope` for tenant-level filtering (SecureORM).
     pub async fn list_groups(
         db: &impl DBRunner,
+        scope: &AccessScope,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroup>, DomainError> {
         // Pre-resolve: transform `type` string values → SMALLINT IDs in filter AST
         let resolved_query = Self::resolve_type_filter(db, query).await?;
 
-        let scope = system_scope();
-        let base_query = ResourceGroupEntity::find().secure().scope_with(&scope);
+        let base_query = ResourceGroupEntity::find().secure().scope_with(scope);
 
         let page = paginate_odata::<GroupFilterField, GroupODataMapper, _, _, _, _>(
             base_query,
@@ -211,8 +216,11 @@ impl GroupRepository {
     }
 
     /// Query hierarchy from a reference group, returning groups with relative depth.
+    ///
+    /// Uses the provided `AccessScope` for tenant-level filtering (SecureORM).
     pub async fn list_hierarchy(
         db: &impl DBRunner,
+        scope: &AccessScope,
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, DomainError> {
@@ -232,13 +240,12 @@ impl GroupRepository {
         // Since paginate_odata expects a SeaORM Select, we cannot easily use UNION.
         // Instead, we'll query the closure table directly and apply OData filters manually.
 
-        let scope = system_scope();
-
         // Get all closure rows involving this group (both as ancestor and descendant)
+        let sys = system_scope(); // closure table has no tenant column, use system scope
         let ancestor_rows = ClosureEntity::find()
             .filter(closure_entity::Column::AncestorId.eq(group_id))
             .secure()
-            .scope_with(&scope)
+            .scope_with(&sys)
             .all(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
@@ -247,7 +254,7 @@ impl GroupRepository {
             .filter(closure_entity::Column::DescendantId.eq(group_id))
             .filter(closure_entity::Column::Depth.ne(0)) // exclude self-row (already in ancestor_rows)
             .secure()
-            .scope_with(&scope)
+            .scope_with(&sys)
             .all(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
@@ -286,7 +293,7 @@ impl GroupRepository {
         let groups = ResourceGroupEntity::find()
             .filter(rg_entity::Column::Id.is_in(group_ids.clone()))
             .secure()
-            .scope_with(&scope)
+            .scope_with(scope)
             .all(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
