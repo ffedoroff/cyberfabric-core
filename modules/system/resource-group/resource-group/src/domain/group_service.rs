@@ -227,18 +227,31 @@ impl GroupService {
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-update-group:p1
-    /// Update a resource group (full replacement via PUT).
+    /// Update a resource group (full replacement via PUT, AuthZ-scoped).
     pub async fn update_group(
         &self,
+        ctx: &SecurityContext,
         group_id: Uuid,
         req: UpdateGroupRequest,
     ) -> Result<ResourceGroup, DomainError> {
+        // AuthZ gate: verify the caller can update this group (tenant check)
+        let scope = self
+            .enforcer
+            .access_scope(ctx, &RG_GROUP_RESOURCE, "update", Some(group_id))
+            .await
+            .map_err(DomainError::from)?;
+
         Self::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
 
         let conn = self.db.conn()?;
 
-        // Load existing group
+        // Verify the group is visible under the caller's scope
+        GroupRepository::find_by_id(&conn, &scope, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+
+        // Load raw model for internal validation (system scope)
         let existing = GroupRepository::find_model_by_id(&conn, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
@@ -359,9 +372,26 @@ impl GroupService {
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-delete-group:p1
-    /// Delete a resource group.
-    pub async fn delete_group(&self, group_id: Uuid, force: bool) -> Result<(), DomainError> {
+    /// Delete a resource group (AuthZ-scoped).
+    pub async fn delete_group(
+        &self,
+        ctx: &SecurityContext,
+        group_id: Uuid,
+        force: bool,
+    ) -> Result<(), DomainError> {
+        // AuthZ gate: verify the caller can delete this group (tenant check)
+        let scope = self
+            .enforcer
+            .access_scope(ctx, &RG_GROUP_RESOURCE, "delete", Some(group_id))
+            .await
+            .map_err(DomainError::from)?;
+
         let conn = self.db.conn()?;
+
+        // Verify the group is visible under the caller's scope
+        GroupRepository::find_by_id(&conn, &scope, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
 
         let _existing = GroupRepository::find_model_by_id(&conn, group_id)
             .await?

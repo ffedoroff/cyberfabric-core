@@ -376,3 +376,118 @@ async fn tenant_isolation_hierarchy_scoped() {
         "hierarchy must NOT contain tenant B's group, got: {hier_names:?}"
     );
 }
+
+/// Full chain: update_group with wrong tenant returns not-found.
+#[tokio::test]
+async fn tenant_isolation_update_cross_tenant_blocked() {
+    let db = test_db().await;
+    let type_svc = TypeService::new(db.clone());
+    let group_svc = make_group_service(db.clone());
+
+    let tenant_a = Uuid::now_v7();
+    let tenant_b = Uuid::now_v7();
+    let ctx_b = make_ctx(tenant_b);
+
+    let type_code = format!(
+        "gts.x.system.rg.type.v1~x.test.xupd{}.v1~",
+        Uuid::now_v7().as_simple()
+    );
+    type_svc
+        .create_type(resource_group_sdk::CreateTypeRequest {
+            code: type_code.clone(),
+            can_be_root: true,
+            allowed_parents: vec![],
+            allowed_memberships: vec![],
+            metadata_schema: None,
+        })
+        .await
+        .expect("create type");
+
+    // Tenant A creates a group
+    let ga = group_svc
+        .create_group(
+            resource_group_sdk::CreateGroupRequest {
+                type_path: type_code.clone(),
+                name: "A's group".to_owned(),
+                parent_id: None,
+                metadata: None,
+            },
+            tenant_a,
+        )
+        .await
+        .expect("create group for tenant A");
+
+    // Tenant B tries to update tenant A's group → should fail
+    let result = group_svc
+        .update_group(
+            &ctx_b,
+            ga.id,
+            resource_group_sdk::UpdateGroupRequest {
+                type_path: type_code,
+                name: "Hijacked!".to_owned(),
+                parent_id: None,
+                metadata: None,
+            },
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "Tenant B should not be able to update tenant A's group"
+    );
+}
+
+/// Full chain: delete_group with wrong tenant returns not-found.
+#[tokio::test]
+async fn tenant_isolation_delete_cross_tenant_blocked() {
+    let db = test_db().await;
+    let type_svc = TypeService::new(db.clone());
+    let group_svc = make_group_service(db.clone());
+
+    let tenant_a = Uuid::now_v7();
+    let tenant_b = Uuid::now_v7();
+    let ctx_a = make_ctx(tenant_a);
+    let ctx_b = make_ctx(tenant_b);
+
+    let type_code = format!(
+        "gts.x.system.rg.type.v1~x.test.xdel{}.v1~",
+        Uuid::now_v7().as_simple()
+    );
+    type_svc
+        .create_type(resource_group_sdk::CreateTypeRequest {
+            code: type_code.clone(),
+            can_be_root: true,
+            allowed_parents: vec![],
+            allowed_memberships: vec![],
+            metadata_schema: None,
+        })
+        .await
+        .expect("create type");
+
+    // Tenant A creates a group
+    let ga = group_svc
+        .create_group(
+            resource_group_sdk::CreateGroupRequest {
+                type_path: type_code,
+                name: "A's group to delete".to_owned(),
+                parent_id: None,
+                metadata: None,
+            },
+            tenant_a,
+        )
+        .await
+        .expect("create group for tenant A");
+
+    // Tenant B tries to delete tenant A's group → should fail
+    let result = group_svc.delete_group(&ctx_b, ga.id, false).await;
+    assert!(
+        result.is_err(),
+        "Tenant B should not be able to delete tenant A's group"
+    );
+
+    // Tenant A can still see and delete their own group
+    let own = group_svc.get_group(&ctx_a, ga.id).await;
+    assert!(own.is_ok(), "Tenant A should still see their group");
+
+    let del = group_svc.delete_group(&ctx_a, ga.id, false).await;
+    assert!(del.is_ok(), "Tenant A should be able to delete their own group");
+}

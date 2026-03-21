@@ -140,23 +140,23 @@ impl ResourceGroupClient for RgService {
 
     async fn update_group(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         id: Uuid,
         request: UpdateGroupRequest,
     ) -> Result<ResourceGroup, ResourceGroupError> {
         self.group_service
-            .update_group(id, request)
+            .update_group(ctx, id, request)
             .await
             .map_err(ResourceGroupError::from)
     }
 
     async fn delete_group(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         id: Uuid,
     ) -> Result<(), ResourceGroupError> {
         self.group_service
-            .delete_group(id, false)
+            .delete_group(ctx, id, false)
             .await
             .map_err(ResourceGroupError::from)
     }

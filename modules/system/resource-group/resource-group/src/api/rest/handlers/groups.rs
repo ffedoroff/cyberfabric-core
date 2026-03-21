@@ -91,14 +91,14 @@ pub async fn get_group(
 
 /// Update a resource group (full replacement via PUT).
 #[tracing::instrument(
-    skip(svc, req_body, _ctx),
+    skip(svc, req_body, ctx),
     fields(
         group.id = %group_id,
         request_id = Empty,
     )
 )]
 pub async fn update_group(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<GroupService>>,
     Path(group_id): Path<uuid::Uuid>,
     Json(req_body): Json<UpdateGroupDto>,
@@ -108,20 +108,20 @@ pub async fn update_group(
         "Updating resource group"
     );
 
-    let group = svc.update_group(group_id, req_body.into()).await?;
+    let group = svc.update_group(&ctx, group_id, req_body.into()).await?;
     Ok(Json(GroupDto::from(group)))
 }
 
 /// Delete a resource group.
 #[tracing::instrument(
-    skip(svc, _ctx, params),
+    skip(svc, ctx, params),
     fields(
         group.id = %group_id,
         request_id = Empty,
     )
 )]
 pub async fn delete_group(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<GroupService>>,
     Path(group_id): Path<uuid::Uuid>,
     Query(params): Query<DeleteGroupQuery>,
@@ -133,7 +133,7 @@ pub async fn delete_group(
         "Deleting resource group"
     );
 
-    svc.delete_group(group_id, force).await?;
+    svc.delete_group(&ctx, group_id, force).await?;
     Ok(no_content().into_response())
 }
 

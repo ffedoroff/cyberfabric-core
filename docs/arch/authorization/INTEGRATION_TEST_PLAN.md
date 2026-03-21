@@ -102,7 +102,7 @@ E2E_BASE_URL=http://localhost:8087 pytest testing/e2e/modules/resource_group/ -v
 The full AuthZ → RG chain is now wired:
 
 1. **Module init** (`module.rs`): resolves `dyn AuthZResolverClient` from ClientHub, creates `PolicyEnforcer`
-2. **GroupService** (`group_service.rs`): receives `PolicyEnforcer`; `list_groups`, `get_group`, `list_group_hierarchy` call `enforcer.access_scope(&ctx, &RG_GROUP_RESOURCE, action, resource_id)`
+2. **GroupService** (`group_service.rs`): receives `PolicyEnforcer`; all CRUD methods (`list_groups`, `get_group`, `update_group`, `delete_group`, `list_group_hierarchy`) call `enforcer.access_scope(&ctx, &RG_GROUP_RESOURCE, action, resource_id)`
 3. **GroupRepository** (`group_repo.rs`): `list_groups`, `find_by_id`, `list_hierarchy` accept `&AccessScope` and pass it to `SecureORM` via `.secure().scope_with(scope)`
 4. **Handlers** (`handlers/groups.rs`): pass `&ctx` to service methods (no longer `_ctx`)
 5. **Error handling** (`error.rs`): `DomainError::AccessDenied` → HTTP 403
@@ -120,9 +120,9 @@ Request → API Gateway (AuthN) → SecurityContext{tenant=T1}
   → Response: groups from T1 only
 ```
 
-### Rust integration tests (19 tests)
+### Rust integration tests (31 tests)
 
-**`authz_integration_test.rs`** (9 tests):
+**`authz_integration_test.rs`** (9 tests — mock AuthZ, no DB):
 - `enforcer_tenant_scoping_produces_correct_access_scope` — mock PDP → correct scope
 - `enforcer_different_tenants_get_different_scopes` — tenant isolation at scope level
 - `enforcer_deny_all_returns_denied_error` — deny flow
@@ -130,11 +130,18 @@ Request → API Gateway (AuthN) → SecurityContext{tenant=T1}
 - `enforcer_allow_all_with_required_constraints_fails` — fail-closed
 - `enforcer_passes_resource_id_to_pdp` — request params verification
 - `enforcer_works_for_all_crud_actions` — all 5 CRUD actions
-- `full_chain_list_groups_calls_enforcer_with_correct_params` — **full chain**: capturing mock verifies PDP receives `RG_GROUP_RESOURCE`, `"list"`, correct tenant_id; scope filters by tenant
-- `full_chain_deny_all_blocks_list_groups` — **full chain deny**: deny-all PDP blocks operation
+- `full_chain_list_groups_calls_enforcer_with_correct_params` — capturing mock verifies PDP receives correct params
+- `full_chain_deny_all_blocks_list_groups` — deny-all PDP blocks operation
 
-**`tenant_scoping_test.rs`** (10 tests):
+**`tenant_scoping_test.rs`** (10 tests — AccessScope shape, no DB):
 - AccessScope construction, isolation, `tenant_only()`, `deny_all()`, `for_resource()`
+
+**`tenant_filtering_db_test.rs`** (5 tests — **full chain with real SQLite DB**):
+- `tenant_isolation_list_groups` — two tenants create groups, each sees only own via `WHERE tenant_id IN (...)`
+- `tenant_isolation_get_group_cross_tenant_invisible` — cross-tenant `get_group` → not found
+- `tenant_isolation_hierarchy_scoped` — hierarchy filtered by tenant scope
+- `tenant_isolation_update_cross_tenant_blocked` — cross-tenant `update_group` → blocked
+- `tenant_isolation_delete_cross_tenant_blocked` — cross-tenant `delete_group` → blocked; own-tenant delete succeeds
 
 ### E2E HTTP tests (9 tests)
 
