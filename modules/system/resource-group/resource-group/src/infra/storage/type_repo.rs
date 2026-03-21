@@ -48,6 +48,24 @@ impl TypeRepository {
         Self::load_full_type(db, &type_model).await.map(Some)
     }
 
+    /// Load a full type by its surrogate SMALLINT ID.
+    pub async fn load_full_type_by_id(
+        db: &impl DBRunner,
+        type_id: i16,
+    ) -> Result<ResourceGroupType, DomainError> {
+        let scope = system_scope();
+        let type_model = GtsTypeEntity::find()
+            .filter(gts_type::Column::Id.eq(type_id))
+            .secure()
+            .scope_with(&scope)
+            .one(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?
+            .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
+
+        Self::load_full_type(db, &type_model).await
+    }
+
     /// Load a full type from a model, resolving junction references.
     pub async fn load_full_type(
         db: &impl DBRunner,
