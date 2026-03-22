@@ -14,7 +14,7 @@ use uuid::Uuid;
 use authz_resolver_sdk::{
     AuthZResolverClient, AuthZResolverError, EvaluationRequest, EvaluationResponse,
     EvaluationResponseContext, PolicyEnforcer,
-    constraints::{Constraint, InPredicate, Predicate},
+    constraints::{Constraint, InGroupPredicate, InPredicate, Predicate},
 };
 use modkit_db::{ConnectOpts, DBProvider, DbError, connect_db, migration_runner::run_migrations_for_testing};
 use modkit_odata::ODataQuery;
@@ -490,4 +490,215 @@ async fn tenant_isolation_delete_cross_tenant_blocked() {
 
     let del = group_svc.delete_group(&ctx_a, ga.id, false).await;
     assert!(del.is_ok(), "Tenant A should be able to delete their own group");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Phase 2: Group-based predicate tests (InGroup / InGroupSubtree)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Mock AuthZ that returns tenant scoping + InGroup predicate.
+/// Simulates S14 scenario: user has access to specific group IDs.
+struct GroupScopingAuthZ {
+    /// Groups the subject has access to (injected per test).
+    allowed_group_ids: Vec<Uuid>,
+}
+
+#[async_trait]
+impl AuthZResolverClient for GroupScopingAuthZ {
+    async fn evaluate(
+        &self,
+        request: EvaluationRequest,
+    ) -> Result<EvaluationResponse, AuthZResolverError> {
+        let tenant_id = request
+            .subject
+            .properties
+            .get("tenant_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .expect("subject must have tenant_id");
+
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![
+                        // Tenant scoping (always present)
+                        Predicate::In(InPredicate::new(
+                            pep_properties::OWNER_TENANT_ID,
+                            [tenant_id],
+                        )),
+                        // Group membership scoping
+                        Predicate::InGroup(InGroupPredicate::new(
+                            pep_properties::RESOURCE_ID,
+                            self.allowed_group_ids.clone(),
+                        )),
+                    ],
+                }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// Phase 2 test: InGroup predicate compiles to correct AccessScope
+/// containing both tenant filter AND group membership filter.
+#[tokio::test]
+async fn group_based_in_group_predicate_produces_combined_scope() {
+    let group_a = Uuid::now_v7();
+    let group_b = Uuid::now_v7();
+    let tenant_id = Uuid::now_v7();
+
+    let authz: Arc<dyn AuthZResolverClient> = Arc::new(GroupScopingAuthZ {
+        allowed_group_ids: vec![group_a, group_b],
+    });
+    let enforcer = PolicyEnforcer::new(authz);
+    let ctx = make_ctx(tenant_id);
+
+    let scope = enforcer
+        .access_scope(
+            &ctx,
+            &cf_resource_group::domain::group_service::RG_GROUP_RESOURCE,
+            "list",
+            None,
+        )
+        .await
+        .expect("should succeed");
+
+    // Scope has 1 constraint with 2 filters: In(tenant) AND InGroup(groups)
+    assert_eq!(scope.constraints().len(), 1);
+    assert_eq!(scope.constraints()[0].filters().len(), 2);
+
+    // First filter: tenant
+    assert!(scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant_id));
+
+    // Second filter: InGroup
+    let group_filter = &scope.constraints()[0].filters()[1];
+    assert!(
+        matches!(group_filter, modkit_security::ScopeFilter::InGroup(_)),
+        "expected InGroup filter, got: {group_filter:?}"
+    );
+}
+
+/// Phase 2 test: memberships seeded into DB, verify that group-based
+/// membership data is correctly stored and accessible.
+///
+/// This verifies the data layer works with the membership table that
+/// InGroup subqueries reference. The actual subquery SQL execution
+/// is validated by the SecureORM cond.rs unit tests.
+#[tokio::test]
+async fn group_based_membership_data_correctly_stored() {
+    let db = test_db().await;
+    let type_svc = TypeService::new(db.clone());
+    let group_svc = make_group_service(db.clone());
+
+    let tenant = Uuid::now_v7();
+
+    // Create types: project (root, allows "task" members) and task
+    let project_type = format!(
+        "gts.x.system.rg.type.v1~x.test.proj{}.v1~",
+        Uuid::now_v7().as_simple()
+    );
+    let task_type = format!(
+        "gts.x.system.rg.type.v1~x.test.task{}.v1~",
+        Uuid::now_v7().as_simple()
+    );
+
+    // Create task type first (project references it in allowed_memberships)
+    type_svc
+        .create_type(resource_group_sdk::CreateTypeRequest {
+            code: task_type.clone(),
+            can_be_root: true,
+            allowed_parents: vec![],
+            allowed_memberships: vec![],
+            metadata_schema: None,
+        })
+        .await
+        .expect("create task type");
+
+    type_svc
+        .create_type(resource_group_sdk::CreateTypeRequest {
+            code: project_type.clone(),
+            can_be_root: true,
+            allowed_parents: vec![],
+            allowed_memberships: vec![task_type.clone()],
+            metadata_schema: None,
+        })
+        .await
+        .expect("create project type");
+
+    // Create ProjectA and ProjectB
+    let project_a = group_svc
+        .create_group(
+            resource_group_sdk::CreateGroupRequest {
+                type_path: project_type.clone(),
+                name: "ProjectA".to_owned(),
+                parent_id: None,
+                metadata: None,
+            },
+            tenant,
+        )
+        .await
+        .expect("create ProjectA");
+
+    let project_b = group_svc
+        .create_group(
+            resource_group_sdk::CreateGroupRequest {
+                type_path: project_type,
+                name: "ProjectB".to_owned(),
+                parent_id: None,
+                metadata: None,
+            },
+            tenant,
+        )
+        .await
+        .expect("create ProjectB");
+
+    // Add memberships via MembershipService
+    let membership_svc = cf_resource_group::domain::membership_service::MembershipService::new(
+        db.clone(),
+    );
+
+    // task-001, task-002 → ProjectA
+    membership_svc
+        .add_membership(project_a.id, &task_type, "task-001")
+        .await
+        .expect("add task-001 to ProjectA");
+    membership_svc
+        .add_membership(project_a.id, &task_type, "task-002")
+        .await
+        .expect("add task-002 to ProjectA");
+
+    // task-003 → ProjectB
+    membership_svc
+        .add_membership(project_b.id, &task_type, "task-003")
+        .await
+        .expect("add task-003 to ProjectB");
+
+    // List memberships for ProjectA
+    let query = ODataQuery::default();
+    let all = membership_svc
+        .list_memberships(&query)
+        .await
+        .expect("list memberships");
+
+    let project_a_members: Vec<&str> = all
+        .items
+        .iter()
+        .filter(|m| m.group_id == project_a.id)
+        .map(|m| m.resource_id.as_str())
+        .collect();
+
+    assert!(project_a_members.contains(&"task-001"));
+    assert!(project_a_members.contains(&"task-002"));
+    assert!(!project_a_members.contains(&"task-003"));
+
+    let project_b_members: Vec<&str> = all
+        .items
+        .iter()
+        .filter(|m| m.group_id == project_b.id)
+        .map(|m| m.resource_id.as_str())
+        .collect();
+
+    assert!(project_b_members.contains(&"task-003"));
+    assert!(!project_b_members.contains(&"task-001"));
 }

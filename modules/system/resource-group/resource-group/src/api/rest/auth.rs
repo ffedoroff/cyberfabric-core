@@ -174,4 +174,107 @@ mod tests {
             "/api/resource-group/v1/groups/{group_id}/hierarchy"
         ));
     }
+
+    // --- Phase 3: MTLS edge case tests ---
+
+    #[test]
+    fn mtls_mode_with_multiple_allowed_clients() {
+        let config = MtlsConfig {
+            allowed_clients: vec![
+                "authz-resolver-plugin".to_string(),
+                "billing-service".to_string(),
+            ],
+            ..MtlsConfig::default()
+        };
+        let mode = determine_auth_mode(
+            Some("billing-service"),
+            &http::Method::GET,
+            "/api/resource-group/v1/groups/some-uuid/hierarchy",
+            &config,
+        );
+        assert_eq!(mode, AuthMode::Mtls);
+    }
+
+    #[test]
+    fn mtls_rejected_for_put_to_hierarchy() {
+        let config = default_config();
+        let mode = determine_auth_mode(
+            Some("authz-resolver-plugin"),
+            &http::Method::PUT,
+            "/api/resource-group/v1/groups/some-uuid/hierarchy",
+            &config,
+        );
+        assert_eq!(mode, AuthMode::Jwt, "PUT to hierarchy should not be MTLS-allowed");
+    }
+
+    #[test]
+    fn mtls_rejected_for_delete_to_groups() {
+        let config = default_config();
+        let mode = determine_auth_mode(
+            Some("authz-resolver-plugin"),
+            &http::Method::DELETE,
+            "/api/resource-group/v1/groups/some-uuid",
+            &config,
+        );
+        assert_eq!(mode, AuthMode::Jwt, "DELETE to groups should not be MTLS-allowed");
+    }
+
+    #[test]
+    fn mtls_with_empty_client_cn() {
+        let config = default_config();
+        let mode = determine_auth_mode(
+            Some(""),
+            &http::Method::GET,
+            "/api/resource-group/v1/groups/some-uuid/hierarchy",
+            &config,
+        );
+        assert_eq!(mode, AuthMode::Jwt, "Empty CN should fall back to JWT");
+    }
+
+    #[test]
+    fn mtls_with_multiple_endpoints() {
+        let config = MtlsConfig {
+            allowed_endpoints: vec![
+                AllowedEndpoint {
+                    method: http::Method::GET,
+                    path_pattern: "/api/resource-group/v1/groups/{group_id}/hierarchy".to_string(),
+                },
+                AllowedEndpoint {
+                    method: http::Method::GET,
+                    path_pattern: "/api/resource-group/v1/types".to_string(),
+                },
+            ],
+            ..MtlsConfig::default()
+        };
+        // First endpoint
+        assert_eq!(
+            determine_auth_mode(
+                Some("authz-resolver-plugin"),
+                &http::Method::GET,
+                "/api/resource-group/v1/groups/uuid/hierarchy",
+                &config,
+            ),
+            AuthMode::Mtls,
+        );
+        // Second endpoint
+        assert_eq!(
+            determine_auth_mode(
+                Some("authz-resolver-plugin"),
+                &http::Method::GET,
+                "/api/resource-group/v1/types",
+                &config,
+            ),
+            AuthMode::Mtls,
+        );
+        // Not in list
+        assert_eq!(
+            determine_auth_mode(
+                Some("authz-resolver-plugin"),
+                &http::Method::POST,
+                "/api/resource-group/v1/types",
+                &config,
+            ),
+            AuthMode::Jwt,
+        );
+    }
 }

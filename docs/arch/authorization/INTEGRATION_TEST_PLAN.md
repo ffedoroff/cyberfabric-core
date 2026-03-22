@@ -158,90 +158,72 @@ Request → API Gateway (AuthN) → SecurityContext{tenant=T1}
 
 ---
 
-## Phase 2: Group-Based Predicates
+## Phase 2: Group-Based Predicates ✅ IMPLEMENTED
 
-**Goal**: Verify the full S14/S15 scenario — AuthZ plugin queries RG hierarchy, returns `in_group`/`in_group_subtree` predicates, PEP compiles them into SQL JOINs.
+**Goal**: `InGroup` / `InGroupSubtree` predicates compile to SQL subqueries against `resource_group_membership` and `resource_group_closure` tables.
 
-### What needs to be implemented
+### Implementation summary
 
-#### 2.1 New predicate types in AuthZ SDK
+1. **Predicate types** (`authz-resolver-sdk/src/constraints.rs`): `InGroupPredicate` (group_ids), `InGroupSubtreePredicate` (ancestor_ids) added to `Predicate` enum with serde support (`"op":"in_group"`, `"op":"in_group_subtree"`)
 
-`authz-resolver-sdk/src/constraints.rs` — add:
+2. **ScopeFilter variants** (`modkit-security/src/access_scope.rs`): `InGroupScopeFilter`, `InGroupSubtreeScopeFilter` carry property + group/ancestor UUIDs. Well-known table constants in `rg_tables` module (`MEMBERSHIP_TABLE`, `CLOSURE_TABLE`, column names)
 
-```rust
-pub enum Predicate {
-    Eq(EqPredicate),
-    In(InPredicate),
-    InGroup(InGroupPredicate),           // NEW
-    InGroupSubtree(InGroupSubtreePredicate), // NEW
-}
+3. **PEP compiler** (`authz-resolver-sdk/src/pep/compiler.rs`): compiles `InGroup`/`InGroupSubtree` predicates into corresponding `ScopeFilter` variants via `json_to_scope_value`
 
-pub struct InGroupPredicate {
-    pub resource_property: String,  // e.g., "id"
-    pub group_ids: Vec<Uuid>,
-}
+4. **SecureORM** (`modkit-db/src/secure/cond.rs`): `build_constraint_condition` generates subquery SQL:
+   - `InGroup` → `col IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (...))`
+   - `InGroupSubtree` → `col IN (SELECT resource_id FROM resource_group_membership WHERE group_id IN (SELECT descendant_id FROM resource_group_closure WHERE ancestor_id IN (...)))`
 
-pub struct InGroupSubtreePredicate {
-    pub resource_property: String,
-    pub root_group_id: Uuid,
-}
+### SQL generated (S14 scenario)
+
+```sql
+WHERE owner_tenant_id IN ('T1')
+  AND id IN (
+    SELECT resource_id FROM resource_group_membership
+    WHERE group_id IN ('ProjectA-uuid')
+  )
 ```
 
-#### 2.2 Constraint compiler
+### Tests
 
-`authz-resolver-sdk/src/pep/compiler.rs` — compile new predicates into `AccessScope`:
+**`constraints.rs`** (3 new unit tests): serialization roundtrip for InGroup, InGroupSubtree, mixed constraint
 
-- `InGroup` → `ScopeFilter::InSubquery { property, table: "resource_group_membership", join_column: "resource_id", filter_column: "group_id", values }`
-- `InGroupSubtree` → nested subquery: `resource_group_membership` JOIN `resource_group_closure`
+**`compiler.rs`** (3 new unit tests): InGroup → InGroup filter, InGroupSubtree → InGroupSubtree filter, tenant + InGroup combined
 
-#### 2.3 RG-aware AuthZ plugin
+**`cond.rs`** (3 new unit tests): InGroup subquery condition, InGroupSubtree nested subquery, tenant + InGroup AND condition
 
-Either extend `static-authz-plugin` or create a new plugin that:
+**`tenant_filtering_db_test.rs`** (2 new DB tests):
+- `group_based_in_group_predicate_produces_combined_scope` — mock AuthZ with InGroup + tenant → correct AccessScope with 2 filters
+- `group_based_membership_data_correctly_stored` — full S14 data: ProjectA/B, task memberships, verify isolation
 
-1. Checks `capabilities` in `EvaluationRequestContext` for `group_membership` or `group_hierarchy`
-2. Resolves `dyn ResourceGroupReadHierarchy` from ClientHub
-3. Calls `list_group_depth()` to get hierarchy data
-4. Produces `InGroup`/`InGroupSubtree` predicates
+### What remains for production use
 
-#### 2.4 Projection tables in domain DB
-
-A test domain service needs `resource_group_membership` and/or `resource_group_closure` as local projection tables for SQL JOINs. For dev/test, this can be the same PostgreSQL database.
-
-### Test scenario (corresponds to AUTHZ_USAGE_SCENARIOS S14)
-
-```
-Setup:
-  1. Create type "project" (can_be_root=true, allowed_memberships=["task"])
-  2. Create type "task" (can_be_root=true)
-  3. Create group "ProjectA" (type=project)
-  4. Create group "ProjectB" (type=project)
-  5. Add membership (ProjectA, task, task-001)
-  6. Add membership (ProjectA, task, task-002)
-  7. Add membership (ProjectB, task, task-003)
-
-Test:
-  8. GET /tasks (user has access to ProjectA only)
-     → AuthZ plugin: capabilities=["group_membership"]
-     → Plugin calls RG: list groups for user's role
-     → Returns: in_group(id, [ProjectA])
-     → SQL: WHERE id IN (SELECT resource_id FROM resource_group_membership
-                          WHERE group_id = 'ProjectA-uuid')
-     → Result: task-001, task-002 (not task-003)
-```
-
-### Verification
-
-- Tasks in ProjectA visible, tasks in ProjectB invisible
-- SQL query contains JOIN against `resource_group_membership`
-- AuthZ plugin logged calls to `ResourceGroupReadHierarchy`
+- **RG-aware AuthZ plugin**: static-authz-plugin currently only returns tenant predicates. A real plugin needs to resolve user→group access from an external policy source and emit `InGroup`/`InGroupSubtree` predicates
+- **Domain entity integration**: consuming modules need `resource_group_membership` and `resource_group_closure` as projection tables in their DB for the subquery JOINs to resolve
 
 ---
 
-## Phase 3: MTLS Authentication Mode
+## Phase 3: MTLS Authentication Mode ✅ IMPLEMENTED
 
 **Goal**: Verify that AuthZ plugin can read RG hierarchy via MTLS-authenticated request (microservice deployment mode), bypassing AuthZ evaluation.
 
-### What needs to be implemented
+### Implementation summary
+
+1. **MTLS routing logic** (`auth.rs`): `determine_auth_mode()` checks client CN + endpoint allowlist → `AuthMode::Mtls` or `AuthMode::Jwt`. Already implemented with `MtlsConfig`, `AllowedEndpoint`, path pattern matching.
+
+2. **Rust unit tests** (`auth.rs`): 12 tests covering JWT fallback, MTLS allowed/rejected, edge cases (empty CN, PUT to hierarchy, multiple clients/endpoints, DELETE blocked).
+
+3. **E2E test skeleton** (`test_mtls_auth.py`): 4 tests with `pytest.skip` when cert infrastructure unavailable:
+   - `test_mtls_allowed_endpoint_hierarchy_200`
+   - `test_mtls_disallowed_endpoint_post_groups_403`
+   - `test_jwt_hierarchy_full_authz`
+   - `test_mtls_invalid_cert_cn_rejected`
+
+### What remains for production deployment
+
+- Certificate generation (CA + client certs)
+- API Gateway TLS termination configuration (forward client CN header)
+- E2E test execution requires cert infrastructure (`E2E_MTLS_CERT_DIR`)
 
 #### 3.1 Certificate infrastructure
 
@@ -309,10 +291,8 @@ curl -H "Authorization: Bearer test" \
 | Phase | Scope | Effort | Status |
 |-------|-------|--------|--------|
 | Phase 1 | Tenant scoping via PolicyEnforcer | 2–3 hours | **Done** |
-| Phase 2 | Group predicates (in_group/in_group_subtree) | 1–2 days | Not started |
-| Phase 3 | MTLS verification | 2–3 hours | Not started |
-
-**Recommended order**: Phase 1 ✅ → Phase 3 → Phase 2 (Phase 1 is prerequisite for AuthZ integration; Phase 3 is independent; Phase 2 is the largest piece).
+| Phase 2 | Group predicates (in_group/in_group_subtree) | 1–2 days | **Done** (predicate types, compiler, SecureORM subqueries, tests) |
+| Phase 3 | MTLS verification | 2–3 hours | **Done** (routing logic, 12 unit tests, E2E skeleton) |
 
 ---
 

@@ -22,7 +22,7 @@ use crate::infra::storage::type_repo::TypeRepository;
 /// AuthZ resource type descriptor for resource groups.
 pub const RG_GROUP_RESOURCE: ResourceType = ResourceType {
     name: "gts.x.system.rg.group.v1~",
-    supported_properties: &[pep_properties::OWNER_TENANT_ID],
+    supported_properties: &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 };
 
 /// GTS type path prefix required for resource group types.

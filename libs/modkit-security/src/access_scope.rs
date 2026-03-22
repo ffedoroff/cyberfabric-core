@@ -102,6 +102,26 @@ pub mod pep_properties {
     pub const OWNER_ID: &str = "owner_id";
 }
 
+/// Well-known resource-group table and column names for subquery construction.
+///
+/// Used by the SecureORM condition builder to translate `InGroup`/`InGroupSubtree`
+/// scope filters into SQL subqueries without depending on entity types.
+pub mod rg_tables {
+    /// Membership projection table.
+    pub const MEMBERSHIP_TABLE: &str = "resource_group_membership";
+    /// Column in membership table: the resource's external ID.
+    pub const MEMBERSHIP_RESOURCE_ID: &str = "resource_id";
+    /// Column in membership table: the group the resource belongs to.
+    pub const MEMBERSHIP_GROUP_ID: &str = "group_id";
+
+    /// Closure table for group hierarchy.
+    pub const CLOSURE_TABLE: &str = "resource_group_closure";
+    /// Column in closure table: the ancestor group.
+    pub const CLOSURE_ANCESTOR_ID: &str = "ancestor_id";
+    /// Column in closure table: the descendant group.
+    pub const CLOSURE_DESCENDANT_ID: &str = "descendant_id";
+}
+
 /// A single scope filter — a typed predicate on a named resource property.
 ///
 /// The property name (e.g., `"owner_tenant_id"`, `"id"`) is an authorization
@@ -110,18 +130,18 @@ pub mod pep_properties {
 /// Variants mirror the predicate types from the PDP response:
 /// - [`ScopeFilter::Eq`] — equality (`property = value`)
 /// - [`ScopeFilter::In`] — set membership (`property IN (values)`)
-///
-/// ## Future extensions
-///
-/// Additional filter types (`in_tenant_subtree`, `in_group`,
-/// `in_group_subtree`) are planned. See the authorization design document
-/// (`docs/arch/authorization/DESIGN.md`) for the full predicate taxonomy.
+/// - [`ScopeFilter::InGroup`] — group membership subquery
+/// - [`ScopeFilter::InGroupSubtree`] — group subtree subquery
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopeFilter {
     /// Equality: `property = value`.
     Eq(EqScopeFilter),
     /// Set membership: `property IN (values)`.
     In(InScopeFilter),
+    /// Group membership: `property IN (SELECT resource_id FROM membership WHERE group_id IN (group_ids))`.
+    InGroup(InGroupScopeFilter),
+    /// Group subtree: `property IN (SELECT resource_id FROM membership WHERE group_id IN (SELECT descendant_id FROM closure WHERE ancestor_id IN (ancestor_ids)))`.
+    InGroupSubtree(InGroupSubtreeScopeFilter),
 }
 
 /// Equality scope filter: `property = value`.
@@ -204,6 +224,70 @@ impl InScopeFilter {
     }
 }
 
+/// Group membership scope filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InGroupScopeFilter {
+    property: String,
+    group_ids: Vec<ScopeValue>,
+}
+
+impl InGroupScopeFilter {
+    /// Create a group membership scope filter.
+    #[must_use]
+    pub fn new(property: impl Into<String>, group_ids: Vec<ScopeValue>) -> Self {
+        Self {
+            property: property.into(),
+            group_ids,
+        }
+    }
+
+    /// The authorization property name.
+    #[inline]
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// The group IDs.
+    #[inline]
+    #[must_use]
+    pub fn group_ids(&self) -> &[ScopeValue] {
+        &self.group_ids
+    }
+}
+
+/// Group subtree scope filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InGroupSubtreeScopeFilter {
+    property: String,
+    ancestor_ids: Vec<ScopeValue>,
+}
+
+impl InGroupSubtreeScopeFilter {
+    /// Create a group subtree scope filter.
+    #[must_use]
+    pub fn new(property: impl Into<String>, ancestor_ids: Vec<ScopeValue>) -> Self {
+        Self {
+            property: property.into(),
+            ancestor_ids,
+        }
+    }
+
+    /// The authorization property name.
+    #[inline]
+    #[must_use]
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// The ancestor group IDs.
+    #[inline]
+    #[must_use]
+    pub fn ancestor_ids(&self) -> &[ScopeValue] {
+        &self.ancestor_ids
+    }
+}
+
 impl ScopeFilter {
     /// Create an equality filter (`property = value`).
     #[must_use]
@@ -226,23 +310,40 @@ impl ScopeFilter {
         ))
     }
 
+    /// Create a group membership filter.
+    #[must_use]
+    pub fn in_group(property: impl Into<String>, group_ids: Vec<ScopeValue>) -> Self {
+        Self::InGroup(InGroupScopeFilter::new(property, group_ids))
+    }
+
+    /// Create a group subtree filter.
+    #[must_use]
+    pub fn in_group_subtree(property: impl Into<String>, ancestor_ids: Vec<ScopeValue>) -> Self {
+        Self::InGroupSubtree(InGroupSubtreeScopeFilter::new(property, ancestor_ids))
+    }
+
     /// The authorization property name.
     #[must_use]
     pub fn property(&self) -> &str {
         match self {
             Self::Eq(f) => f.property(),
             Self::In(f) => f.property(),
+            Self::InGroup(f) => f.property(),
+            Self::InGroupSubtree(f) => f.property(),
         }
     }
 
     /// Collect all values as a slice-like view for iteration.
     ///
-    /// For `Eq`, returns a single-element slice; for `In`, returns the values slice.
+    /// For `Eq`, returns a single-element slice; for `In`/`InGroup`/`InGroupSubtree`,
+    /// returns the values slice.
     #[must_use]
     pub fn values(&self) -> ScopeFilterValues<'_> {
         match self {
             Self::Eq(f) => ScopeFilterValues::Single(&f.value),
             Self::In(f) => ScopeFilterValues::Multiple(&f.values),
+            Self::InGroup(f) => ScopeFilterValues::Multiple(&f.group_ids),
+            Self::InGroupSubtree(f) => ScopeFilterValues::Multiple(&f.ancestor_ids),
         }
     }
 
