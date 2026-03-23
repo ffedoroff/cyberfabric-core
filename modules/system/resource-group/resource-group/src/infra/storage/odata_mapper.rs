@@ -123,9 +123,7 @@ impl ODataFieldMapping<MembershipFilterField> for MembershipODataMapper {
         field: MembershipFilterField,
     ) -> sea_orm::Value {
         match field {
-            MembershipFilterField::GroupId => {
-                sea_orm::Value::Uuid(Some(Box::new(model.group_id)))
-            }
+            MembershipFilterField::GroupId => sea_orm::Value::Uuid(Some(Box::new(model.group_id))),
             MembershipFilterField::ResourceType => {
                 sea_orm::Value::SmallInt(Some(model.gts_type_id))
             }

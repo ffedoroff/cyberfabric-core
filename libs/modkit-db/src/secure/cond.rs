@@ -1,5 +1,5 @@
-use sea_orm::{ColumnTrait, Condition, EntityTrait, sea_query::Expr};
 use sea_orm::sea_query::{Alias, Query};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, sea_query::Expr};
 
 use crate::secure::{AccessScope, ScopableEntity};
 use modkit_security::access_scope::{ScopeConstraint, ScopeFilter, ScopeValue, rg_tables};
@@ -292,12 +292,11 @@ mod tests {
     #[test]
     fn test_in_group_filter_produces_subquery_condition() {
         let group_id = uuid::Uuid::new_v4();
-        let scope = AccessScope::from_constraints(vec![ScopeConstraint::new(vec![
-            ScopeFilter::in_group(
+        let scope =
+            AccessScope::from_constraints(vec![ScopeConstraint::new(vec![ScopeFilter::in_group(
                 pep_properties::RESOURCE_ID,
                 vec![ScopeValue::Uuid(group_id)],
-            ),
-        ])]);
+            )])]);
         let cond = build_scope_condition::<custom_prop_entity::Entity>(&scope);
         let cond_str = format!("{cond:?}");
         // Should NOT be deny-all

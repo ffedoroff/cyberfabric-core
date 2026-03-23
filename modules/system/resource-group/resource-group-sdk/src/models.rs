@@ -40,7 +40,7 @@ impl GtsTypePath {
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3
         if s.is_empty() {
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3a
-            return Err("GTS type path must not be empty".to_string());
+            return Err("GTS type path must not be empty".to_owned());
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3a
         }
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-3
@@ -48,7 +48,7 @@ impl GtsTypePath {
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5
         if s.len() > GTS_TYPE_PATH_MAX_LEN {
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5a
-            return Err("GTS type path exceeds maximum length".to_string());
+            return Err("GTS type path exceeds maximum length".to_owned());
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5a
         }
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-5
@@ -57,7 +57,7 @@ impl GtsTypePath {
         // Validate format: ^gts\.[a-z0-9_.]+~([a-z0-9_.]+~)*$
         if !Self::matches_format(&s) {
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4a
-            return Err("Invalid GTS type path format".to_string());
+            return Err("Invalid GTS type path format".to_owned());
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4a
         }
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1:inst-gts-val-4
@@ -77,6 +77,8 @@ impl GtsTypePath {
 
     /// Validate format: `gts.<segment>~(<segment>~)*`
     /// where segment = `[a-z0-9_.]+`
+    #[allow(unknown_lints)]
+    #[allow(de0901_gts_string_pattern)]
     fn matches_format(s: &str) -> bool {
         // Must start with "gts." and end with "~"
         let Some(rest) = s.strip_prefix("gts.") else {
@@ -96,12 +98,15 @@ impl GtsTypePath {
             if seg.is_empty() {
                 return false;
             }
-            if !seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.') {
+            if !seg
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+            {
                 return false;
             }
         }
         // Last element must be empty (from trailing ~)
-        segments.last().map_or(false, |s| s.is_empty())
+        segments.last().is_some_and(|s| s.is_empty())
     }
 }
 

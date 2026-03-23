@@ -413,10 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cursor_pager_empty_page() {
-        let page = Page::new(
-            vec![],
-            PageInfo::new(None, None, 10),
-        );
+        let page = Page::new(vec![], PageInfo::new(None, None, 10));
 
         let fetcher = FakeFetcher::new(vec![page]);
         let query = ODataQuery::new().with_limit(10);

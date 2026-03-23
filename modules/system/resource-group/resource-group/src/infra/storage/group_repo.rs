@@ -5,7 +5,7 @@
 
 use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt};
-use modkit_odata::{ODataQuery, Page, SortDir};
+use modkit_odata::{CursorV1, ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
 use resource_group_sdk::models::{
     GroupHierarchy, GroupHierarchyWithDepth, ResourceGroup, ResourceGroupWithDepth,
@@ -24,6 +24,15 @@ use crate::infra::storage::entity::{
 };
 use crate::infra::storage::odata_mapper::GroupODataMapper;
 use crate::infra::storage::type_repo::TypeRepository;
+
+/// Type alias for a pinned, boxed, Send future returning `Result<Box<Expr>, DomainError>`.
+type ResolveExprFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Box<modkit_odata::ast::Expr>, DomainError>>
+            + Send
+            + 'a,
+    >,
+>;
 
 /// Default `OData` pagination limits for groups.
 const GROUP_LIMIT_CFG: LimitCfg = LimitCfg {
@@ -45,7 +54,7 @@ impl GroupRepository {
 
     /// Find a resource group by its UUID, returning the SDK model with resolved type path.
     ///
-    /// Uses the provided `AccessScope` for tenant-level filtering (SecureORM).
+    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
     pub async fn find_by_id(
         db: &impl DBRunner,
         scope: &AccessScope,
@@ -87,11 +96,11 @@ impl GroupRepository {
     ///
     /// The `type` filter field accepts GTS type path strings from the API
     /// (e.g. `$filter=type eq 'gts.x.system.rg.type.v1~x.test.org.v1~'`).
-    /// Before passing to SeaORM, string values for the `type` field are
+    /// Before passing to `SeaORM`, string values for the `type` field are
     /// resolved to SMALLINT surrogate IDs at the persistence boundary.
     /// List groups with `OData` filtering and pagination.
     ///
-    /// Uses the provided `AccessScope` for tenant-level filtering (SecureORM).
+    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
     pub async fn list_groups(
         db: &impl DBRunner,
         scope: &AccessScope,
@@ -152,7 +161,7 @@ impl GroupRepository {
     fn resolve_type_expr<'a>(
         db: &'a (impl DBRunner + 'a),
         expr: &'a modkit_odata::ast::Expr,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<modkit_odata::ast::Expr>, DomainError>> + Send + 'a>> {
+    ) -> ResolveExprFuture<'a> {
         use modkit_odata::ast::{Expr as E, Value as V};
 
         Box::pin(async move {
@@ -167,46 +176,41 @@ impl GroupRepository {
                 ),
                 E::Not(inner) => E::Not(Self::resolve_type_expr(db, inner).await?),
                 E::Compare(left, op, right) => {
-                    if let E::Identifier(name) = left.as_ref() {
-                        if name == "type" {
-                            if let E::Value(V::String(path)) = right.as_ref() {
-                                let id = TypeRepository::resolve_id(db, path)
-                                    .await?
-                                    .ok_or_else(|| {
-                                        DomainError::validation(format!(
-                                            "Unknown type in filter: {path}"
-                                        ))
-                                    })?;
-                                return Ok(Box::new(E::Compare(
-                                    left.clone(),
-                                    *op,
-                                    Box::new(E::Value(V::Number(id.into()))),
-                                )));
-                            }
-                        }
+                    if let E::Identifier(name) = left.as_ref()
+                        && name == "type"
+                        && let E::Value(V::String(path)) = right.as_ref()
+                    {
+                        let id = TypeRepository::resolve_id(db, path).await?.ok_or_else(|| {
+                            DomainError::validation(format!("Unknown type in filter: {path}"))
+                        })?;
+                        return Ok(Box::new(E::Compare(
+                            left.clone(),
+                            *op,
+                            Box::new(E::Value(V::Number(id.into()))),
+                        )));
                     }
                     expr.clone()
                 }
                 E::In(left, list) => {
-                    if let E::Identifier(name) = left.as_ref() {
-                        if name == "type" {
-                            let mut resolved = Vec::with_capacity(list.len());
-                            for item in list {
-                                if let E::Value(V::String(path)) = item {
-                                    let id = TypeRepository::resolve_id(db, path)
-                                        .await?
-                                        .ok_or_else(|| {
-                                            DomainError::validation(format!(
-                                                "Unknown type in filter: {path}"
-                                            ))
-                                        })?;
-                                    resolved.push(E::Value(V::Number(id.into())));
-                                } else {
-                                    resolved.push(item.clone());
-                                }
+                    if let E::Identifier(name) = left.as_ref()
+                        && name == "type"
+                    {
+                        let mut resolved = Vec::with_capacity(list.len());
+                        for item in list {
+                            if let E::Value(V::String(path)) = item {
+                                let id = TypeRepository::resolve_id(db, path).await?.ok_or_else(
+                                    || {
+                                        DomainError::validation(format!(
+                                            "Unknown type in filter: {path}"
+                                        ))
+                                    },
+                                )?;
+                                resolved.push(E::Value(V::Number(id.into())));
+                            } else {
+                                resolved.push(item.clone());
                             }
-                            return Ok(Box::new(E::In(left.clone(), resolved)));
                         }
+                        return Ok(Box::new(E::In(left.clone(), resolved)));
                     }
                     expr.clone()
                 }
@@ -217,7 +221,7 @@ impl GroupRepository {
 
     /// Query hierarchy from a reference group, returning groups with relative depth.
     ///
-    /// Uses the provided `AccessScope` for tenant-level filtering (SecureORM).
+    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
     pub async fn list_hierarchy(
         db: &impl DBRunner,
         scope: &AccessScope,
@@ -338,25 +342,49 @@ impl GroupRepository {
         // Sort by depth for consistent ordering
         results.sort_by_key(|r| r.hierarchy.depth);
 
-        // Apply pagination (simple limit since we can't use cursor-based for UNION)
+        // Parse offset from cursor (offset-based pagination for in-memory results)
+        let offset = query
+            .cursor
+            .as_ref()
+            .and_then(|c| c.k.first())
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+
         let limit_val = query.limit.unwrap_or(25).min(200);
         let limit_usize = limit_val as usize;
         let total = results.len();
-        let items: Vec<ResourceGroupWithDepth> = results.into_iter().take(limit_usize).collect();
-        let has_next = total > limit_usize;
+
+        // Apply offset + limit to get the current page
+        let items: Vec<ResourceGroupWithDepth> =
+            results.into_iter().skip(offset).take(limit_usize).collect();
+
+        let has_next = offset + limit_usize < total;
+        let has_prev = offset > 0;
+
+        // Encode next/prev cursors using CursorV1 for round-trip compatibility
+        // with the OData extractor (which decodes cursor via CursorV1::decode).
+        let next_cursor = if has_next {
+            let next_offset = offset + limit_usize;
+            Self::encode_offset_cursor(next_offset, "fwd")
+        } else {
+            None
+        };
+
+        let prev_cursor = if has_prev {
+            let prev_offset = offset.saturating_sub(limit_usize);
+            Self::encode_offset_cursor(prev_offset, "bwd")
+        } else {
+            None
+        };
 
         Ok(Page {
             items,
             page_info: modkit_odata::PageInfo {
-                next_cursor: if has_next {
-                    Some("next".to_owned())
-                } else {
-                    None
-                },
-                prev_cursor: None,
+                next_cursor,
+                prev_cursor,
                 limit: limit_val,
                 has_next_page: has_next,
-                has_previous_page: false,
+                has_previous_page: has_prev,
             },
         })
     }
@@ -752,6 +780,25 @@ impl GroupRepository {
             },
             metadata: model.metadata,
         }
+    }
+
+    // -- Offset cursor helpers --
+
+    /// Encode an offset value into a `CursorV1`-compatible base64url token.
+    ///
+    /// The hierarchy endpoint uses offset-based pagination (not keyset) because
+    /// results are assembled in memory from two separate queries. The offset is
+    /// stored in the `k` field and a fixed sort signature `"depth"` distinguishes
+    /// these cursors from keyset cursors used by `paginate_odata`.
+    fn encode_offset_cursor(offset: usize, direction: &str) -> Option<String> {
+        let cursor = CursorV1 {
+            k: vec![offset.to_string()],
+            o: SortDir::Asc,
+            s: "depth".to_owned(),
+            f: None,
+            d: direction.to_owned(),
+        };
+        cursor.encode().ok()
     }
 
     // -- OData filter extraction helpers --

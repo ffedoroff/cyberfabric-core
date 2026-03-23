@@ -75,7 +75,7 @@ pub trait ResourceGroupClient: Send + Sync {
         id: Uuid,
     ) -> Result<ResourceGroup, ResourceGroupError>;
 
-    /// List resource groups with OData filtering and cursor-based pagination.
+    /// List resource groups with `OData` filtering and cursor-based pagination.
     async fn list_groups(
         &self,
         ctx: &SecurityContext,
@@ -91,11 +91,8 @@ pub trait ResourceGroupClient: Send + Sync {
     ) -> Result<ResourceGroup, ResourceGroupError>;
 
     /// Delete a resource group. Fails if child groups or memberships exist.
-    async fn delete_group(
-        &self,
-        ctx: &SecurityContext,
-        id: Uuid,
-    ) -> Result<(), ResourceGroupError>;
+    async fn delete_group(&self, ctx: &SecurityContext, id: Uuid)
+    -> Result<(), ResourceGroupError>;
 
     /// List group hierarchy with relative depth from a reference group.
     async fn list_group_depth(
@@ -125,7 +122,7 @@ pub trait ResourceGroupClient: Send + Sync {
         resource_id: &str,
     ) -> Result<(), ResourceGroupError>;
 
-    /// List memberships with OData filtering and cursor-based pagination.
+    /// List memberships with `OData` filtering and cursor-based pagination.
     async fn list_memberships(
         &self,
         ctx: &SecurityContext,
@@ -134,10 +131,10 @@ pub trait ResourceGroupClient: Send + Sync {
 }
 
 // @cpt-dod:cpt-cf-resource-group-dod-integration-auth-read-service:p1
-/// Narrow read-only trait for hierarchy data, used by AuthZ plugin.
+/// Narrow read-only trait for hierarchy data, used by `AuthZ` plugin.
 ///
 /// This trait provides the integration read port that external consumers
-/// (such as the AuthZ plugin) use to query group hierarchy data without
+/// (such as the `AuthZ` plugin) use to query group hierarchy data without
 /// depending on the full `ResourceGroupClient`.
 #[async_trait]
 pub trait ResourceGroupReadHierarchy: Send + Sync {

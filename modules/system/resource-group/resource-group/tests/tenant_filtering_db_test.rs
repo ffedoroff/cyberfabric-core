@@ -1,9 +1,10 @@
-//! Full-chain integration test with a real (SQLite in-memory) database.
+#![allow(clippy::expect_used)]
+//! Full-chain integration test with a real (`SQLite` in-memory) database.
 //!
-//! Verifies the complete AuthZ → PolicyEnforcer → GroupService → AccessScope
-//! → SecureORM → SQL WHERE tenant_id IN (…) → filtered results path.
+//! Verifies the complete `AuthZ` -> `PolicyEnforcer` -> `GroupService` -> `AccessScope`
+//! -> `SecureORM` -> SQL WHERE `tenant_id` IN (...) -> filtered results path.
 //!
-//! Two tenants each create groups; listing groups through the AuthZ-scoped
+//! Two tenants each create groups; listing groups through the `AuthZ`-scoped
 //! `GroupService` returns only the requesting tenant's data.
 
 use std::sync::Arc;
@@ -16,7 +17,9 @@ use authz_resolver_sdk::{
     EvaluationResponseContext, PolicyEnforcer,
     constraints::{Constraint, InGroupPredicate, InPredicate, Predicate},
 };
-use modkit_db::{ConnectOpts, DBProvider, DbError, connect_db, migration_runner::run_migrations_for_testing};
+use modkit_db::{
+    ConnectOpts, DBProvider, DbError, connect_db, migration_runner::run_migrations_for_testing,
+};
 use modkit_odata::ODataQuery;
 use modkit_security::{SecurityContext, pep_properties};
 use sea_orm_migration::MigratorTrait;
@@ -96,11 +99,11 @@ fn make_group_service(db: Arc<DBProvider<DbError>>) -> GroupService {
 /// Full chain: two tenants create groups, each tenant sees only its own.
 ///
 /// Flow per tenant:
-///   SecurityContext{tenant=T} → GroupService.list_groups(&ctx, &query)
-///     → PolicyEnforcer.access_scope() → AccessScope{owner_tenant_id IN (T)}
-///     → GroupRepository.list_groups(&conn, &scope, &query)
-///       → SecureORM .scope_with(&scope) → SQL WHERE tenant_id IN ('T')
-///     → only T's groups returned
+///   `SecurityContext{tenant=T}` -> `GroupService.list_groups(&ctx, &query)`
+///     -> `PolicyEnforcer.access_scope()` -> `AccessScope{owner_tenant_id IN (T)}`
+///     -> `GroupRepository.list_groups(&conn, &scope, &query)`
+///       -> `SecureORM` `.scope_with(&scope)` -> SQL WHERE `tenant_id` IN ('T')
+///     -> only T's groups returned
 #[tokio::test]
 async fn tenant_isolation_list_groups() {
     let db = test_db().await;
@@ -178,18 +181,9 @@ async fn tenant_isolation_list_groups() {
         .expect("list groups for tenant A");
 
     let ids_a: Vec<Uuid> = page_a.items.iter().map(|g| g.id).collect();
-    assert!(
-        ids_a.contains(&ga1.id),
-        "Tenant A should see group A1"
-    );
-    assert!(
-        ids_a.contains(&ga2.id),
-        "Tenant A should see group A2"
-    );
-    assert!(
-        !ids_a.contains(&gb1.id),
-        "Tenant A must NOT see group B1"
-    );
+    assert!(ids_a.contains(&ga1.id), "Tenant A should see group A1");
+    assert!(ids_a.contains(&ga2.id), "Tenant A should see group A2");
+    assert!(!ids_a.contains(&gb1.id), "Tenant A must NOT see group B1");
     assert_eq!(
         ids_a.len(),
         2,
@@ -203,18 +197,9 @@ async fn tenant_isolation_list_groups() {
         .expect("list groups for tenant B");
 
     let ids_b: Vec<Uuid> = page_b.items.iter().map(|g| g.id).collect();
-    assert!(
-        ids_b.contains(&gb1.id),
-        "Tenant B should see group B1"
-    );
-    assert!(
-        !ids_b.contains(&ga1.id),
-        "Tenant B must NOT see group A1"
-    );
-    assert!(
-        !ids_b.contains(&ga2.id),
-        "Tenant B must NOT see group A2"
-    );
+    assert!(ids_b.contains(&gb1.id), "Tenant B should see group B1");
+    assert!(!ids_b.contains(&ga1.id), "Tenant B must NOT see group A1");
+    assert!(!ids_b.contains(&ga2.id), "Tenant B must NOT see group A2");
     assert_eq!(
         ids_b.len(),
         1,
@@ -222,7 +207,7 @@ async fn tenant_isolation_list_groups() {
     );
 }
 
-/// Full chain: get_group with wrong tenant returns not-found.
+/// Full chain: `get_group` with wrong tenant returns not-found.
 #[tokio::test]
 async fn tenant_isolation_get_group_cross_tenant_invisible() {
     let db = test_db().await;
@@ -271,7 +256,7 @@ async fn tenant_isolation_get_group_cross_tenant_invisible() {
     );
 }
 
-/// Full chain: list_group_hierarchy respects tenant scope.
+/// Full chain: `list_group_hierarchy` respects tenant scope.
 #[tokio::test]
 async fn tenant_isolation_hierarchy_scoped() {
     let db = test_db().await;
@@ -377,7 +362,7 @@ async fn tenant_isolation_hierarchy_scoped() {
     );
 }
 
-/// Full chain: update_group with wrong tenant returns not-found.
+/// Full chain: `update_group` with wrong tenant returns not-found.
 #[tokio::test]
 async fn tenant_isolation_update_cross_tenant_blocked() {
     let db = test_db().await;
@@ -436,7 +421,7 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
     );
 }
 
-/// Full chain: delete_group with wrong tenant returns not-found.
+/// Full chain: `delete_group` with wrong tenant returns not-found.
 #[tokio::test]
 async fn tenant_isolation_delete_cross_tenant_blocked() {
     let db = test_db().await;
@@ -489,14 +474,17 @@ async fn tenant_isolation_delete_cross_tenant_blocked() {
     assert!(own.is_ok(), "Tenant A should still see their group");
 
     let del = group_svc.delete_group(&ctx_a, ga.id, false).await;
-    assert!(del.is_ok(), "Tenant A should be able to delete their own group");
+    assert!(
+        del.is_ok(),
+        "Tenant A should be able to delete their own group"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // Phase 2: Group-based predicate tests (InGroup / InGroupSubtree)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Mock AuthZ that returns tenant scoping + InGroup predicate.
+/// Mock `AuthZ` that returns tenant scoping + `InGroup` predicate.
 /// Simulates S14 scenario: user has access to specific group IDs.
 struct GroupScopingAuthZ {
     /// Groups the subject has access to (injected per test).
@@ -540,7 +528,7 @@ impl AuthZResolverClient for GroupScopingAuthZ {
     }
 }
 
-/// Phase 2 test: InGroup predicate compiles to correct AccessScope
+/// Phase 2 test: `InGroup` predicate compiles to correct `AccessScope`
 /// containing both tenant filter AND group membership filter.
 #[tokio::test]
 async fn group_based_in_group_predicate_produces_combined_scope() {
@@ -583,8 +571,8 @@ async fn group_based_in_group_predicate_produces_combined_scope() {
 /// membership data is correctly stored and accessible.
 ///
 /// This verifies the data layer works with the membership table that
-/// InGroup subqueries reference. The actual subquery SQL execution
-/// is validated by the SecureORM cond.rs unit tests.
+/// `InGroup` subqueries reference. The actual subquery SQL execution
+/// is validated by the `SecureORM` cond.rs unit tests.
 #[tokio::test]
 async fn group_based_membership_data_correctly_stored() {
     let db = test_db().await;
@@ -654,9 +642,8 @@ async fn group_based_membership_data_correctly_stored() {
         .expect("create ProjectB");
 
     // Add memberships via MembershipService
-    let membership_svc = cf_resource_group::domain::membership_service::MembershipService::new(
-        db.clone(),
-    );
+    let membership_svc =
+        cf_resource_group::domain::membership_service::MembershipService::new(db.clone());
 
     // task-001, task-002 → ProjectA
     membership_svc
@@ -692,13 +679,13 @@ async fn group_based_membership_data_correctly_stored() {
     assert!(project_a_members.contains(&"task-002"));
     assert!(!project_a_members.contains(&"task-003"));
 
-    let project_b_members: Vec<&str> = all
+    let members_of_b: Vec<&str> = all
         .items
         .iter()
         .filter(|m| m.group_id == project_b.id)
         .map(|m| m.resource_id.as_str())
         .collect();
 
-    assert!(project_b_members.contains(&"task-003"));
-    assert!(!project_b_members.contains(&"task-001"));
+    assert!(members_of_b.contains(&"task-003"));
+    assert!(!members_of_b.contains(&"task-001"));
 }

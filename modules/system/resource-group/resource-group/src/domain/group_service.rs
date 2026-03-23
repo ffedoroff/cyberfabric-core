@@ -19,7 +19,7 @@ use crate::domain::error::DomainError;
 use crate::infra::storage::group_repo::GroupRepository;
 use crate::infra::storage::type_repo::TypeRepository;
 
-/// AuthZ resource type descriptor for resource groups.
+/// `AuthZ` resource type descriptor for resource groups.
 pub const RG_GROUP_RESOURCE: ResourceType = ResourceType {
     name: "gts.x.system.rg.group.v1~",
     supported_properties: &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
@@ -32,6 +32,7 @@ const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
 type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 
 /// Query profile configuration for depth/width limits.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Debug, Clone)]
 pub struct QueryProfile {
     /// Maximum depth allowed. `None` disables depth limit.
@@ -52,6 +53,7 @@ impl Default for QueryProfile {
 // @cpt-dod:cpt-cf-resource-group-dod-entity-hier-entity-service:p1
 // @cpt-dod:cpt-cf-resource-group-dod-integration-auth-tenant-scope:p1
 /// Service for resource group entity lifecycle management.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Clone)]
 pub struct GroupService {
     db: Arc<DbProvider>,

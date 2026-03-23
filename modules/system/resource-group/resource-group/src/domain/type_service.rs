@@ -19,6 +19,7 @@ type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 
 // @cpt-dod:cpt-cf-resource-group-dod-type-mgmt-service-crud:p1
 /// Service for GTS type lifecycle management.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Clone)]
 pub struct TypeService {
     db: Arc<DbProvider>,

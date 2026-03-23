@@ -104,7 +104,7 @@ pub mod pep_properties {
 
 /// Well-known resource-group table and column names for subquery construction.
 ///
-/// Used by the SecureORM condition builder to translate `InGroup`/`InGroupSubtree`
+/// Used by the `SecureORM` condition builder to translate `InGroup`/`InGroupSubtree`
 /// scope filters into SQL subqueries without depending on entity types.
 pub mod rg_tables {
     /// Membership projection table.

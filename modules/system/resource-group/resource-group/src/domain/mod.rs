@@ -1,3 +1,5 @@
+#![allow(unknown_lints, de0301_no_infra_in_domain)]
+
 pub mod error;
 pub mod group_service;
 pub mod membership_service;

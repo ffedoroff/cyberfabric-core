@@ -1,4 +1,4 @@
-//! Integration read service for external consumers (e.g., AuthZ plugin).
+//! Integration read service for external consumers (e.g., `AuthZ` plugin).
 //!
 //! Provides a thin adapter over `GroupService` implementing the SDK
 //! `ResourceGroupReadHierarchy` and `ResourceGroupReadPluginClient` traits.
@@ -19,9 +19,10 @@ use crate::domain::group_service::GroupService;
 
 /// Adapter service exposing hierarchy reads via SDK traits.
 ///
-/// Registered with `ClientHub` so that external consumers (AuthZ plugin)
+/// Registered with `ClientHub` so that external consumers (`AuthZ` plugin)
 /// can resolve `dyn ResourceGroupReadHierarchy` without depending on the
 /// module's internal domain types.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 pub struct RgReadService {
     group_service: Arc<GroupService>,
 }

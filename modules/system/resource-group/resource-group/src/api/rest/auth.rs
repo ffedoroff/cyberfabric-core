@@ -1,8 +1,8 @@
 // @cpt-dod:cpt-cf-resource-group-dod-integration-auth-dual-auth:p1
 //! Dual authentication mode routing for the resource-group module.
 //!
-//! JWT mode: standard AuthN -> PolicyEnforcer -> AccessScope pipeline.
-//! MTLS mode: hierarchy-only bypass for AuthZ plugin (certificate verification
+//! JWT mode: standard `AuthN` -> `PolicyEnforcer` -> `AccessScope` pipeline.
+//! MTLS mode: hierarchy-only bypass for `AuthZ` plugin (certificate verification
 //! is handled by infrastructure/API gateway).
 
 use std::path::PathBuf;
@@ -29,9 +29,9 @@ pub struct AllowedEndpoint {
 /// Authentication mode determined per-request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthMode {
-    /// Standard JWT authentication with full AuthZ evaluation.
+    /// Standard JWT authentication with full `AuthZ` evaluation.
     Jwt,
-    /// MTLS authentication -- trusted system principal, AuthZ bypassed.
+    /// MTLS authentication -- trusted system principal, `AuthZ` bypassed.
     Mtls,
 }
 
@@ -41,6 +41,7 @@ pub enum AuthMode {
 /// If the request has a valid client certificate header (forwarded by API gateway)
 /// AND the endpoint is in the MTLS allowlist, returns [`AuthMode::Mtls`].
 /// Otherwise returns [`AuthMode::Jwt`].
+#[must_use]
 pub fn determine_auth_mode(
     client_cn: Option<&str>,
     method: &http::Method,
@@ -48,25 +49,18 @@ pub fn determine_auth_mode(
     config: &MtlsConfig,
 ) -> AuthMode {
     // @cpt-flow:cpt-cf-resource-group-flow-integration-auth-mtls-request:p1
-    if let Some(cn) = client_cn {
-        // Check if client is in allowed list
-        if config.allowed_clients.iter().any(|c| c == cn) {
-            // Check if endpoint is in MTLS allowlist
-            if is_endpoint_allowed(method, path, &config.allowed_endpoints) {
-                return AuthMode::Mtls;
-            }
-        }
+    if let Some(cn) = client_cn
+        && config.allowed_clients.iter().any(|c| c == cn)
+        && is_endpoint_allowed(method, path, &config.allowed_endpoints)
+    {
+        return AuthMode::Mtls;
     }
     // @cpt-flow:cpt-cf-resource-group-flow-integration-auth-jwt-request:p1
     AuthMode::Jwt
 }
 
 /// Check if the given method+path matches any allowed endpoint pattern.
-fn is_endpoint_allowed(
-    method: &http::Method,
-    path: &str,
-    endpoints: &[AllowedEndpoint],
-) -> bool {
+fn is_endpoint_allowed(method: &http::Method, path: &str, endpoints: &[AllowedEndpoint]) -> bool {
     endpoints
         .iter()
         .any(|ep| ep.method == *method && path_matches_pattern(path, &ep.path_pattern))
@@ -91,10 +85,10 @@ impl Default for MtlsConfig {
     fn default() -> Self {
         Self {
             ca_cert: PathBuf::from("/etc/ssl/certs/rg-mtls-ca.pem"),
-            allowed_clients: vec!["authz-resolver-plugin".to_string()],
+            allowed_clients: vec!["authz-resolver-plugin".to_owned()],
             allowed_endpoints: vec![AllowedEndpoint {
                 method: http::Method::GET,
-                path_pattern: "/api/resource-group/v1/groups/{group_id}/hierarchy".to_string(),
+                path_pattern: "/api/resource-group/v1/groups/{group_id}/hierarchy".to_owned(),
             }],
         }
     }
@@ -111,7 +105,12 @@ mod tests {
     #[test]
     fn jwt_mode_when_no_client_cn() {
         let config = default_config();
-        let mode = determine_auth_mode(None, &http::Method::GET, "/api/resource-group/v1/groups/123/hierarchy", &config);
+        let mode = determine_auth_mode(
+            None,
+            &http::Method::GET,
+            "/api/resource-group/v1/groups/123/hierarchy",
+            &config,
+        );
         assert_eq!(mode, AuthMode::Jwt);
     }
 
@@ -181,8 +180,8 @@ mod tests {
     fn mtls_mode_with_multiple_allowed_clients() {
         let config = MtlsConfig {
             allowed_clients: vec![
-                "authz-resolver-plugin".to_string(),
-                "billing-service".to_string(),
+                "authz-resolver-plugin".to_owned(),
+                "billing-service".to_owned(),
             ],
             ..MtlsConfig::default()
         };
@@ -204,7 +203,11 @@ mod tests {
             "/api/resource-group/v1/groups/some-uuid/hierarchy",
             &config,
         );
-        assert_eq!(mode, AuthMode::Jwt, "PUT to hierarchy should not be MTLS-allowed");
+        assert_eq!(
+            mode,
+            AuthMode::Jwt,
+            "PUT to hierarchy should not be MTLS-allowed"
+        );
     }
 
     #[test]
@@ -216,7 +219,11 @@ mod tests {
             "/api/resource-group/v1/groups/some-uuid",
             &config,
         );
-        assert_eq!(mode, AuthMode::Jwt, "DELETE to groups should not be MTLS-allowed");
+        assert_eq!(
+            mode,
+            AuthMode::Jwt,
+            "DELETE to groups should not be MTLS-allowed"
+        );
     }
 
     #[test]
@@ -237,11 +244,11 @@ mod tests {
             allowed_endpoints: vec![
                 AllowedEndpoint {
                     method: http::Method::GET,
-                    path_pattern: "/api/resource-group/v1/groups/{group_id}/hierarchy".to_string(),
+                    path_pattern: "/api/resource-group/v1/groups/{group_id}/hierarchy".to_owned(),
                 },
                 AllowedEndpoint {
                     method: http::Method::GET,
-                    path_pattern: "/api/resource-group/v1/types".to_string(),
+                    path_pattern: "/api/resource-group/v1/types".to_owned(),
                 },
             ],
             ..MtlsConfig::default()

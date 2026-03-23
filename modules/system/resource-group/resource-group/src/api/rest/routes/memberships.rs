@@ -79,7 +79,10 @@ pub(super) fn register_membership_routes(
     .path_param("resource_type", "GTS type path of the resource type")
     .path_param("resource_id", "Resource identifier")
     .handler(handlers::remove_membership)
-    .json_response(http::StatusCode::NO_CONTENT, "Membership removed successfully")
+    .json_response(
+        http::StatusCode::NO_CONTENT,
+        "Membership removed successfully",
+    )
     .error_404(openapi)
     .error_500(openapi)
     .register(router, openapi);

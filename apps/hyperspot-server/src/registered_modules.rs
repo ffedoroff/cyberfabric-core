@@ -13,12 +13,12 @@ use file_parser as _;
 use grpc_hub as _;
 use module_orchestrator as _;
 use nodes_registry as _;
+use resource_group as _;
 #[cfg(not(feature = "oop-example"))]
 use simple_user_settings as _;
 use tenant_resolver as _;
 use types as _;
 use types_registry as _;
-use resource_group as _;
 
 #[cfg(feature = "single-tenant")]
 use single_tenant_tr_plugin as _;

@@ -1,9 +1,9 @@
-//! Integration tests: AccessScope tenant scoping for resource-group queries.
+//! Integration tests: `AccessScope` tenant scoping for resource-group queries.
 //!
-//! Verifies that `AccessScope` constructed from AuthZ decisions correctly
-//! represents tenant isolation — the building block for SecureORM filtering.
+//! Verifies that `AccessScope` constructed from `AuthZ` decisions correctly
+//! represents tenant isolation -- the building block for `SecureORM` filtering.
 //! These tests validate the scope shape without a database; the full
-//! SecureORM → SQL path is covered by E2E tests.
+//! `SecureORM` -> SQL path is covered by E2E tests.
 
 use uuid::Uuid;
 
@@ -12,7 +12,7 @@ use modkit_security::{AccessScope, pep_properties};
 // ── AccessScope construction from tenant context ────────────────────────
 
 /// `AccessScope::for_tenant()` produces a scope that contains exactly
-/// the given tenant_id under `owner_tenant_id`.
+/// the given `tenant_id` under `owner_tenant_id`.
 #[test]
 fn for_tenant_contains_tenant_id() {
     let tid = Uuid::now_v7();
@@ -88,7 +88,7 @@ fn tenant_only_preserves_tenant_filter() {
     assert!(scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tid));
 }
 
-/// `tenant_only()` on an `allow_all` scope becomes deny_all (fail-closed).
+/// `tenant_only()` on an `allow_all` scope becomes `deny_all` (fail-closed).
 /// This is by design: unconstrained scopes have no tenant filters to retain.
 #[test]
 fn tenant_only_on_allow_all_becomes_deny_all() {
@@ -116,7 +116,7 @@ fn separate_tenant_scopes_are_isolated() {
     assert!(!scope_b.contains_uuid(pep_properties::OWNER_TENANT_ID, tid_a));
 }
 
-/// for_resource creates a scope on the `id` property, not `owner_tenant_id`.
+/// `for_resource` creates a scope on the `id` property, not `owner_tenant_id`.
 #[test]
 fn for_resource_scopes_by_id_not_tenant() {
     let resource_id = Uuid::now_v7();

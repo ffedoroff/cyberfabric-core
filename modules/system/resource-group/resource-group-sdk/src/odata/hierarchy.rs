@@ -26,8 +26,7 @@ impl FilterField for HierarchyFilterField {
 
     fn kind(&self) -> FieldKind {
         match self {
-            Self::HierarchyDepth => FieldKind::I64,
-            Self::Type => FieldKind::I64,
+            Self::HierarchyDepth | Self::Type => FieldKind::I64,
         }
     }
 }

@@ -3,7 +3,7 @@
 //! All surrogate SMALLINT ID resolution happens here. The domain and API layers
 //! work exclusively with string GTS type paths and UUIDs.
 
-use modkit_db::odata::{paginate_odata, LimitCfg};
+use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt};
 use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
@@ -46,14 +46,7 @@ impl MembershipRepository {
         let scope = system_scope();
         let base_query = MembershipEntity::find().secure().scope_with(&scope);
 
-        let page = paginate_odata::<
-            MembershipFilterField,
-            MembershipODataMapper,
-            _,
-            _,
-            _,
-            _,
-        >(
+        let page = paginate_odata::<MembershipFilterField, MembershipODataMapper, _, _, _, _>(
             base_query,
             db,
             query,

@@ -24,6 +24,7 @@ use crate::domain::type_service::TypeService;
     deps = [],
     capabilities = [db, rest]
 )]
+#[allow(clippy::struct_field_names)]
 pub struct ResourceGroup {
     type_service: OnceLock<Arc<TypeService>>,
     group_service: OnceLock<Arc<GroupService>>,
@@ -75,11 +76,22 @@ impl Module for ResourceGroup {
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
         // Phase 1 (SystemCapability): register SDK clients in ClientHub
-        let type_svc = self.type_service.get().expect("just set").clone();
-        let group_svc = self.group_service.get().expect("just set").clone();
+        let type_svc = self
+            .type_service
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("{} type_service not initialized", Self::MODULE_NAME))?
+            .clone();
+        let group_svc = self
+            .group_service
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("{} group_service not initialized", Self::MODULE_NAME))?
+            .clone();
 
-        let rg_client: Arc<dyn ResourceGroupClient> =
-            Arc::new(RgService::new(type_svc, group_svc.clone(), membership_service));
+        let rg_client: Arc<dyn ResourceGroupClient> = Arc::new(RgService::new(
+            type_svc,
+            group_svc.clone(),
+            membership_service,
+        ));
         ctx.client_hub()
             .register::<dyn ResourceGroupClient>(rg_client);
 
@@ -88,7 +100,9 @@ impl Module for ResourceGroup {
         ctx.client_hub()
             .register::<dyn ResourceGroupReadHierarchy>(read_client);
 
-        info!("Resource Group module initialized (ClientHub: ResourceGroupClient + ResourceGroupReadHierarchy)");
+        info!(
+            "Resource Group module initialized (ClientHub: ResourceGroupClient + ResourceGroupReadHierarchy)"
+        );
         Ok(())
     }
 }
@@ -128,7 +142,13 @@ impl RestApiCapability for ResourceGroup {
             .ok_or_else(|| anyhow::anyhow!("MembershipService not initialized"))?
             .clone();
 
-        let router = routes::register_routes(router, openapi, type_service, group_service, membership_service);
+        let router = routes::register_routes(
+            router,
+            openapi,
+            type_service,
+            group_service,
+            membership_service,
+        );
 
         info!("Resource Group REST routes registered successfully");
         Ok(router)

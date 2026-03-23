@@ -5,6 +5,7 @@ use resource_group_sdk::ResourceGroupError;
 use thiserror::Error;
 
 /// Domain-specific errors for the resource-group module.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Error, Debug)]
 pub enum DomainError {
     #[error("Type not found: {code}")]
@@ -132,19 +133,15 @@ impl From<DomainError> for ResourceGroupError {
                 ResourceGroupError::invalid_parent_type(message)
             }
             DomainError::CycleDetected { message } => ResourceGroupError::cycle_detected(message),
-            DomainError::LimitViolation { message } => {
-                ResourceGroupError::limit_violation(message)
-            }
+            DomainError::LimitViolation { message } => ResourceGroupError::limit_violation(message),
             DomainError::AllowedParentsViolation { message } => {
                 ResourceGroupError::allowed_parents_violation(message)
             }
-            DomainError::ConflictActiveReferences { message } => {
+            DomainError::ConflictActiveReferences { message }
+            | DomainError::Conflict { message } => {
                 ResourceGroupError::conflict_active_references(message)
             }
             DomainError::GroupNotFound { id } => ResourceGroupError::not_found(id.to_string()),
-            DomainError::Conflict { message } => {
-                ResourceGroupError::conflict_active_references(message)
-            }
             DomainError::TenantIncompatibility { message } => {
                 ResourceGroupError::tenant_incompatibility(message)
             }

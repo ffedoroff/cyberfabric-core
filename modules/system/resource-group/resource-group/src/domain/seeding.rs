@@ -4,7 +4,7 @@
 //! the entity already exists, create if missing, update if the definition
 //! differs, and skip if unchanged. Repeated runs produce the same result.
 
-use resource_group_sdk::models::{CreateTypeRequest, UpdateTypeRequest, CreateGroupRequest};
+use resource_group_sdk::models::{CreateGroupRequest, CreateTypeRequest, UpdateTypeRequest};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
@@ -12,6 +12,7 @@ use crate::domain::group_service::GroupService;
 use crate::domain::type_service::TypeService;
 
 /// Seed result tracking.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Debug, Default)]
 pub struct SeedResult {
     /// Number of entities created during this seed run.
@@ -64,6 +65,7 @@ pub async fn seed_types(
 }
 
 /// Group seed definition with stable identity.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Debug, Clone)]
 pub struct GroupSeedDef {
     /// Stable identifier for the seeded group.
@@ -118,6 +120,7 @@ pub async fn seed_groups(
 }
 
 /// Membership seed definition.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Debug, Clone)]
 pub struct MembershipSeedDef {
     /// Target group to add the resource to.

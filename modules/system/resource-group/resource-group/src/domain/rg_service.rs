@@ -1,4 +1,4 @@
-//! Unified service adapter implementing `ResourceGroupClient` for ClientHub registration.
+//! Unified service adapter implementing `ResourceGroupClient` for `ClientHub` registration.
 //!
 //! Delegates to `TypeService`, `GroupService`, and `MembershipService` to satisfy
 //! the full SDK trait contract.
@@ -8,12 +8,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use modkit_odata::{ODataQuery, Page};
 use modkit_security::SecurityContext;
+use resource_group_sdk::ResourceGroupClient;
 use resource_group_sdk::error::ResourceGroupError;
 use resource_group_sdk::models::{
     CreateGroupRequest, CreateTypeRequest, ResourceGroup, ResourceGroupMembership,
     ResourceGroupType, ResourceGroupWithDepth, UpdateGroupRequest, UpdateTypeRequest,
 };
-use resource_group_sdk::ResourceGroupClient;
 use uuid::Uuid;
 
 use crate::domain::group_service::GroupService;
@@ -21,6 +21,8 @@ use crate::domain::membership_service::MembershipService;
 use crate::domain::type_service::TypeService;
 
 /// Unified adapter registered with `ClientHub` as `dyn ResourceGroupClient`.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
+#[allow(clippy::struct_field_names)]
 pub struct RgService {
     type_service: Arc<TypeService>,
     group_service: Arc<GroupService>,

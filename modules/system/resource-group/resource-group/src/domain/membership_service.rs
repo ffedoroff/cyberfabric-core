@@ -23,6 +23,7 @@ type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 // @cpt-dod:cpt-cf-resource-group-dod-membership-service:p1
 
 /// Service for resource group membership lifecycle management.
+#[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Clone)]
 pub struct MembershipService {
     db: Arc<DbProvider>,
@@ -44,7 +45,7 @@ impl MembershipService {
     // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-mbr-add-1
     /// Add a membership link between a resource and a group.
     ///
-    /// Validates group existence, resource_type registration, allowed_memberships
+    /// Validates group existence, `resource_type` registration, `allowed_memberships`
     /// compatibility, and tenant scope before inserting the membership row.
     pub async fn add_membership(
         &self,
@@ -65,7 +66,9 @@ impl MembershipService {
         // Resolve the GTS type path to a surrogate SMALLINT ID
         let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
             .await?
-            .ok_or_else(|| DomainError::validation(format!("Unknown resource type: {resource_type}")))?;
+            .ok_or_else(|| {
+                DomainError::validation(format!("Unknown resource type: {resource_type}"))
+            })?;
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
@@ -74,7 +77,11 @@ impl MembershipService {
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-8
-        if !allowed.allowed_memberships.iter().any(|m| m == resource_type) {
+        if !allowed
+            .allowed_memberships
+            .iter()
+            .any(|m| m == resource_type)
+        {
             return Err(DomainError::validation(format!(
                 "Resource type '{resource_type}' is not in allowed_memberships for group type '{}'",
                 allowed.code
@@ -93,9 +100,7 @@ impl MembershipService {
         // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
 
         // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-4
-        if !existing_tenants.is_empty()
-            && !existing_tenants.contains(&group_model.tenant_id)
-        {
+        if !existing_tenants.is_empty() && !existing_tenants.contains(&group_model.tenant_id) {
             return Err(DomainError::tenant_incompatibility(format!(
                 "Resource ({resource_type}, {resource_id}) is already linked in tenant {:?}, cannot add to tenant {}",
                 existing_tenants, group_model.tenant_id
@@ -132,7 +137,9 @@ impl MembershipService {
         // Resolve the GTS type path to a surrogate SMALLINT ID
         let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
             .await?
-            .ok_or_else(|| DomainError::validation(format!("Unknown resource type: {resource_type}")))?;
+            .ok_or_else(|| {
+                DomainError::validation(format!("Unknown resource type: {resource_type}"))
+            })?;
 
         // Verify the membership exists
         MembershipRepository::find_by_composite_key(&conn, group_id, gts_type_id, resource_id)
@@ -150,7 +157,7 @@ impl MembershipService {
     // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-mbr-remove-1
 
     // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-mbr-list-1
-    /// List memberships with OData filtering and pagination.
+    /// List memberships with `OData` filtering and pagination.
     pub async fn list_memberships(
         &self,
         query: &ODataQuery,

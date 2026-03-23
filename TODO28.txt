@@ -1,0 +1,394 @@
+# Resource Group -- Analysis TODO (28 items)
+
+> Generated: 2026-03-23
+> Source: /cypilot-analyze plan (6 phases)
+> Scope: DESIGN.md + PRD.md + codebase (~7500 LOC, 50+ files)
+
+## Legend
+- **Priority**: CRITICAL > HIGH > MEDIUM > LOW
+- **Type**: design | code | test | docs
+- **Status**: [ ] pending | [x] resolved
+
+---
+
+## CRITICAL (1)
+
+### TODO-01: Create ADR-001-gts-type-system.md
+- **Priority**: CRITICAL
+- **Type**: design
+- **Checklist ID**: SEM-DESIGN-003
+- **Status**: [x] resolved
+- **References**:
+  - `modules/system/resource-group/docs/DESIGN.md:131` -- ADR reference "GTS Type System for Resource Group"
+  - `modules/system/resource-group/docs/DESIGN.md:179` -- ADR reference for Dynamic Type Governance principle
+  - `modules/system/resource-group/docs/DESIGN.md:260` -- ADR reference for surrogate ID decision
+  - `modules/system/resource-group/docs/PRD.md:483` -- ADR reference for closure table pattern
+  - `modules/system/resource-group/docs/ADR/ADR-001-gts-type-system.md` -- file now exists (31 KB)
+- **Issue**: DESIGN.md and PRD.md reference ADR `cpt-cf-resource-group-adr-p1-gts-type-system` with link to `ADR/ADR-001-gts-type-system.md`. At the time of analysis the file and directory did not exist, breaking traceability for critical architectural decisions: GTS chained type paths, SMALLINT surrogate keys, junction tables, barrier semantics.
+- **Resolution**: The ADR file has been created at `modules/system/resource-group/docs/ADR/ADR-001-gts-type-system.md`. Verify it documents: (1) GTS chained type paths as identity model, (2) SMALLINT surrogate keys internally / GTS path strings externally, (3) junction tables for allowed_parents/memberships, (4) barrier as metadata, (5) alternatives considered, (6) consequences.
+
+---
+
+## HIGH (7)
+
+### TODO-02: Add PolicyEnforcer to TypeService
+- **Priority**: HIGH
+- **Type**: code
+- **Checklist ID**: SEC-CODE-002
+- **Status**: [x] resolved
+- **References**:
+  - `resource-group/src/domain/type_service.rs:23-25` -- `TypeService` struct has only `db: Arc<DbProvider>`, no `PolicyEnforcer`
+  - `resource-group/src/domain/type_service.rs:36-39` -- `create_type` accepts only `req`, no `SecurityContext`
+  - `resource-group/src/api/rest/handlers/types.rs:22` -- handler extracts `Extension(_ctx): Extension<SecurityContext>` but `_ctx` is unused
+  - `resource-group/src/domain/group_service.rs:56-60` -- contrast: `GroupService` has `enforcer: PolicyEnforcer`
+  - `docs/DESIGN.md:1223-1227` -- AuthZ permission table specifies all 5 type operations under JWT mode
+- **Issue**: `TypeService` has no `PolicyEnforcer` integration. All type CRUD operations (create, update, delete, list, get) execute without AuthZ evaluation. The DESIGN specifies AuthZ enforcement for all type endpoints under JWT mode: `list`, `create`, `read`, `update`, `delete` on `gts.x.core.rg.type.v1~`. Without PolicyEnforcer, any authenticated user can create, modify, or delete type definitions regardless of their authorization level.
+- **Proposal**: Add `PolicyEnforcer` to `TypeService`, define a `RG_TYPE_RESOURCE: ResourceType` constant, and call `enforcer.access_scope()` in each service method. Pass `SecurityContext` from handlers (remove `_ctx` prefix).
+
+### TODO-03: Add PolicyEnforcer to MembershipService
+- **Priority**: HIGH
+- **Type**: code
+- **Checklist ID**: SEC-CODE-002
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/membership_service.rs:27-29` -- `MembershipService` struct has only `db: Arc<DbProvider>`, no `PolicyEnforcer`
+  - `resource-group/src/domain/membership_service.rs:49-53` -- `add_membership` has no `SecurityContext` parameter
+  - `resource-group/src/api/rest/handlers/memberships.rs:31` -- handler extracts `Extension(_ctx): Extension<SecurityContext>` but unused
+  - `resource-group/src/api/rest/handlers/memberships.rs:54` -- `add_membership` handler also ignores `_ctx`
+  - `docs/DESIGN.md:1235-1237` -- AuthZ permission table: `list`, `create`, `delete` on `gts.x.core.rg.group_membership.v1~`
+- **Issue**: `MembershipService` has no `PolicyEnforcer` integration. All membership operations (add, remove, list) execute without AuthZ evaluation. The DESIGN specifies AuthZ enforcement for membership endpoints under JWT mode. Without AuthZ on memberships, any authenticated user can link/unlink resources to groups, enabling potential privilege escalation.
+- **Proposal**: Add `PolicyEnforcer` to `MembershipService`, define a membership `ResourceType` constant, and call `enforcer.access_scope()` in each method. Pass `SecurityContext` from handlers.
+
+### TODO-04: Wrap hierarchy mutations in SERIALIZABLE transactions
+- **Priority**: HIGH
+- **Type**: code
+- **Checklist ID**: PERF-CODE-002 / Design alignment
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs:84` -- `let conn = self.db.conn()?;` in `create_group` with no transaction wrapping
+  - `resource-group/src/domain/group_service.rs:247` -- `let conn = self.db.conn()?;` in `update_group` with no transaction
+  - `resource-group/src/domain/group_service.rs:343` -- `let conn = self.db.conn()?;` in `move_group` with no transaction
+  - `resource-group/src/domain/group_service.rs:389` -- `let conn = self.db.conn()?;` in `delete_group` with no transaction
+  - `docs/DESIGN.md:711-713` -- "authoritative invariant checks MUST run inside the same write transaction that applies closure/entity mutations" and "write transactions MUST use SERIALIZABLE isolation"
+- **Issue**: No explicit transaction boundaries for hierarchy mutations. DESIGN requires SERIALIZABLE isolation for create/move/delete group operations to prevent phantom reads and ensure closure table consistency. Each mutating method calls `self.db.conn()?` and executes multiple sequential queries (resolve type, validate parent, insert group, insert closure rows) without transaction wrapping. Concurrent create/move operations can create inconsistent closure tables or cycles.
+- **Proposal**: Wrap each hierarchy-mutating operation (create_group, update_group with parent change, delete_group, move_group) in a SERIALIZABLE transaction. Use `conn.begin()` or the framework transaction API. Add bounded retry (max 3) for serialization conflicts per DESIGN specification.
+
+### TODO-05: Connect RgReadService::list_memberships to MembershipService
+- **Priority**: HIGH
+- **Type**: code
+- **Checklist ID**: ENG-CODE-009
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/read_service.rs:54-71` -- `list_memberships` returns hardcoded empty page with stale comment "Membership service is not yet implemented"
+  - `resource-group/src/domain/read_service.rs:25-27` -- `RgReadService` struct only contains `group_service: Arc<GroupService>`, no `MembershipService`
+  - `resource-group/src/domain/membership_service.rs:154-160` -- `MembershipService::list_memberships` is fully implemented
+  - `resource-group/src/domain/rg_service.rs` -- `RgService` (the other adapter) already delegates to `MembershipService` correctly
+- **Issue**: `RgReadService::list_memberships` returns a hardcoded empty page with a misleading comment "Membership service is not yet implemented" when `MembershipService` already fully exists and is operational. Any AuthZ plugin using `ResourceGroupReadPluginClient::list_memberships` will get empty results, silently breaking membership-based policy decisions.
+- **Proposal**: Inject `Arc<MembershipService>` into `RgReadService` and delegate `list_memberships` to it, mirroring how `RgService` already does it. Update `module.rs` to pass `MembershipService` to `RgReadService::new()`.
+
+### TODO-06: Write domain layer unit tests
+- **Priority**: HIGH
+- **Type**: test
+- **Checklist ID**: TEST-CODE-001
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs` -- zero `#[cfg(test)]` or `#[test]` attributes
+  - `resource-group/src/domain/type_service.rs` -- zero test attributes
+  - `resource-group/src/domain/membership_service.rs` -- zero test attributes
+  - `resource-group/src/api/rest/auth.rs` -- contrast: has 12 unit tests
+  - `docs/DESIGN.md` Section 4.2 Level 1 -- specifies 15+ unit test scenarios with mock repositories
+- **Issue**: Domain layer has zero unit tests. DESIGN specifies 15+ unit test scenarios (type validation, cycle detection, depth/width limits, error mapping, etc.) with mock repositories. Domain layer contains critical business logic: cycle detection, type validation, parent compatibility checks, depth/width enforcement, error mapping. Without unit tests, regressions in these invariants go undetected. Integration tests cover tenant isolation but not domain rules.
+- **Proposal**: Implement unit tests per DESIGN Level 1. Create mock repositories in `test_support.rs`. Priority scenarios: cycle detection, parent type compatibility, depth/width limits, type-update-vs-hierarchy validation, error variant mapping.
+
+### TODO-07: Create openapi.yaml
+- **Priority**: HIGH
+- **Type**: docs
+- **Checklist ID**: SEM-DESIGN-004
+- **Status**: [x] resolved
+- **References**:
+  - `docs/DESIGN.md:619` -- "see openapi.yaml for full request/response examples with realistic data"
+  - `modules/system/resource-group/docs/openapi.yaml` -- file now exists (52.6 KB, OpenAPI 3.1.0)
+  - `docs/DESIGN.md:467-482` -- endpoint table documenting all 14 REST operations
+- **Issue**: At the time of analysis, the openapi.yaml file referenced at DESIGN.md line 619 did not exist. The machine-readable OpenAPI specification was missing, meaning there was no single authoritative source for request/response schemas.
+- **Resolution**: The file has been created at `modules/system/resource-group/docs/openapi.yaml`. Verify it covers all 14 endpoints from the DESIGN endpoint table and includes realistic request/response examples.
+
+### TODO-08: Add AuthZ check to create_group
+- **Priority**: HIGH
+- **Type**: code
+- **Checklist ID**: SEC-CODE-002
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs:76-80` -- `create_group` accepts `(req, tenant_id)` but no `SecurityContext`, never calls `enforcer.access_scope()`
+  - `resource-group/src/domain/group_service.rs:198-212` -- contrast: `get_group` calls `self.enforcer.access_scope(ctx, &RG_GROUP_RESOURCE, "get", ...)`
+  - `resource-group/src/api/rest/handlers/groups.rs:49-63` -- handler derives `tenant_id` from `ctx.subject_tenant_id()` but does not pass `ctx` to service for AuthZ
+  - `docs/DESIGN.md:1229` -- AuthZ permission table: `create` action on `gts.x.core.rg.group.v1~`
+- **Issue**: `GroupService::create_group` does not perform AuthZ check via `PolicyEnforcer` before creating a group. Compare with `get_group`, `list_groups`, `update_group`, `delete_group`, `list_group_hierarchy` which all call the enforcer. The DESIGN specifies AuthZ enforcement for `createGroup`. Without an access_scope check, any authenticated user can create groups regardless of policy.
+- **Proposal**: Add `ctx: &SecurityContext` parameter to `create_group`, call `self.enforcer.access_scope(ctx, &RG_GROUP_RESOURCE, "create", None)` before proceeding with validation and persistence.
+
+---
+
+## MEDIUM (12)
+
+### TODO-09: Document horizontal scaling for app tier
+- **Priority**: MEDIUM
+- **Type**: design
+- **Checklist ID**: PERF-DESIGN-004
+- **Status**: [ ] pending
+- **References**:
+  - `docs/DESIGN.md:1191` -- "vertical scaling of the database instance is the primary strategy. Horizontal read replicas can be added for read-heavy AuthZ query paths."
+  - `docs/DESIGN.md:1247` -- "RG is a stateless service layer" (statelessness noted but horizontal scaling not documented)
+- **Issue**: Horizontal scaling strategy for the application tier is not documented. The document covers database vertical scaling and read replicas but does not describe how multiple RG service instances are load-balanced or how the stateless application tier scales horizontally. For a service handling AuthZ hierarchy resolution for 1.5M tenants and 303.5M users, the application-tier scaling approach is important.
+- **Proposal**: Add a brief section under Performance Architecture covering: (1) application-tier horizontal scaling (multiple RG service instances behind platform load balancer), (2) stateless design enabling horizontal scaling without session affinity, (3) approximate vertical scaling limits for the database tier before horizontal sharding is needed.
+
+### TODO-10: Fix N+1 in resolve_type_path
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: PERF-CODE-001
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/infra/storage/group_repo.rs:117-121` -- `for model in page.items { let type_path = Self::resolve_type_path(db, model.gts_type_id).await?; }` in `list_groups`
+  - `resource-group/src/infra/storage/group_repo.rs:314-315` -- same N+1 pattern in `list_hierarchy`
+  - `resource-group/src/infra/storage/membership_repo.rs:69-70` -- same N+1 pattern in `list_memberships`
+  - `resource-group/src/infra/storage/group_repo.rs:730-740` -- `resolve_type_path` issues a separate SELECT per call
+- **Issue**: N+1 query pattern in `resolve_type_path` -- called once per row inside `list_groups`, `list_hierarchy`, and `list_memberships` loops. For a page of 200 groups, this produces 200 additional SELECT queries against `gts_type`. The `gts_type` table is small (typically <100 rows), so the impact is latency rather than data volume, but it degrades p95 latency.
+- **Proposal**: Batch-resolve all distinct `gts_type_id` values from the page in a single `WHERE id IN (...)` query, then use a `HashMap<i16, String>` lookup for mapping. Alternatively, use a SeaORM JOIN to include `gts_type.schema_id` in the original paginated query.
+
+### TODO-11: Fix N+1 in find_groups_using_parent_type
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: PERF-CODE-001
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/infra/storage/type_repo.rs:378-392` -- inner loop: `for group in groups { if let Some(parent_id) = group.parent_id { let parent = ResourceGroupEntity::find()...one(db).await?; } }`
+  - `resource-group/src/infra/storage/type_repo.rs:363-396` -- full `find_groups_using_parent_type` method
+- **Issue**: `find_groups_using_parent_type` has an inner N+1 query loop -- for each group of child_type, it individually queries the parent group. When validating type update constraints, if there are many groups of the child type, each triggers a separate DB query. For production scale (5M groups), this could be catastrophic during type updates.
+- **Proposal**: Use a single JOIN query: `SELECT rg.id, rg.name FROM resource_group rg JOIN resource_group p ON rg.parent_id = p.id WHERE rg.gts_type_id = ? AND p.gts_type_id = ?`.
+
+### TODO-12: Implement DB-level pagination for list_hierarchy
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: PERF-CODE-002
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/infra/storage/group_repo.rs:245-260` -- fetches ALL ancestor_rows and descendant_rows without limit
+  - `resource-group/src/infra/storage/group_repo.rs:293-299` -- loads ALL referenced groups into memory
+  - `resource-group/src/infra/storage/group_repo.rs:345` -- applies `.take(limit_usize)` in Rust after loading everything
+- **Issue**: `list_hierarchy` loads ALL closure rows and ALL group models into memory before applying pagination. No DB-level LIMIT/OFFSET. For a group with a large subtree (thousands of descendants), this loads all data into memory regardless of the requested page size. With `max_depth=10` and wide trees, subtrees can contain thousands of nodes.
+- **Proposal**: Implement DB-level pagination for hierarchy queries. Consider two separate paginated queries (ancestors with negative depth, descendants with positive depth) with DB-level LIMIT, or use a SQL UNION with LIMIT/OFFSET.
+
+### TODO-13: Batch operations for rebuild_subtree_closure
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: PERF-CODE-002
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/infra/storage/group_repo.rs:647-668` -- inner loop: for each descendant, queries all ancestor rows, then deletes each non-subtree ancestor individually
+  - `resource-group/src/infra/storage/group_repo.rs:682-695` -- nested loop: for each ancestor x each subtree node, issues individual INSERT
+  - `resource-group/src/infra/storage/group_repo.rs:624-698` -- full `rebuild_subtree_closure` method
+- **Issue**: `rebuild_subtree_closure` issues individual DELETE and INSERT queries per closure row rather than batch operations. For a subtree of N nodes at depth D, this generates O(N*D) individual queries. With `max_depth=10` and a subtree of 100 nodes, this is approximately 1000 individual SQL statements. DESIGN acknowledges O(N*D) write amplification but assumes single SQL operations.
+- **Proposal**: Use batch DELETE with `WHERE descendant_id IN (...) AND ancestor_id NOT IN (...)` and batch INSERT via `insert_many` for closure rows.
+
+### TODO-14: Extract shared validate_type_code + RG_TYPE_PREFIX
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: ENG-CODE-007
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs:29` -- `const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";`
+  - `resource-group/src/domain/type_service.rs:15` -- same constant defined independently
+  - `resource-group/src/domain/group_service.rs:628-638` -- `validate_type_code` checks empty + prefix only, no length check
+  - `resource-group/src/domain/type_service.rs:189-204` -- `validate_type_code` additionally checks `code.len() > 1024`
+- **Issue**: `RG_TYPE_PREFIX` constant and `validate_type_code` function are duplicated between `group_service.rs` and `type_service.rs`. The implementations already differ: `TypeService` checks `code.len() > 1024` while `GroupService` does not. A group can be created with an arbitrarily long type path that would be rejected by the type service.
+- **Proposal**: Extract `RG_TYPE_PREFIX` and a shared `validate_type_code` function into a common domain validation module (e.g., `domain/validation.rs`) and import from both services. Ensure the length check is applied consistently.
+
+### TODO-15: Implement pagination in list_types
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: ENG-CODE-002 / Design alignment
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/api/rest/handlers/types.rs:25` -- returns `ApiResult<Json<Vec<TypeDto>>>` instead of `Page<TypeDto>`
+  - `resource-group/src/api/rest/handlers/types.rs:24` -- `OData(_query): OData` with underscore prefix, query is ignored
+  - `resource-group/src/domain/type_service.rs:94` -- `list_types` returns `Vec<ResourceGroupType>` without pagination
+  - `resource-group-sdk/src/api.rs:42-45` -- SDK trait: `async fn list_types(&self, ctx: &SecurityContext) -> Result<Vec<ResourceGroupType>, ...>`
+  - `resource-group/src/api/rest/routes/types.rs:12-35` -- route declares OData filter support and cursor/limit params, but handler ignores them
+  - `docs/DESIGN.md:469` -- DESIGN table says `listTypes` lists "types with OData query"
+- **Issue**: `list_types` handler returns `Vec<TypeDto>` instead of `Page<TypeDto>`, inconsistent with all other list endpoints and the DESIGN contract. The route accepts `OData` query but the parameter is ignored (named `_query`). Clients sending `limit`, `cursor`, or `$filter` parameters will have them silently ignored. The endpoint does not paginate, which could return unbounded results.
+- **Proposal**: Update `TypeService::list_types` to accept an `ODataQuery` parameter and return `Page<ResourceGroupType>`. Update handler and route accordingly. Note: types table is expected to remain small (<100 rows), so practical impact is limited but the API contract deviation should be fixed.
+
+### TODO-16: Add repository trait abstraction
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: QUAL-CODE-003
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs` -- calls `GroupRepository::find_model_by_id(&conn, ...)`, `TypeRepository::resolve_id(&conn, ...)` as static methods throughout
+  - `resource-group/src/domain/type_service.rs` -- calls `TypeRepository::find_by_code(&conn, ...)` as static methods
+  - `resource-group/src/domain/membership_service.rs` -- calls `MembershipRepository::insert(&conn, ...)` as static methods
+- **Issue**: Domain services use static repository methods, making unit testing impossible without a database. All domain service tests require a running database (integration tests). Pure business logic (validation, cycle detection, type compatibility) cannot be tested in isolation. This increases test setup complexity and execution time.
+- **Proposal**: Introduce repository traits (e.g., `trait TypeRepo { async fn find_by_code(...) }`) that are injected into services, allowing mock implementations for unit tests. This is a larger architectural change and should be weighed against current integration test coverage. Consider as a prerequisite for TODO-06.
+
+### TODO-17: Write API-level tests (Router::oneshot)
+- **Priority**: MEDIUM
+- **Type**: test
+- **Checklist ID**: TEST-CODE-003
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/tests/authz_integration_test.rs` -- tests AuthZ scoping, not REST endpoints
+  - `resource-group/tests/tenant_filtering_db_test.rs` -- tests tenant isolation at DB level
+  - `resource-group/tests/tenant_scoping_test.rs` -- tests AccessScope construction
+  - `docs/DESIGN.md` Section 4.2 Level 3 -- specifies 25+ API test scenarios
+- **Issue**: No API-level tests exist. DESIGN Level 3 specifies 25+ API test scenarios covering REST shapes, OData filter parsing, auth modes, error formats (RFC 9457). Without them, HTTP-level regressions (wrong status codes, malformed responses, OData parse failures) are undetected.
+- **Proposal**: Implement API tests using `Router::oneshot` pattern per DESIGN. Priority: CRUD happy paths, OData filter validation, error response format (RFC 9457 Problem Details).
+
+### TODO-18: Document health check endpoints
+- **Priority**: MEDIUM
+- **Type**: design
+- **Checklist ID**: OPS-DESIGN-002
+- **Status**: [ ] pending
+- **References**:
+  - `docs/DESIGN.md:1262-1269` -- Observability section documents logging, metrics, alerting but omits health check endpoints
+  - `docs/DESIGN.md:1247` -- delegates OPS to platform defaults but does not mention health checks
+- **Issue**: Health check endpoints are not explicitly documented. While the observability section covers logging, metrics, and alerting, there is no mention of a health check or readiness/liveness probe endpoint for RG. In containerized deployments, health check endpoints are critical for orchestration.
+- **Proposal**: Add a brief note under Observability stating whether RG exposes a health check endpoint (e.g., `GET /health` or platform-standard path) and whether it includes database connectivity checks. If delegated to platform, state that explicitly.
+
+### TODO-19: Fix remove_membership error variant
+- **Priority**: MEDIUM
+- **Type**: code
+- **Checklist ID**: ERR-CODE-001
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/membership_service.rs:140-144` -- uses `DomainError::type_not_found(...)` for a missing membership
+  - `resource-group/src/api/rest/error.rs:12-15` -- `DomainError::TypeNotFound` maps to HTTP 404 with title "Type not found" and detail "GTS type with code '...' was not found"
+  - `resource-group/src/domain/error.rs:10-11` -- `TypeNotFound { code: String }` variant definition
+- **Issue**: `MembershipService::remove_membership` uses `DomainError::type_not_found` for a missing membership, which is semantically incorrect. This maps to HTTP 404 with title "Type not found" and detail "GTS type with code 'Membership (group_id, resource_type, resource_id)' was not found". The error message references a "type" when the actual missing entity is a membership.
+- **Proposal**: Use `DomainError::GroupNotFound` or introduce a `MembershipNotFound` variant for accurate error messaging. A generic `not_found` helper that takes an entity kind would also work.
+
+### TODO-20: Add test scenario ID traceability
+- **Priority**: MEDIUM
+- **Type**: test
+- **Checklist ID**: TEST-CODE-003
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/tests/authz_integration_test.rs` -- no `// @cpt-` markers or scenario ID references
+  - `resource-group/tests/tenant_filtering_db_test.rs` -- no scenario ID references
+  - `resource-group/tests/tenant_scoping_test.rs` -- no scenario ID references
+  - `docs/DESIGN.md` Section 4.2 -- specifies test-to-scenario traceability
+- **Issue**: No test scenario ID traceability. Tests do not reference DESIGN scenario IDs in comments. Without traceability, it is impossible to determine which design scenarios are covered and which are missing without manual cross-referencing.
+- **Proposal**: Add scenario ID comments (e.g., `// Scenario: S14 - InGroup predicate`) to each test function. Low effort, high traceability value.
+
+---
+
+## LOW (8)
+
+### TODO-21: Document JWT session timeout delegation
+- **Priority**: LOW
+- **Type**: design
+- **Checklist ID**: SEC-DESIGN-001
+- **Status**: [ ] pending
+- **References**:
+  - `docs/DESIGN.md:820-822` -- "AuthN Resolver validates the token and returns a SecurityContext..." but no mention of token expiry, refresh, or session timeout
+- **Issue**: Session timeout and token renewal strategy are not explicitly documented for JWT-authenticated requests. The document describes JWT authentication flow but does not specify token expiry handling, refresh token strategy, or session timeout behavior. For a security-critical service, unclear token lifecycle means operators cannot configure appropriate session timeouts.
+- **Proposal**: Add a single sentence in the Authentication Modes section stating that JWT token lifecycle (expiry, refresh, revocation) is managed by the AuthN Resolver and API Gateway, and RG delegates token validation entirely to the platform authentication layer.
+
+### TODO-22: Document circuit breaker for AuthZ dependency
+- **Priority**: LOW
+- **Type**: design
+- **Checklist ID**: REL-DESIGN-001
+- **Status**: [ ] pending
+- **References**:
+  - `docs/DESIGN.md:1249` -- "RG does not implement its own circuit breakers or redundancy beyond transaction retry for serialization conflicts."
+- **Issue**: Circuit breaker and bulkhead patterns are not documented for the AuthZ Resolver dependency. The reliability section documents absence of circuit breakers for the database, but does not address circuit breakers for the AuthZ Resolver dependency (PolicyEnforcer calls on JWT path). If AuthZ Resolver becomes unavailable, all JWT-authenticated RG requests will fail without circuit-breaking protection.
+- **Proposal**: Add a note in Reliability Architecture clarifying that AuthZ Resolver circuit breaking is handled at the platform PolicyEnforcer/SDK level (if true), or document the expected RG behavior when AuthZ Resolver is unavailable.
+
+### TODO-23: Document distributed tracing
+- **Priority**: LOW
+- **Type**: design
+- **Checklist ID**: OPS-DESIGN-002
+- **Status**: [ ] pending
+- **References**:
+  - `docs/DESIGN.md:1266` -- "structured request/response logging via platform middleware (request ID, tenant ID, operation, latency)" but no mention of trace propagation
+- **Issue**: Distributed tracing is not explicitly documented. While structured request logging includes request_id, the document does not mention trace propagation, span correlation, or integration with a distributed tracing system. In a system where AuthZ calls RG which calls the database, distributed tracing is important for diagnosing latency issues.
+- **Proposal**: Add a brief note under Observability indicating whether RG participates in platform distributed tracing (e.g., OpenTelemetry trace propagation via platform middleware) or explicitly state it is deferred to platform defaults.
+
+### TODO-24: Add logging to domain/infra layers
+- **Priority**: LOW
+- **Type**: code
+- **Checklist ID**: OBS-CODE-001
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs` -- zero `tracing::` calls in entire file
+  - `resource-group/src/domain/type_service.rs` -- zero `tracing::` calls in entire file
+  - `resource-group/src/domain/membership_service.rs` -- zero `tracing::` calls in entire file
+  - `resource-group/src/infra/storage/group_repo.rs` -- zero `tracing::` calls in entire file
+  - `resource-group/src/api/rest/handlers/groups.rs` -- contrast: has `#[tracing::instrument]` and `info!` calls
+- **Issue**: Domain and infrastructure layers (services, repositories) have no logging. Only API handlers and error mapper log. When debugging production issues, there is no visibility into which domain validation failed or which repository query was slow.
+- **Proposal**: Add `tracing::debug!` or `tracing::trace!` at key domain decision points (cycle detection, type validation, depth check) and `tracing::warn!` for unexpected repository states. Keep INFO logging at API boundary only to avoid noise.
+
+### TODO-25: Extract DbProvider type alias
+- **Priority**: LOW
+- **Type**: code
+- **Checklist ID**: ENG-CODE-007
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/domain/group_service.rs:32` -- `type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;`
+  - `resource-group/src/domain/type_service.rs:18` -- identical definition
+  - `resource-group/src/domain/membership_service.rs:18` -- identical definition
+- **Issue**: `type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;` is defined identically in three files. If the generic parameter changes, three files need updating. Minor maintenance burden.
+- **Proposal**: Define `DbProvider` once in `domain/mod.rs` and import from all services.
+
+### TODO-26: Replace expect() with ok_or_else() in module.rs
+- **Priority**: LOW
+- **Type**: code
+- **Checklist ID**: ERR-CODE-NO-002
+- **Status**: [x] resolved
+- **References**:
+  - `resource-group/src/module.rs:78` -- `let type_svc = self.type_service.get().expect("just set").clone();`
+  - `resource-group/src/module.rs:79` -- `let group_svc = self.group_service.get().expect("just set").clone();`
+  - `resource-group/src/module.rs:113-117` -- contrast: `register_rest` uses `ok_or_else(|| anyhow::anyhow!(...))` pattern
+- **Issue**: Two `expect()` calls in production initialization path on `OnceLock::get()`. While logically safe (the `OnceLock` was just successfully `set()` on the preceding lines), if a future refactor reorders the code, the `expect` would panic in production during module initialization. The message "just set" is cryptic for debugging.
+- **Proposal**: Use `ok_or_else(|| anyhow::anyhow!("TypeService not initialized after set"))` to match the pattern used in `register_rest` (lines 113-117), converting the panic into a recoverable error.
+
+### TODO-27: Remove dead code TypeFilter::In/NotIn
+- **Priority**: LOW
+- **Type**: code
+- **Checklist ID**: PERF-CODE-001 / YAGNI
+- **Status**: [ ] pending
+- **References**:
+  - `resource-group/src/infra/storage/group_repo.rs:876-881` -- `#[allow(dead_code)] enum TypeFilter { Eq(String), In(Vec<String>), NotIn(Vec<String>) }`
+  - `resource-group/src/infra/storage/group_repo.rs:818-848` -- `extract_type_from_hierarchy_node` only constructs `TypeFilter::Eq`, never `In` or `NotIn`
+- **Issue**: `TypeFilter` enum has `In` and `NotIn` variants marked `#[allow(dead_code)]` that are never constructed. Only `Eq` is used in `extract_type_from_hierarchy_node`. Dead code indicates either incomplete implementation or speculative abstraction (YAGNI).
+- **Proposal**: Either implement `In`/`NotIn` extraction in `extract_type_from_hierarchy_node` (if needed for OData `in`/`not in` support on hierarchy type filter) or remove unused variants to satisfy YAGNI principle.
+
+### TODO-28: Fix list_hierarchy non-functional cursor
+- **Priority**: LOW
+- **Type**: code
+- **Checklist ID**: PERF-CODE-002
+- **Status**: [x] resolved
+- **References**:
+  - `resource-group/src/infra/storage/group_repo.rs:351-354` -- `next_cursor: if has_next { Some("next".to_owned()) } else { None }, prev_cursor: None,`
+  - `resource-group/src/infra/storage/group_repo.rs:342-345` -- pagination applied via `.take(limit_usize)` in Rust after loading everything
+- **Issue**: `list_hierarchy` cursor pagination is non-functional -- `next_cursor` is hardcoded to `Some("next".to_owned())` and `prev_cursor` is always `None`. Callers following pagination links will always get the same first page because the cursor value "next" is not parsed or used. The hierarchy endpoint effectively returns only the first page of results.
+- **Proposal**: Implement proper offset-based or keyset pagination for hierarchy results, or document that hierarchy pagination is limited to first-page-only in current implementation. This is related to TODO-12 (DB-level pagination for hierarchy).
+
+---
+
+## Summary
+
+| Priority | Count | Pending | Resolved |
+|----------|-------|---------|----------|
+| CRITICAL | 1     | 0       | 1        |
+| HIGH     | 7     | 4       | 3        |
+| MEDIUM   | 12    | 12      | 0        |
+| LOW      | 8     | 6       | 2        |
+| **Total** | **28** | **22** | **6**   |
+
+### Key themes
+
+1. **AuthZ enforcement gap** (TODO-02, 03, 08): `TypeService` and `MembershipService` have no PolicyEnforcer, and `create_group` skips the AuthZ check. This is the most significant design-to-code divergence.
+2. **Transaction safety** (TODO-04): Hierarchy mutations lack SERIALIZABLE transaction boundaries required by DESIGN.
+3. **Stale placeholder** (TODO-05): `RgReadService::list_memberships` returns empty data when membership service is fully implemented.
+4. **Test coverage** (TODO-06, 17, 20): Domain layer has zero unit tests; no API-level tests; no scenario ID traceability.
+5. **Performance patterns** (TODO-10, 11, 12, 13, 28): N+1 queries in type resolution and parent lookup; in-memory pagination for hierarchy; individual row operations instead of batch.
+6. **Design documentation gaps** (TODO-09, 18, 21, 22, 23): Horizontal scaling, health checks, session timeout, circuit breakers, distributed tracing.
+7. **Code hygiene** (TODO-14, 15, 19, 24, 25, 26, 27): DRY violations, error variant misuse, missing logging, dead code.

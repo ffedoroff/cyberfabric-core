@@ -1,9 +1,10 @@
-//! Integration tests: PolicyEnforcer + mock AuthZ plugin for resource-group.
+#![allow(clippy::expect_used)]
+//! Integration tests: `PolicyEnforcer` + mock `AuthZ` plugin for resource-group.
 //!
 //! Verifies:
 //! 1. PEP flow produces correct `AccessScope` from mock PDP constraints
-//! 2. Full AuthZ → PolicyEnforcer → AccessScope → GroupService chain
-//!    (GroupService.list_groups / get_group call enforcer internally)
+//! 2. Full `AuthZ` -> `PolicyEnforcer` -> `AccessScope` -> `GroupService` chain
+//!    (`GroupService.list_groups` / `get_group` call enforcer internally)
 
 use std::sync::Arc;
 
@@ -118,13 +119,13 @@ fn make_ctx(tenant_id: Uuid) -> SecurityContext {
         .subject_id(Uuid::now_v7())
         .subject_tenant_id(tenant_id)
         .build()
-        .expect("valid SecurityContext")
+        .unwrap_or_else(|e| panic!("valid SecurityContext: {e}"))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-/// Enforcer with tenant-scoping plugin returns AccessScope containing
-/// the subject's tenant_id as an In filter on owner_tenant_id.
+/// Enforcer with tenant-scoping plugin returns `AccessScope` containing
+/// the subject's `tenant_id` as an `In` filter on `owner_tenant_id`.
 #[tokio::test]
 async fn enforcer_tenant_scoping_produces_correct_access_scope() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
@@ -172,7 +173,7 @@ async fn enforcer_different_tenants_get_different_scopes() {
     assert!(!scope_b.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant_a));
 }
 
-/// Deny-all plugin returns EnforcerError::Denied.
+/// Deny-all plugin returns `EnforcerError::Denied`.
 #[tokio::test]
 async fn enforcer_deny_all_returns_denied_error() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(DenyAllAuthZ);
@@ -190,7 +191,7 @@ async fn enforcer_deny_all_returns_denied_error() {
     );
 }
 
-/// Allow-all with require_constraints=false returns allow_all scope.
+/// Allow-all with `require_constraints=false` returns `allow_all` scope.
 #[tokio::test]
 async fn enforcer_allow_all_no_constraints_returns_allow_all() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(AllowAllAuthZ);
@@ -211,7 +212,7 @@ async fn enforcer_allow_all_no_constraints_returns_allow_all() {
     assert!(scope.is_unconstrained(), "scope should be allow_all");
 }
 
-/// Allow-all with require_constraints=true (default) returns CompileFailed
+/// Allow-all with `require_constraints=true` (default) returns `CompileFailed`
 /// because constraints are required but absent.
 #[tokio::test]
 async fn enforcer_allow_all_with_required_constraints_fails() {
@@ -219,9 +220,7 @@ async fn enforcer_allow_all_with_required_constraints_fails() {
     let enforcer = PolicyEnforcer::new(authz);
 
     let ctx = make_ctx(Uuid::now_v7());
-    let result = enforcer
-        .access_scope(&ctx, &RG_GROUP, "list", None)
-        .await;
+    let result = enforcer.access_scope(&ctx, &RG_GROUP, "list", None).await;
 
     assert!(
         result.is_err(),
@@ -236,7 +235,7 @@ async fn enforcer_allow_all_with_required_constraints_fails() {
     );
 }
 
-/// Enforcer correctly sets resource_id when provided.
+/// Enforcer correctly sets `resource_id` when provided.
 #[tokio::test]
 async fn enforcer_passes_resource_id_to_pdp() {
     use std::sync::Mutex;
@@ -323,16 +322,16 @@ async fn enforcer_works_for_all_crud_actions() {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Verifies that `GroupService.list_groups(&ctx, query)` invokes the PDP
-/// with the correct resource type, action, and subject tenant — proving
-/// the full chain AuthZ → Enforcer → service → scope is wired.
+/// with the correct resource type, action, and subject tenant -- proving
+/// the full chain `AuthZ` -> Enforcer -> service -> scope is wired.
 ///
 /// This test uses a capturing mock to inspect the evaluation request
 /// rather than hitting a real database. The SQL-level scoping
 /// (`WHERE tenant_id IN (…)`) is covered by E2E tests against a live server.
 #[tokio::test]
 async fn full_chain_list_groups_calls_enforcer_with_correct_params() {
+    use cf_resource_group::domain::group_service::RG_GROUP_RESOURCE;
     use std::sync::Mutex;
-    use cf_resource_group::domain::group_service::{GroupService, QueryProfile, RG_GROUP_RESOURCE};
 
     /// Mock that captures requests and returns tenant-scoped allow.
     struct CapturingTenantAuthZ {
@@ -390,8 +389,7 @@ async fn full_chain_list_groups_calls_enforcer_with_correct_params() {
     let requests = mock.requests.lock().unwrap();
     assert_eq!(requests.len(), 1, "exactly one PDP call");
     assert_eq!(
-        requests[0].resource.resource_type,
-        RG_GROUP_RESOURCE.name,
+        requests[0].resource.resource_type, RG_GROUP_RESOURCE.name,
         "PDP should receive the RG_GROUP resource type"
     );
     assert_eq!(requests[0].action.name, "list");
@@ -416,8 +414,8 @@ async fn full_chain_list_groups_calls_enforcer_with_correct_params() {
     );
 }
 
-/// Verifies that a deny-all AuthZ plugin causes GroupService-level
-/// operations to fail with AccessDenied — the full deny path.
+/// Verifies that a deny-all `AuthZ` plugin causes `GroupService`-level
+/// operations to fail with `AccessDenied` -- the full deny path.
 #[tokio::test]
 async fn full_chain_deny_all_blocks_list_groups() {
     use cf_resource_group::domain::group_service::RG_GROUP_RESOURCE;
