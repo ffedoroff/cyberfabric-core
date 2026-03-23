@@ -641,30 +641,33 @@ async fn group_based_membership_data_correctly_stored() {
         .await
         .expect("create ProjectB");
 
-    // Add memberships via MembershipService
+    // Add memberships via MembershipService (with PolicyEnforcer)
+    let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
+    let enforcer = PolicyEnforcer::new(authz);
     let membership_svc =
-        cf_resource_group::domain::membership_service::MembershipService::new(db.clone());
+        cf_resource_group::domain::membership_service::MembershipService::new(db.clone(), enforcer);
+    let ctx = make_ctx(tenant);
 
     // task-001, task-002 → ProjectA
     membership_svc
-        .add_membership(project_a.id, &task_type, "task-001")
+        .add_membership(&ctx, project_a.id, &task_type, "task-001")
         .await
         .expect("add task-001 to ProjectA");
     membership_svc
-        .add_membership(project_a.id, &task_type, "task-002")
+        .add_membership(&ctx, project_a.id, &task_type, "task-002")
         .await
         .expect("add task-002 to ProjectA");
 
     // task-003 → ProjectB
     membership_svc
-        .add_membership(project_b.id, &task_type, "task-003")
+        .add_membership(&ctx, project_b.id, &task_type, "task-003")
         .await
         .expect("add task-003 to ProjectB");
 
     // List memberships for ProjectA
     let query = ODataQuery::default();
     let all = membership_svc
-        .list_memberships(&query)
+        .list_memberships(&ctx, &query)
         .await
         .expect("list memberships");
 

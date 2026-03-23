@@ -920,19 +920,14 @@ impl DepthFilter {
 }
 
 /// Type filter for hierarchy queries.
-#[allow(dead_code)]
 enum TypeFilter {
     Eq(String),
-    In(Vec<String>),
-    NotIn(Vec<String>),
 }
 
 impl TypeFilter {
     fn matches(&self, type_path: &str) -> bool {
         match self {
             Self::Eq(s) => type_path == s,
-            Self::In(v) => v.iter().any(|s| s == type_path),
-            Self::NotIn(v) => !v.iter().any(|s| s == type_path),
         }
     }
 }

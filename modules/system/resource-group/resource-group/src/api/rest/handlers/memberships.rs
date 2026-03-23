@@ -24,17 +24,17 @@ pub struct MembershipPathParams {
 
 /// List memberships with optional `OData` filtering and pagination.
 #[tracing::instrument(
-    skip(svc, _ctx, query),
+    skip(svc, ctx, query),
     fields(request_id = Empty)
 )]
 pub async fn list_memberships(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<MembershipService>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<MembershipDto>>> {
     info!("Listing memberships");
 
-    let page = svc.list_memberships(&query).await?;
+    let page = svc.list_memberships(&ctx, &query).await?;
     let dto_page = page.map_items(MembershipDto::from);
 
     Ok(Json(dto_page))
@@ -42,7 +42,7 @@ pub async fn list_memberships(
 
 /// Add a membership link between a group and a resource.
 #[tracing::instrument(
-    skip(svc, _ctx),
+    skip(svc, ctx),
     fields(
         membership.group_id = %params.group_id,
         membership.resource_type = %params.resource_type,
@@ -51,7 +51,7 @@ pub async fn list_memberships(
     )
 )]
 pub async fn add_membership(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<MembershipService>>,
     Path(params): Path<MembershipPathParams>,
 ) -> ApiResult<impl IntoResponse> {
@@ -63,7 +63,12 @@ pub async fn add_membership(
     );
 
     let membership = svc
-        .add_membership(params.group_id, &params.resource_type, &params.resource_id)
+        .add_membership(
+            &ctx,
+            params.group_id,
+            &params.resource_type,
+            &params.resource_id,
+        )
         .await?;
     let dto = MembershipDto::from(membership);
 
@@ -72,7 +77,7 @@ pub async fn add_membership(
 
 /// Remove a membership link.
 #[tracing::instrument(
-    skip(svc, _ctx),
+    skip(svc, ctx),
     fields(
         membership.group_id = %params.group_id,
         membership.resource_type = %params.resource_type,
@@ -81,7 +86,7 @@ pub async fn add_membership(
     )
 )]
 pub async fn remove_membership(
-    Extension(_ctx): Extension<SecurityContext>,
+    Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<MembershipService>>,
     Path(params): Path<MembershipPathParams>,
 ) -> ApiResult<impl IntoResponse> {
@@ -92,7 +97,12 @@ pub async fn remove_membership(
         "Removing membership"
     );
 
-    svc.remove_membership(params.group_id, &params.resource_type, &params.resource_id)
-        .await?;
+    svc.remove_membership(
+        &ctx,
+        params.group_id,
+        &params.resource_type,
+        &params.resource_id,
+    )
+    .await?;
     Ok(no_content().into_response())
 }

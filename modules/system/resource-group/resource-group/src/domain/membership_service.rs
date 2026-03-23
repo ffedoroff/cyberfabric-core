@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
+use authz_resolver_sdk::pep::{PolicyEnforcer, ResourceType};
 use modkit_odata::{ODataQuery, Page};
+use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::models::ResourceGroupMembership;
 use uuid::Uuid;
 
@@ -13,6 +15,12 @@ use crate::domain::error::DomainError;
 use crate::infra::storage::group_repo::GroupRepository;
 use crate::infra::storage::membership_repo::MembershipRepository;
 use crate::infra::storage::type_repo::TypeRepository;
+
+/// `AuthZ` resource type descriptor for group memberships.
+pub const RG_MEMBERSHIP_RESOURCE: ResourceType = ResourceType {
+    name: "gts.x.core.rg.group_membership.v1~",
+    supported_properties: &[pep_properties::OWNER_TENANT_ID],
+};
 
 /// Type alias for the database provider used by the service.
 type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
@@ -27,13 +35,15 @@ type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 #[derive(Clone)]
 pub struct MembershipService {
     db: Arc<DbProvider>,
+    enforcer: PolicyEnforcer,
 }
 
 impl MembershipService {
-    /// Create a new `MembershipService` with the given database provider.
+    /// Create a new `MembershipService` with the given database provider
+    /// and `PolicyEnforcer` for AuthZ-scoped queries.
     #[must_use]
-    pub fn new(db: Arc<DbProvider>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<DbProvider>, enforcer: PolicyEnforcer) -> Self {
+        Self { db, enforcer }
     }
 
     fn conn(&self) -> Result<impl modkit_db::secure::DBRunner + '_, DomainError> {
@@ -49,10 +59,18 @@ impl MembershipService {
     /// compatibility, and tenant scope before inserting the membership row.
     pub async fn add_membership(
         &self,
+        ctx: &SecurityContext,
         group_id: Uuid,
         resource_type: &str,
         resource_id: &str,
     ) -> Result<ResourceGroupMembership, DomainError> {
+        // AuthZ gate: verify the caller can create memberships
+        let _scope = self
+            .enforcer
+            .access_scope(ctx, &RG_MEMBERSHIP_RESOURCE, "create", None)
+            .await
+            .map_err(DomainError::from)?;
+
         let conn = self.conn()?;
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
@@ -128,10 +146,18 @@ impl MembershipService {
     /// Resolves the GTS type path, verifies the membership exists, and deletes it.
     pub async fn remove_membership(
         &self,
+        ctx: &SecurityContext,
         group_id: Uuid,
         resource_type: &str,
         resource_id: &str,
     ) -> Result<(), DomainError> {
+        // AuthZ gate: verify the caller can delete memberships
+        let _scope = self
+            .enforcer
+            .access_scope(ctx, &RG_MEMBERSHIP_RESOURCE, "delete", None)
+            .await
+            .map_err(DomainError::from)?;
+
         let conn = self.conn()?;
 
         // Resolve the GTS type path to a surrogate SMALLINT ID
@@ -157,11 +183,19 @@ impl MembershipService {
     // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-mbr-remove-1
 
     // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-mbr-list-1
-    /// List memberships with `OData` filtering and pagination.
+    /// List memberships with `OData` filtering and pagination (AuthZ-scoped).
     pub async fn list_memberships(
         &self,
+        ctx: &SecurityContext,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, DomainError> {
+        // AuthZ gate: verify the caller can list memberships
+        let _scope = self
+            .enforcer
+            .access_scope(ctx, &RG_MEMBERSHIP_RESOURCE, "list", None)
+            .await
+            .map_err(DomainError::from)?;
+
         let conn = self.conn()?;
         MembershipRepository::list_memberships(&conn, query).await
     }
@@ -178,7 +212,8 @@ impl crate::domain::seeding::MembershipAdder for MembershipService {
         resource_type: &str,
         resource_id: &str,
     ) -> Result<(), DomainError> {
-        self.add_membership(group_id, resource_type, resource_id)
+        let anon = SecurityContext::anonymous();
+        self.add_membership(&anon, group_id, resource_type, resource_id)
             .await
             .map(|_| ())
     }

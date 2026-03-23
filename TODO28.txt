@@ -49,7 +49,7 @@
 - **Priority**: HIGH
 - **Type**: code
 - **Checklist ID**: SEC-CODE-002
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/membership_service.rs:27-29` -- `MembershipService` struct has only `db: Arc<DbProvider>`, no `PolicyEnforcer`
   - `resource-group/src/domain/membership_service.rs:49-53` -- `add_membership` has no `SecurityContext` parameter
@@ -353,7 +353,7 @@
 - **Priority**: LOW
 - **Type**: code
 - **Checklist ID**: PERF-CODE-001 / YAGNI
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/infra/storage/group_repo.rs:876-881` -- `#[allow(dead_code)] enum TypeFilter { Eq(String), In(Vec<String>), NotIn(Vec<String>) }`
   - `resource-group/src/infra/storage/group_repo.rs:818-848` -- `extract_type_from_hierarchy_node` only constructs `TypeFilter::Eq`, never `In` or `NotIn`
@@ -370,25 +370,3 @@
   - `resource-group/src/infra/storage/group_repo.rs:342-345` -- pagination applied via `.take(limit_usize)` in Rust after loading everything
 - **Issue**: `list_hierarchy` cursor pagination is non-functional -- `next_cursor` is hardcoded to `Some("next".to_owned())` and `prev_cursor` is always `None`. Callers following pagination links will always get the same first page because the cursor value "next" is not parsed or used. The hierarchy endpoint effectively returns only the first page of results.
 - **Proposal**: Implement proper offset-based or keyset pagination for hierarchy results, or document that hierarchy pagination is limited to first-page-only in current implementation. This is related to TODO-12 (DB-level pagination for hierarchy).
-
----
-
-## Summary
-
-| Priority | Count | Pending | Resolved |
-|----------|-------|---------|----------|
-| CRITICAL | 1     | 0       | 1        |
-| HIGH     | 7     | 4       | 3        |
-| MEDIUM   | 12    | 12      | 0        |
-| LOW      | 8     | 6       | 2        |
-| **Total** | **28** | **22** | **6**   |
-
-### Key themes
-
-1. **AuthZ enforcement gap** (TODO-02, 03, 08): `TypeService` and `MembershipService` have no PolicyEnforcer, and `create_group` skips the AuthZ check. This is the most significant design-to-code divergence.
-2. **Transaction safety** (TODO-04): Hierarchy mutations lack SERIALIZABLE transaction boundaries required by DESIGN.
-3. **Stale placeholder** (TODO-05): `RgReadService::list_memberships` returns empty data when membership service is fully implemented.
-4. **Test coverage** (TODO-06, 17, 20): Domain layer has zero unit tests; no API-level tests; no scenario ID traceability.
-5. **Performance patterns** (TODO-10, 11, 12, 13, 28): N+1 queries in type resolution and parent lookup; in-memory pagination for hierarchy; individual row operations instead of batch.
-6. **Design documentation gaps** (TODO-09, 18, 21, 22, 23): Horizontal scaling, health checks, session timeout, circuit breakers, distributed tracing.
-7. **Code hygiene** (TODO-14, 15, 19, 24, 25, 26, 27): DRY violations, error variant misuse, missing logging, dead code.

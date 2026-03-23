@@ -63,14 +63,14 @@ impl Module for ResourceGroup {
 
         // Create GroupService with default query profile and PolicyEnforcer
         let profile = QueryProfile::default();
-        let group_service = Arc::new(GroupService::new(db.clone(), profile, enforcer));
+        let group_service = Arc::new(GroupService::new(db.clone(), profile, enforcer.clone()));
 
         self.group_service
             .set(group_service)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
-        // Create MembershipService
-        let membership_service = Arc::new(MembershipService::new(db));
+        // Create MembershipService with PolicyEnforcer for AuthZ enforcement
+        let membership_service = Arc::new(MembershipService::new(db, enforcer));
         self.membership_service
             .set(membership_service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;

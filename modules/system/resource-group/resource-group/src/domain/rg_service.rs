@@ -179,37 +179,37 @@ impl ResourceGroupClient for RgService {
 
     async fn add_membership(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         group_id: Uuid,
         resource_type: &str,
         resource_id: &str,
     ) -> Result<ResourceGroupMembership, ResourceGroupError> {
         self.membership_service
-            .add_membership(group_id, resource_type, resource_id)
+            .add_membership(ctx, group_id, resource_type, resource_id)
             .await
             .map_err(ResourceGroupError::from)
     }
 
     async fn remove_membership(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         group_id: Uuid,
         resource_type: &str,
         resource_id: &str,
     ) -> Result<(), ResourceGroupError> {
         self.membership_service
-            .remove_membership(group_id, resource_type, resource_id)
+            .remove_membership(ctx, group_id, resource_type, resource_id)
             .await
             .map_err(ResourceGroupError::from)
     }
 
     async fn list_memberships(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError> {
         self.membership_service
-            .list_memberships(query)
+            .list_memberships(ctx, query)
             .await
             .map_err(ResourceGroupError::from)
     }
