@@ -8,14 +8,12 @@ use std::sync::Arc;
 use modkit_db::secure::DBRunner;
 use resource_group_sdk::models::{CreateTypeRequest, ResourceGroupType, UpdateTypeRequest};
 
+use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
 use crate::infra::storage::type_repo::TypeRepository;
 
 /// GTS type path prefix required for resource group types.
 const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
-
-/// Type alias for the database provider used by the service.
-type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 
 // @cpt-dod:cpt-cf-resource-group-dod-type-mgmt-service-crud:p1
 /// Service for GTS type lifecycle management.

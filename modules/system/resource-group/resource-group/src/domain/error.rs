@@ -52,6 +52,20 @@ pub enum DomainError {
 }
 
 impl DomainError {
+    /// Returns `true` if this error represents a serialization failure
+    /// (SQLSTATE `40001`) that is safe to retry.
+    ///
+    /// Covers `PostgreSQL` `SERIALIZABLE` conflicts and `MySQL`/`MariaDB` deadlocks.
+    #[must_use]
+    pub fn is_serialization_failure(&self) -> bool {
+        match self {
+            DomainError::Database { message } => {
+                message.contains("40001") || message.contains("could not serialize access")
+            }
+            _ => false,
+        }
+    }
+
     pub fn type_not_found(code: impl Into<String>) -> Self {
         Self::TypeNotFound { code: code.into() }
     }

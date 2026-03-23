@@ -16,6 +16,7 @@ use resource_group_sdk::{ResourceGroupReadHierarchy, ResourceGroupReadPluginClie
 use uuid::Uuid;
 
 use crate::domain::group_service::GroupService;
+use crate::domain::membership_service::MembershipService;
 
 /// Adapter service exposing hierarchy reads via SDK traits.
 ///
@@ -25,13 +26,17 @@ use crate::domain::group_service::GroupService;
 #[allow(unknown_lints, de0309_must_have_domain_model)]
 pub struct RgReadService {
     group_service: Arc<GroupService>,
+    membership_service: Arc<MembershipService>,
 }
 
 impl RgReadService {
     /// Create a new `RgReadService`.
     #[must_use]
-    pub fn new(group_service: Arc<GroupService>) -> Self {
-        Self { group_service }
+    pub fn new(group_service: Arc<GroupService>, membership_service: Arc<MembershipService>) -> Self {
+        Self {
+            group_service,
+            membership_service,
+        }
     }
 }
 

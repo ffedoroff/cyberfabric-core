@@ -63,7 +63,7 @@
 - **Priority**: HIGH
 - **Type**: code
 - **Checklist ID**: PERF-CODE-002 / Design alignment
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs:84` -- `let conn = self.db.conn()?;` in `create_group` with no transaction wrapping
   - `resource-group/src/domain/group_service.rs:247` -- `let conn = self.db.conn()?;` in `update_group` with no transaction
@@ -329,7 +329,7 @@
 - **Priority**: LOW
 - **Type**: code
 - **Checklist ID**: ENG-CODE-007
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs:32` -- `type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;`
   - `resource-group/src/domain/type_service.rs:18` -- identical definition

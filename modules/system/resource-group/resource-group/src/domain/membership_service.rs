@@ -11,6 +11,7 @@ use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::models::ResourceGroupMembership;
 use uuid::Uuid;
 
+use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
 use crate::infra::storage::group_repo::GroupRepository;
 use crate::infra::storage::membership_repo::MembershipRepository;
@@ -21,9 +22,6 @@ pub const RG_MEMBERSHIP_RESOURCE: ResourceType = ResourceType {
     name: "gts.x.core.rg.group_membership.v1~",
     supported_properties: &[pep_properties::OWNER_TENANT_ID],
 };
-
-/// Type alias for the database provider used by the service.
-type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
 
 // @cpt-flow:cpt-cf-resource-group-flow-membership-add:p1
 // @cpt-flow:cpt-cf-resource-group-flow-membership-remove:p1

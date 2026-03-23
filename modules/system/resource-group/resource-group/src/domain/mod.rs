@@ -7,3 +7,6 @@ pub mod read_service;
 pub mod rg_service;
 pub mod seeding;
 pub mod type_service;
+
+/// Type alias for the database provider used by domain services.
+pub(crate) type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;

@@ -3,18 +3,25 @@
 //! Implements business rules: type validation, parent compatibility,
 //! cycle detection, closure table management, query profile enforcement,
 //! and CRUD orchestration.
+//!
+//! All hierarchy-mutating operations (`create_group`, `update_group`,
+//! `move_group`, `delete_group`) use `SERIALIZABLE` transactions with
+//! bounded retry (max 3 attempts) to prevent phantom reads and ensure
+//! closure table consistency under concurrent mutations.
 
 use std::sync::Arc;
 
 use authz_resolver_sdk::pep::{PolicyEnforcer, ResourceType};
-use modkit_db::secure::DBRunner;
+use modkit_db::secure::{DBRunner, TxConfig};
 use modkit_odata::{ODataQuery, Page};
 use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::models::{
     CreateGroupRequest, ResourceGroup, ResourceGroupWithDepth, UpdateGroupRequest,
 };
+use tracing::warn;
 use uuid::Uuid;
 
+use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
 use crate::infra::storage::group_repo::GroupRepository;
 use crate::infra::storage::type_repo::TypeRepository;
@@ -28,8 +35,8 @@ pub const RG_GROUP_RESOURCE: ResourceType = ResourceType {
 /// GTS type path prefix required for resource group types.
 const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
 
-/// Type alias for the database provider used by the service.
-type DbProvider = modkit_db::DBProvider<modkit_db::DbError>;
+/// Maximum number of transaction retry attempts for serialization conflicts.
+const MAX_SERIALIZATION_RETRIES: u32 = 3;
 
 /// Query profile configuration for depth/width limits.
 #[allow(unknown_lints, de0309_must_have_domain_model)]
@@ -75,125 +82,49 @@ impl GroupService {
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-create-group:p1
     /// Create a new resource group.
+    ///
+    /// Runs inside a `SERIALIZABLE` transaction with bounded retry (max 3 attempts)
+    /// to ensure invariant checks and closure table mutations are atomic.
     pub async fn create_group(
         &self,
         req: CreateGroupRequest,
         tenant_id: Uuid,
     ) -> Result<ResourceGroup, DomainError> {
+        // Pre-validation (stateless, outside transaction)
         Self::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
 
-        let conn = self.db.conn()?;
+        let profile = self.profile.clone();
+        let db = self.db.db();
 
-        // Resolve type
-        let type_id = TypeRepository::resolve_id(&conn, &req.type_path)
-            .await?
-            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+        for attempt in 1..=MAX_SERIALIZATION_RETRIES {
+            let req = req.clone();
+            let profile = profile.clone();
 
-        // Load full type for validation
-        let rg_type = TypeRepository::find_by_code(&conn, &req.type_path)
-            .await?
-            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+            let result = db
+                .transaction_ref_mapped_with_config(TxConfig::serializable(), |tx| {
+                    Box::pin(async move {
+                        Self::create_group_inner(tx, &req, tenant_id, &profile).await
+                    })
+                })
+                .await;
 
-        if let Some(parent_id) = req.parent_id {
-            // Child group: validate parent exists, type compatibility, tenant
-            let parent = GroupRepository::find_model_by_id(&conn, parent_id)
-                .await?
-                .ok_or_else(|| DomainError::group_not_found(parent_id))?;
-
-            // Validate parent type compatibility
-            let parent_type_path =
-                Self::resolve_type_path_from_id(&conn, parent.gts_type_id).await?;
-            if !rg_type.allowed_parents.contains(&parent_type_path) {
-                return Err(DomainError::invalid_parent_type(format!(
-                    "Type '{}' does not allow parent type '{}'",
-                    req.type_path, parent_type_path
-                )));
-            }
-
-            // @cpt-algo:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1
-            // Validate tenant compatibility (child must be same tenant as parent)
-            if parent.tenant_id != tenant_id {
-                return Err(DomainError::validation(format!(
-                    "Child group tenant_id ({tenant_id}) must match parent tenant_id ({})",
-                    parent.tenant_id
-                )));
-            }
-
-            // Check query profile: depth limit
-            if let Some(max_depth) = self.profile.max_depth {
-                let parent_depth = GroupRepository::get_depth(&conn, parent_id).await?;
-                #[allow(clippy::cast_possible_wrap)]
-                if parent_depth + 1 >= max_depth as i32 {
-                    return Err(DomainError::limit_violation(format!(
-                        "Depth limit exceeded: adding child at depth {} exceeds max_depth {}",
-                        parent_depth + 1,
-                        max_depth
-                    )));
+            match result {
+                Ok(group) => return Ok(group),
+                Err(ref e)
+                    if e.is_serialization_failure() && attempt < MAX_SERIALIZATION_RETRIES =>
+                {
+                    warn!(
+                        attempt,
+                        max = MAX_SERIALIZATION_RETRIES,
+                        "Serialization conflict in create_group, retrying"
+                    );
                 }
+                Err(e) => return Err(e),
             }
-
-            // Check query profile: width limit
-            if let Some(max_width) = self.profile.max_width {
-                let sibling_count = GroupRepository::count_children(&conn, parent_id).await?;
-                if sibling_count >= u64::from(max_width) {
-                    return Err(DomainError::limit_violation(format!(
-                        "Width limit exceeded: parent already has {sibling_count} children, max_width is {max_width}"
-                    )));
-                }
-            }
-
-            // Insert group
-            let group_id = Uuid::now_v7();
-            let _model = GroupRepository::insert(
-                &conn,
-                group_id,
-                Some(parent_id),
-                type_id,
-                &req.name,
-                req.metadata.as_ref(),
-                tenant_id,
-            )
-            .await?;
-
-            // Insert closure: self-row + ancestor rows
-            GroupRepository::insert_closure_self_row(&conn, group_id).await?;
-            GroupRepository::insert_ancestor_closure_rows(&conn, group_id, parent_id).await?;
-
-            let sys = modkit_security::AccessScope::allow_all();
-            GroupRepository::find_by_id(&conn, &sys, group_id)
-                .await?
-                .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
-        } else {
-            // Root group: validate can_be_root
-            if !rg_type.can_be_root {
-                return Err(DomainError::invalid_parent_type(format!(
-                    "Type '{}' cannot be a root group (can_be_root=false)",
-                    req.type_path
-                )));
-            }
-
-            // Insert group
-            let group_id = Uuid::now_v7();
-            let _model = GroupRepository::insert(
-                &conn,
-                group_id,
-                None,
-                type_id,
-                &req.name,
-                req.metadata.as_ref(),
-                tenant_id,
-            )
-            .await?;
-
-            // Insert closure: self-row only
-            GroupRepository::insert_closure_self_row(&conn, group_id).await?;
-
-            let sys = modkit_security::AccessScope::allow_all();
-            GroupRepository::find_by_id(&conn, &sys, group_id)
-                .await?
-                .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
         }
+
+        unreachable!("retry loop always returns")
     }
 
     /// Get a resource group by ID (AuthZ-scoped).
@@ -230,199 +161,155 @@ impl GroupService {
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-update-group:p1
     /// Update a resource group (full replacement via PUT, AuthZ-scoped).
+    ///
+    /// Runs inside a `SERIALIZABLE` transaction with bounded retry (max 3 attempts)
+    /// to ensure invariant checks, closure table mutations, and the update are atomic.
     pub async fn update_group(
         &self,
         ctx: &SecurityContext,
         group_id: Uuid,
         req: UpdateGroupRequest,
     ) -> Result<ResourceGroup, DomainError> {
-        // AuthZ gate: verify the caller can update this group (tenant check)
+        // AuthZ gate: verify the caller can update this group (tenant check).
+        // Runs outside the transaction since AuthZ is idempotent and does not
+        // need SERIALIZABLE isolation.
         let scope = self
             .enforcer
             .access_scope(ctx, &RG_GROUP_RESOURCE, "update", Some(group_id))
             .await
             .map_err(DomainError::from)?;
 
+        // Pre-validation (stateless, outside transaction)
         Self::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
 
-        let conn = self.db.conn()?;
+        let profile = self.profile.clone();
+        let db = self.db.db();
 
-        // Verify the group is visible under the caller's scope
-        GroupRepository::find_by_id(&conn, &scope, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+        for attempt in 1..=MAX_SERIALIZATION_RETRIES {
+            let req = req.clone();
+            let scope = scope.clone();
+            let profile = profile.clone();
 
-        // Load raw model for internal validation (system scope)
-        let existing = GroupRepository::find_model_by_id(&conn, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+            let result = db
+                .transaction_ref_mapped_with_config(TxConfig::serializable(), |tx| {
+                    Box::pin(async move {
+                        Self::update_group_inner(tx, &scope, group_id, &req, &profile).await
+                    })
+                })
+                .await;
 
-        // Resolve new type
-        let new_type_id = TypeRepository::resolve_id(&conn, &req.type_path)
-            .await?
-            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
-
-        let rg_type = TypeRepository::find_by_code(&conn, &req.type_path)
-            .await?
-            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
-
-        // Determine if parent changed
-        let parent_changed = existing.parent_id != req.parent_id;
-        let type_changed = existing.gts_type_id != new_type_id;
-
-        if type_changed {
-            // Validate new type against current parent
-            if let Some(parent_id) = existing.parent_id.or(req.parent_id) {
-                let parent = GroupRepository::find_model_by_id(&conn, parent_id)
-                    .await?
-                    .ok_or_else(|| DomainError::group_not_found(parent_id))?;
-
-                let parent_type_path =
-                    Self::resolve_type_path_from_id(&conn, parent.gts_type_id).await?;
-                if !rg_type.allowed_parents.contains(&parent_type_path) {
-                    return Err(DomainError::invalid_parent_type(format!(
-                        "New type '{}' does not allow current parent type '{}'",
-                        req.type_path, parent_type_path
-                    )));
+            match result {
+                Ok(group) => return Ok(group),
+                Err(ref e)
+                    if e.is_serialization_failure() && attempt < MAX_SERIALIZATION_RETRIES =>
+                {
+                    warn!(
+                        attempt,
+                        max = MAX_SERIALIZATION_RETRIES,
+                        group_id = %group_id,
+                        "Serialization conflict in update_group, retrying"
+                    );
                 }
-            } else if !rg_type.can_be_root {
-                return Err(DomainError::invalid_parent_type(format!(
-                    "New type '{}' cannot be a root group",
-                    req.type_path
-                )));
-            }
-
-            // Validate that all children's types allow the new type as parent
-            let children = Self::get_direct_children(&conn, group_id).await?;
-            for child in &children {
-                let child_type = TypeRepository::find_by_code(
-                    &conn,
-                    &Self::resolve_type_path_from_id(&conn, child.gts_type_id).await?,
-                )
-                .await?
-                .ok_or_else(|| DomainError::database("Child type not found during validation"))?;
-
-                if !child_type.allowed_parents.contains(&req.type_path) {
-                    return Err(DomainError::invalid_parent_type(format!(
-                        "Child group '{}' of type '{}' does not allow '{}' as parent type",
-                        child.name, child_type.code, req.type_path
-                    )));
-                }
+                Err(e) => return Err(e),
             }
         }
 
-        if parent_changed {
-            // Delegate to move_group logic
-            self.move_group_internal(&conn, group_id, req.parent_id, &rg_type)
-                .await?;
-        }
-
-        // Update the group record
-        let _model = GroupRepository::update(
-            &conn,
-            group_id,
-            req.parent_id,
-            new_type_id,
-            &req.name,
-            req.metadata.as_ref(),
-        )
-        .await?;
-
-        let sys = modkit_security::AccessScope::allow_all();
-        GroupRepository::find_by_id(&conn, &sys, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))
+        unreachable!("retry loop always returns")
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-move-group:p1
     /// Move a group to a new parent (or make it a root).
+    ///
+    /// Runs inside a `SERIALIZABLE` transaction with bounded retry (max 3 attempts)
+    /// to ensure cycle detection, invariant checks, and closure table rebuild are atomic.
     pub async fn move_group(
         &self,
         group_id: Uuid,
         new_parent_id: Option<Uuid>,
     ) -> Result<ResourceGroup, DomainError> {
-        let conn = self.db.conn()?;
+        let profile = self.profile.clone();
+        let db = self.db.db();
 
-        let existing = GroupRepository::find_model_by_id(&conn, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+        for attempt in 1..=MAX_SERIALIZATION_RETRIES {
+            let profile = profile.clone();
 
-        let type_path = Self::resolve_type_path_from_id(&conn, existing.gts_type_id).await?;
-        let rg_type = TypeRepository::find_by_code(&conn, &type_path)
-            .await?
-            .ok_or_else(|| DomainError::type_not_found(&type_path))?;
+            let result = db
+                .transaction_ref_mapped_with_config(TxConfig::serializable(), |tx| {
+                    Box::pin(async move {
+                        Self::move_group_inner(tx, group_id, new_parent_id, &profile).await
+                    })
+                })
+                .await;
 
-        self.move_group_internal(&conn, group_id, new_parent_id, &rg_type)
-            .await?;
+            match result {
+                Ok(group) => return Ok(group),
+                Err(ref e)
+                    if e.is_serialization_failure() && attempt < MAX_SERIALIZATION_RETRIES =>
+                {
+                    warn!(
+                        attempt,
+                        max = MAX_SERIALIZATION_RETRIES,
+                        group_id = %group_id,
+                        "Serialization conflict in move_group, retrying"
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        }
 
-        // Update parent_id on the group
-        GroupRepository::update(
-            &conn,
-            group_id,
-            new_parent_id,
-            existing.gts_type_id,
-            &existing.name,
-            existing.metadata.as_ref(),
-        )
-        .await?;
-
-        let sys = modkit_security::AccessScope::allow_all();
-        GroupRepository::find_by_id(&conn, &sys, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))
+        unreachable!("retry loop always returns")
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-entity-hier-delete-group:p1
     /// Delete a resource group (AuthZ-scoped).
+    ///
+    /// Runs inside a `SERIALIZABLE` transaction with bounded retry (max 3 attempts)
+    /// to ensure reference checks and cascading deletes are atomic.
     pub async fn delete_group(
         &self,
         ctx: &SecurityContext,
         group_id: Uuid,
         force: bool,
     ) -> Result<(), DomainError> {
-        // AuthZ gate: verify the caller can delete this group (tenant check)
+        // AuthZ gate: verify the caller can delete this group (tenant check).
+        // Runs outside the transaction since AuthZ is idempotent.
         let scope = self
             .enforcer
             .access_scope(ctx, &RG_GROUP_RESOURCE, "delete", Some(group_id))
             .await
             .map_err(DomainError::from)?;
 
-        let conn = self.db.conn()?;
+        let db = self.db.db();
 
-        // Verify the group is visible under the caller's scope
-        GroupRepository::find_by_id(&conn, &scope, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+        for attempt in 1..=MAX_SERIALIZATION_RETRIES {
+            let scope = scope.clone();
 
-        let _existing = GroupRepository::find_model_by_id(&conn, group_id)
-            .await?
-            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+            let result = db
+                .transaction_ref_mapped_with_config(TxConfig::serializable(), |tx| {
+                    Box::pin(
+                        async move { Self::delete_group_inner(tx, &scope, group_id, force).await },
+                    )
+                })
+                .await;
 
-        if force {
-            // Force delete: cascade entire subtree + memberships + closure
-            self.force_delete_subtree(&conn, group_id).await
-        } else {
-            // Non-force: check children and memberships
-            let children = Self::get_direct_children(&conn, group_id).await?;
-            if !children.is_empty() {
-                return Err(DomainError::conflict_active_references(format!(
-                    "Cannot delete group '{group_id}': has {} child group(s). Use force=true to cascade.",
-                    children.len()
-                )));
+            match result {
+                Ok(()) => return Ok(()),
+                Err(ref e)
+                    if e.is_serialization_failure() && attempt < MAX_SERIALIZATION_RETRIES =>
+                {
+                    warn!(
+                        attempt,
+                        max = MAX_SERIALIZATION_RETRIES,
+                        group_id = %group_id,
+                        "Serialization conflict in delete_group, retrying"
+                    );
+                }
+                Err(e) => return Err(e),
             }
-
-            let has_memberships = GroupRepository::has_memberships(&conn, group_id).await?;
-            if has_memberships {
-                return Err(DomainError::conflict_active_references(format!(
-                    "Cannot delete group '{group_id}': has active memberships. Use force=true to cascade."
-                )));
-            }
-
-            // Delete closure rows, then the group
-            GroupRepository::delete_all_closure_rows(&conn, group_id).await?;
-            GroupRepository::delete_by_id(&conn, group_id).await
         }
+
+        unreachable!("retry loop always returns")
     }
 
     /// List hierarchy for a group (AuthZ-scoped).
@@ -447,17 +334,311 @@ impl GroupService {
         GroupRepository::list_hierarchy(&conn, &scope, group_id, query).await
     }
 
+    // -- Transaction-inner implementations --
+
+    /// Inner logic for `create_group`, runs inside a SERIALIZABLE transaction.
+    async fn create_group_inner(
+        tx: &impl DBRunner,
+        req: &CreateGroupRequest,
+        tenant_id: Uuid,
+        profile: &QueryProfile,
+    ) -> Result<ResourceGroup, DomainError> {
+        // Resolve type
+        let type_id = TypeRepository::resolve_id(tx, &req.type_path)
+            .await?
+            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+
+        // Load full type for validation
+        let rg_type = TypeRepository::find_by_code(tx, &req.type_path)
+            .await?
+            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+
+        if let Some(parent_id) = req.parent_id {
+            // Child group: validate parent exists, type compatibility, tenant
+            let parent = GroupRepository::find_model_by_id(tx, parent_id)
+                .await?
+                .ok_or_else(|| DomainError::group_not_found(parent_id))?;
+
+            // Validate parent type compatibility
+            let parent_type_path = Self::resolve_type_path_from_id(tx, parent.gts_type_id).await?;
+            if !rg_type.allowed_parents.contains(&parent_type_path) {
+                return Err(DomainError::invalid_parent_type(format!(
+                    "Type '{}' does not allow parent type '{}'",
+                    req.type_path, parent_type_path
+                )));
+            }
+
+            // @cpt-algo:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1
+            // Validate tenant compatibility (child must be same tenant as parent)
+            if parent.tenant_id != tenant_id {
+                return Err(DomainError::validation(format!(
+                    "Child group tenant_id ({tenant_id}) must match parent tenant_id ({})",
+                    parent.tenant_id
+                )));
+            }
+
+            // Check query profile: depth limit
+            if let Some(max_depth) = profile.max_depth {
+                let parent_depth = GroupRepository::get_depth(tx, parent_id).await?;
+                #[allow(clippy::cast_possible_wrap)]
+                if parent_depth + 1 >= max_depth as i32 {
+                    return Err(DomainError::limit_violation(format!(
+                        "Depth limit exceeded: adding child at depth {} exceeds max_depth {}",
+                        parent_depth + 1,
+                        max_depth
+                    )));
+                }
+            }
+
+            // Check query profile: width limit
+            if let Some(max_width) = profile.max_width {
+                let sibling_count = GroupRepository::count_children(tx, parent_id).await?;
+                if sibling_count >= u64::from(max_width) {
+                    return Err(DomainError::limit_violation(format!(
+                        "Width limit exceeded: parent already has {sibling_count} children, max_width is {max_width}"
+                    )));
+                }
+            }
+
+            // Insert group
+            let group_id = Uuid::now_v7();
+            let _model = GroupRepository::insert(
+                tx,
+                group_id,
+                Some(parent_id),
+                type_id,
+                &req.name,
+                req.metadata.as_ref(),
+                tenant_id,
+            )
+            .await?;
+
+            // Insert closure: self-row + ancestor rows
+            GroupRepository::insert_closure_self_row(tx, group_id).await?;
+            GroupRepository::insert_ancestor_closure_rows(tx, group_id, parent_id).await?;
+
+            let sys = modkit_security::AccessScope::allow_all();
+            GroupRepository::find_by_id(tx, &sys, group_id)
+                .await?
+                .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
+        } else {
+            // Root group: validate can_be_root
+            if !rg_type.can_be_root {
+                return Err(DomainError::invalid_parent_type(format!(
+                    "Type '{}' cannot be a root group (can_be_root=false)",
+                    req.type_path
+                )));
+            }
+
+            // Insert group
+            let group_id = Uuid::now_v7();
+            let _model = GroupRepository::insert(
+                tx,
+                group_id,
+                None,
+                type_id,
+                &req.name,
+                req.metadata.as_ref(),
+                tenant_id,
+            )
+            .await?;
+
+            // Insert closure: self-row only
+            GroupRepository::insert_closure_self_row(tx, group_id).await?;
+
+            let sys = modkit_security::AccessScope::allow_all();
+            GroupRepository::find_by_id(tx, &sys, group_id)
+                .await?
+                .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
+        }
+    }
+
+    /// Inner logic for `update_group`, runs inside a SERIALIZABLE transaction.
+    async fn update_group_inner(
+        tx: &impl DBRunner,
+        scope: &modkit_security::AccessScope,
+        group_id: Uuid,
+        req: &UpdateGroupRequest,
+        profile: &QueryProfile,
+    ) -> Result<ResourceGroup, DomainError> {
+        // Verify the group is visible under the caller's scope
+        GroupRepository::find_by_id(tx, scope, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+
+        // Load raw model for internal validation (system scope)
+        let existing = GroupRepository::find_model_by_id(tx, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+
+        // Resolve new type
+        let new_type_id = TypeRepository::resolve_id(tx, &req.type_path)
+            .await?
+            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+
+        let rg_type = TypeRepository::find_by_code(tx, &req.type_path)
+            .await?
+            .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+
+        // Determine if parent changed
+        let parent_changed = existing.parent_id != req.parent_id;
+        let type_changed = existing.gts_type_id != new_type_id;
+
+        if type_changed {
+            // Validate new type against current parent
+            if let Some(parent_id) = existing.parent_id.or(req.parent_id) {
+                let parent = GroupRepository::find_model_by_id(tx, parent_id)
+                    .await?
+                    .ok_or_else(|| DomainError::group_not_found(parent_id))?;
+
+                let parent_type_path =
+                    Self::resolve_type_path_from_id(tx, parent.gts_type_id).await?;
+                if !rg_type.allowed_parents.contains(&parent_type_path) {
+                    return Err(DomainError::invalid_parent_type(format!(
+                        "New type '{}' does not allow current parent type '{}'",
+                        req.type_path, parent_type_path
+                    )));
+                }
+            } else if !rg_type.can_be_root {
+                return Err(DomainError::invalid_parent_type(format!(
+                    "New type '{}' cannot be a root group",
+                    req.type_path
+                )));
+            }
+
+            // Validate that all children's types allow the new type as parent
+            let children = Self::get_direct_children(tx, group_id).await?;
+            for child in &children {
+                let child_type = TypeRepository::find_by_code(
+                    tx,
+                    &Self::resolve_type_path_from_id(tx, child.gts_type_id).await?,
+                )
+                .await?
+                .ok_or_else(|| DomainError::database("Child type not found during validation"))?;
+
+                if !child_type.allowed_parents.contains(&req.type_path) {
+                    return Err(DomainError::invalid_parent_type(format!(
+                        "Child group '{}' of type '{}' does not allow '{}' as parent type",
+                        child.name, child_type.code, req.type_path
+                    )));
+                }
+            }
+        }
+
+        if parent_changed {
+            // Delegate to move logic (cycle detection + closure rebuild)
+            Self::move_group_internal_impl(tx, group_id, req.parent_id, &rg_type, profile).await?;
+        }
+
+        // Update the group record
+        let _model = GroupRepository::update(
+            tx,
+            group_id,
+            req.parent_id,
+            new_type_id,
+            &req.name,
+            req.metadata.as_ref(),
+        )
+        .await?;
+
+        let sys = modkit_security::AccessScope::allow_all();
+        GroupRepository::find_by_id(tx, &sys, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))
+    }
+
+    /// Inner logic for `move_group`, runs inside a SERIALIZABLE transaction.
+    async fn move_group_inner(
+        tx: &impl DBRunner,
+        group_id: Uuid,
+        new_parent_id: Option<Uuid>,
+        profile: &QueryProfile,
+    ) -> Result<ResourceGroup, DomainError> {
+        let existing = GroupRepository::find_model_by_id(tx, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+
+        let type_path = Self::resolve_type_path_from_id(tx, existing.gts_type_id).await?;
+        let rg_type = TypeRepository::find_by_code(tx, &type_path)
+            .await?
+            .ok_or_else(|| DomainError::type_not_found(&type_path))?;
+
+        Self::move_group_internal_impl(tx, group_id, new_parent_id, &rg_type, profile).await?;
+
+        // Update parent_id on the group
+        GroupRepository::update(
+            tx,
+            group_id,
+            new_parent_id,
+            existing.gts_type_id,
+            &existing.name,
+            existing.metadata.as_ref(),
+        )
+        .await?;
+
+        let sys = modkit_security::AccessScope::allow_all();
+        GroupRepository::find_by_id(tx, &sys, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))
+    }
+
+    /// Inner logic for `delete_group`, runs inside a SERIALIZABLE transaction.
+    async fn delete_group_inner(
+        tx: &impl DBRunner,
+        scope: &modkit_security::AccessScope,
+        group_id: Uuid,
+        force: bool,
+    ) -> Result<(), DomainError> {
+        // Verify the group is visible under the caller's scope
+        GroupRepository::find_by_id(tx, scope, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+
+        let _existing = GroupRepository::find_model_by_id(tx, group_id)
+            .await?
+            .ok_or_else(|| DomainError::group_not_found(group_id))?;
+
+        if force {
+            // Force delete: cascade entire subtree + memberships + closure
+            Self::force_delete_subtree(tx, group_id).await
+        } else {
+            // Non-force: check children and memberships
+            let children = Self::get_direct_children(tx, group_id).await?;
+            if !children.is_empty() {
+                return Err(DomainError::conflict_active_references(format!(
+                    "Cannot delete group '{group_id}': has {} child group(s). Use force=true to cascade.",
+                    children.len()
+                )));
+            }
+
+            let has_memberships = GroupRepository::has_memberships(tx, group_id).await?;
+            if has_memberships {
+                return Err(DomainError::conflict_active_references(format!(
+                    "Cannot delete group '{group_id}': has active memberships. Use force=true to cascade."
+                )));
+            }
+
+            // Delete closure rows, then the group
+            GroupRepository::delete_all_closure_rows(tx, group_id).await?;
+            GroupRepository::delete_by_id(tx, group_id).await
+        }
+    }
+
     // -- Internal helpers --
 
     // @cpt-algo:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1
     // @cpt-algo:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1
     /// Internal move logic shared between `move_group` and `update_group`.
-    async fn move_group_internal(
-        &self,
+    ///
+    /// Performs cycle detection, type compatibility checks, query profile
+    /// enforcement, and closure table rebuild. Must be called within a
+    /// SERIALIZABLE transaction.
+    async fn move_group_internal_impl(
         conn: &impl DBRunner,
         group_id: Uuid,
         new_parent_id: Option<Uuid>,
         rg_type: &resource_group_sdk::ResourceGroupType,
+        profile: &QueryProfile,
     ) -> Result<(), DomainError> {
         if let Some(new_pid) = new_parent_id {
             // Cycle detection: check new parent is not in subtree of group being moved
@@ -483,7 +664,7 @@ impl GroupService {
             }
 
             // Check query profile: depth limit
-            if let Some(max_depth) = self.profile.max_depth {
+            if let Some(max_depth) = profile.max_depth {
                 let parent_depth = GroupRepository::get_depth(conn, new_pid).await?;
                 // Check depth of deepest descendant of moved node
                 let subtree_descendants =
@@ -512,7 +693,7 @@ impl GroupService {
             }
 
             // Check query profile: width limit
-            if let Some(max_width) = self.profile.max_width {
+            if let Some(max_width) = profile.max_width {
                 let sibling_count = GroupRepository::count_children(conn, new_pid).await?;
                 if sibling_count >= u64::from(max_width) {
                     return Err(DomainError::limit_violation(format!(
@@ -535,11 +716,7 @@ impl GroupService {
     }
 
     /// Force-delete an entire subtree (group + descendants + memberships + closure).
-    async fn force_delete_subtree(
-        &self,
-        conn: &impl DBRunner,
-        root_id: Uuid,
-    ) -> Result<(), DomainError> {
+    async fn force_delete_subtree(conn: &impl DBRunner, root_id: Uuid) -> Result<(), DomainError> {
         // Get all descendants
         let descendant_ids = GroupRepository::get_descendant_ids(conn, root_id).await?;
 
