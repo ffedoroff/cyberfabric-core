@@ -1,8 +1,40 @@
 # Feature: E2E Test Plan for Resource Group Module
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-e2e-testing`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-e2e-testing`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-e2e-testing`
+- [x] `p1` - `cpt-cf-resource-group-feature-e2e-testing`
+
+## Feature Context
+
+### Overview
+
+End-to-end test plan for the resource-group module. Covers 10 integration seam tests using real PostgreSQL, HTTP, and AuthN/AuthZ pipeline.
+
+### Purpose
+
+Verify integration seams that unit tests (Feature 0006) cannot cover: HTTP routing, PostgreSQL-specific behavior, real AuthN/AuthZ, MTLS, and cursor codec over HTTP.
+
+**Requirements**: Features 0001-0006
+
+### Actors
+
+| Actor | Role in Feature |
+|-------|-----------------|
+| Developer | Runs E2E tests, maintains test infrastructure |
+
+### References
+
+- **PRD**: [PRD.md](../PRD.md)
+- **Design**: [DESIGN.md](../DESIGN.md)
+- **Dependencies**: Features 0001-0006
+
+## Actor Flows (CDSL)
+
+No actor flows — this is a test specification feature.
+
+## Processes / Business Logic (CDSL)
+
+No processes — test logic is defined in test plan sections below.
 
 ---
 
@@ -82,11 +114,42 @@ All of the above is **deterministic logic** that works identically whether calle
 
 <!-- toc -->
 
+- [Feature Context](#feature-context)
+  - [Overview](#overview)
+  - [Purpose](#purpose)
+  - [Actors](#actors)
+  - [References](#references)
+- [Actor Flows (CDSL)](#actor-flows-cdsl)
+- [Processes / Business Logic (CDSL)](#processes--business-logic-cdsl)
+- [TL;DR](#tldr)
+- [Philosophy](#philosophy)
+  - [What Is an E2E Test in This Project](#what-is-an-e2e-test-in-this-project)
+  - [Three Questions Before Adding a Test](#three-questions-before-adding-a-test)
+  - [What We Do NOT Test via E2E](#what-we-do-not-test-via-e2e)
+  - [What We Test (7 Integration Seams)](#what-we-test-7-integration-seams)
+  - [Reliability Principles](#reliability-principles)
 - [1. Integration Seams Map](#1-integration-seams-map)
 - [2. Test Infrastructure](#2-test-infrastructure)
+  - [File Layout](#file-layout)
+  - [Dependencies](#dependencies)
+  - [pytest Configuration](#pytest-configuration)
+  - [Reliability Rules](#reliability-rules)
+  - [Shared Helpers (add to conftest.py)](#shared-helpers-add-to-conftestpy)
 - [3. Core Test Suite (10 tests)](#3-core-test-suite-10-tests)
+  - [S1: `test_route_smoke_all_endpoints`](#s1-testroutesmokeallendpoints)
+  - [S2: `test_dto_roundtrip_group_json_shape`](#s2-testdtoroundtripgroupjsonshape)
+  - [S3: `test_authz_tenant_filter_applied`](#s3-testauthztenantfilterapplied)
+  - [S4: `test_cross_tenant_invisible`](#s4-testcrosstenantinvisible)
+  - [S5: `test_hierarchy_closure_postgresql`](#s5-testhierarchyclosurepostgresql)
+  - [S6: `test_move_closure_rebuild_postgresql`](#s6-testmoveclosurerebuildpostgresql)
+  - [S7: `test_force_delete_cascade_postgresql`](#s7-testforcedeletecascadepostgresql)
+  - [S8: `test_error_response_rfc9457`](#s8-testerrorresponserfc9457)
+  - [S9: `test_pagination_cursor_roundtrip`](#s9-testpaginationcursorroundtrip)
+  - [S10: `test_membership_filter_wiring`](#s10-testmembershipfilterwiring)
 - [4. Optional Suite](#4-optional-suite)
 - [5. Anti-Patterns (do NOT test here)](#5-anti-patterns-do-not-test-here)
+- [Definitions of Done](#definitions-of-done)
+  - [E2E Test Suite Implementation](#e2e-test-suite-implementation)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
 
 <!-- /toc -->
@@ -423,28 +486,36 @@ All other 9 core tests run with a single token, no special infra.
 
 ---
 
+## Definitions of Done
+
+### E2E Test Suite Implementation
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-e2e-test-suite`
+
+The system **MUST** have 10 E2E tests covering integration seams as defined in section 3.
+
 ## 6. Acceptance Criteria
 
 **Suite-level:**
-- [ ] 10 core tests in single file `test_integration_seams.py`
-- [ ] Total suite runtime < 15 seconds (excluding optional)
-- [ ] Zero flakes on 10 consecutive runs (`pytest --count=10` with `pytest-repeat`)
-- [ ] `pytest-timeout` configured: per-test hard limit 10s, per-request 5s
-- [ ] `asyncio_mode = auto` — no `@pytest.mark.asyncio` boilerplate
-- [ ] No `time.sleep()` in any test
+- [x] 10 core tests in single file `test_integration_seams.py`
+- [x] Total suite runtime < 15 seconds (excluding optional)
+- [x] Zero flakes on 10 consecutive runs (`pytest --count=10` with `pytest-repeat`)
+- [x] `pytest-timeout` configured: per-test hard limit 10s, per-request 5s
+- [x] `asyncio_mode = auto` — no `@pytest.mark.asyncio` boilerplate
+- [x] No `time.sleep()` in any test
 
 **Per-test quality:**
-- [ ] Each test targets exactly one integration seam (documented in test docstring)
-- [ ] S1 (route smoke) requires no data setup — fastest possible
-- [ ] S2 (DTO roundtrip) verifies exact JSON key names, not just "response is 200"
-- [ ] S5/S6 (closure) verify `depth` values, not just "hierarchy returns items"
-- [ ] S7 (force delete) verifies children, memberships cleaned — not just 204
-- [ ] S8 (error format) checks `Content-Type: application/problem+json` header
-- [ ] S9 (pagination) asserts no duplicates AND no missing items across pages
+- [x] Each test targets exactly one integration seam (documented in test docstring)
+- [x] S1 (route smoke) requires no data setup — fastest possible
+- [x] S2 (DTO roundtrip) verifies exact JSON key names, not just "response is 200"
+- [x] S5/S6 (closure) verify `depth` values, not just "hierarchy returns items"
+- [x] S7 (force delete) verifies children, memberships cleaned — not just 204
+- [x] S8 (error format) checks `Content-Type: application/problem+json` header
+- [x] S9 (pagination) asserts no duplicates AND no missing items across pages
 
 **Isolation:**
-- [ ] Each test creates its own data — no cross-test dependencies
-- [ ] S4 (cross-tenant) skips gracefully when second token unavailable
-- [ ] No test duplicates 0006 domain logic — if removing the test doesn't reduce integration confidence, the test shouldn't exist
+- [x] Each test creates its own data — no cross-test dependencies
+- [x] S4 (cross-tenant) skips gracefully when second token unavailable
+- [x] No test duplicates 0006 domain logic — if removing the test doesn't reduce integration confidence, the test shouldn't exist
 
 > Design guided by [Google SMURF (2024)](https://testing.googleblog.com/2024/10/smurf-beyond-test-pyramid.html): each test justified by high **Fidelity** (real PG + real AuthZ) that compensates for lower **Speed** vs unit tests. Tests that add Fidelity without unique integration coverage are cut.

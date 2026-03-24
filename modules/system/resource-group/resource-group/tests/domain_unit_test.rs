@@ -382,3 +382,79 @@ fn domain_to_problem_conflict_is_409() {
     let problem: Problem = domain.into();
     assert_eq!(problem.status, http::StatusCode::CONFLICT);
 }
+
+// @cpt-dod:cpt-cf-resource-group-dod-testing-error-conversions:p2
+// ── Error conversions: From<EnforcerError> -> DomainError ────────────────
+
+// TC-ERR-01: EnforcerError::Denied -> DomainError::AccessDenied
+#[test]
+fn enforcer_denied_maps_to_access_denied() {
+    use authz_resolver_sdk::pep::EnforcerError;
+
+    let err: DomainError = EnforcerError::Denied { deny_reason: None }.into();
+    assert!(
+        matches!(err, DomainError::AccessDenied { .. }),
+        "Expected AccessDenied, got: {err:?}"
+    );
+}
+
+// TC-ERR-02: EnforcerError::EvaluationFailed -> DomainError::AccessDenied
+#[test]
+fn enforcer_evaluation_failed_maps_to_access_denied() {
+    use authz_resolver_sdk::AuthZResolverError;
+    use authz_resolver_sdk::pep::EnforcerError;
+
+    let err: DomainError =
+        EnforcerError::EvaluationFailed(AuthZResolverError::NoPluginAvailable).into();
+    assert!(
+        matches!(err, DomainError::AccessDenied { .. }),
+        "Expected AccessDenied, got: {err:?}"
+    );
+}
+
+// TC-ERR-03: EnforcerError::CompileFailed -> DomainError::AccessDenied
+#[test]
+fn enforcer_compile_failed_maps_to_access_denied() {
+    use authz_resolver_sdk::pep::ConstraintCompileError;
+    use authz_resolver_sdk::pep::EnforcerError;
+
+    let err: DomainError =
+        EnforcerError::CompileFailed(ConstraintCompileError::ConstraintsRequiredButAbsent).into();
+    assert!(
+        matches!(err, DomainError::AccessDenied { .. }),
+        "Expected AccessDenied, got: {err:?}"
+    );
+}
+
+// TC-ERR-04: sea_orm::DbErr -> DomainError::Database
+#[test]
+fn sea_orm_db_err_maps_to_database() {
+    let db_err = sea_orm::DbErr::Custom("connection lost".to_owned());
+    let err: DomainError = db_err.into();
+    assert!(
+        matches!(err, DomainError::Database { .. }),
+        "Expected Database, got: {err:?}"
+    );
+    assert!(err.to_string().contains("connection lost"));
+}
+
+// TC-ERR-05: modkit_db::DbError -> DomainError::Database
+#[test]
+fn modkit_db_error_maps_to_database() {
+    let db_err = modkit_db::DbError::from(sea_orm::DbErr::Custom("pool exhausted".to_owned()));
+    let err: DomainError = db_err.into();
+    assert!(
+        matches!(err, DomainError::Database { .. }),
+        "Expected Database, got: {err:?}"
+    );
+}
+
+// ── QueryProfile default (TC-SDK-17) ─────────────────────────────────────
+
+#[test]
+fn query_profile_default_values() {
+    use cf_resource_group::domain::group_service::QueryProfile;
+    let profile = QueryProfile::default();
+    assert_eq!(profile.max_depth, Some(10));
+    assert_eq!(profile.max_width, None);
+}

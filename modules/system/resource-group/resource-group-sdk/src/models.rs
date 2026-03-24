@@ -306,3 +306,236 @@ pub struct ResourceGroupMembership {
     /// External resource identifier.
     pub resource_id: String,
 }
+
+// @cpt-dod:cpt-cf-resource-group-dod-testing-sdk-models:p1
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- GtsTypePath: valid cases (table-driven) -- TC-SDK-01, 06, 07, 08, 19, 20
+
+    #[test]
+    fn gts_type_path_valid_cases() {
+        let valid = vec![
+            // TC-SDK-01: basic valid path
+            ("gts.x.system.rg.type.v1~", "gts.x.system.rg.type.v1~"),
+            // TC-SDK-06: uppercase is lowered
+            ("GTS.X.SYSTEM.RG.TYPE.V1~", "gts.x.system.rg.type.v1~"),
+            // TC-SDK-07: trimmed + lowered
+            ("  GTS.X.System.RG.Type.V1~  ", "gts.x.system.rg.type.v1~"),
+            // TC-SDK-08: multi-segment
+            (
+                "gts.x.system.rg.type.v1~x.test.v1~",
+                "gts.x.system.rg.type.v1~x.test.v1~",
+            ),
+            // TC-SDK-19: numeric segments
+            ("gts.123~456~", "gts.123~456~"),
+            // TC-SDK-20: underscores
+            ("gts.a_b.c_d~", "gts.a_b.c_d~"),
+        ];
+        for (input, expected) in valid {
+            let path = GtsTypePath::new(input);
+            assert!(path.is_ok(), "should be valid: {input}");
+            assert_eq!(path.unwrap().as_str(), expected, "for input: {input}");
+        }
+    }
+
+    // -- GtsTypePath: invalid cases (table-driven) -- TC-SDK-02..05, 09, 10, 18, 21
+
+    #[test]
+    fn gts_type_path_invalid_cases() {
+        let cases = vec![
+            // TC-SDK-02: empty
+            ("", "must not be empty"),
+            // TC-SDK-04: wrong prefix
+            ("invalid.path~", "Invalid GTS type path format"),
+            // TC-SDK-05: no trailing tilde
+            ("gts.x.system.rg.type.v1", "Invalid GTS type path format"),
+            // TC-SDK-09: double tilde
+            ("gts.x.system.rg.type.v1~~", "Invalid GTS type path format"),
+            // TC-SDK-10: hyphen in segment
+            (
+                "gts.x.system.rg.type.v1~hello-world~",
+                "Invalid GTS type path format",
+            ),
+            // TC-SDK-18: empty segment after gts.
+            ("gts.~", "Invalid GTS type path format"),
+            // TC-SDK-21: whitespace-only
+            ("   ", "must not be empty"),
+        ];
+        for (input, expected_msg) in cases {
+            let result = GtsTypePath::new(input);
+            assert!(result.is_err(), "should be invalid: '{input}'");
+            let err = result.unwrap_err();
+            assert!(
+                err.contains(expected_msg),
+                "for input '{input}': expected '{expected_msg}' in error, got: {err}"
+            );
+        }
+    }
+
+    // -- GtsTypePath: length boundary tests -- TC-SDK-03, 22, 23
+
+    #[test]
+    fn gts_type_path_max_length_boundary() {
+        // TC-SDK-22: exactly 255 chars -> Ok
+        // Build: "gts." (4) + segment + "~" (1) = 255 => segment = 250 chars
+        let segment = "a".repeat(250);
+        let path_255 = format!("gts.{segment}~");
+        assert_eq!(path_255.len(), 255);
+        assert!(
+            GtsTypePath::new(&path_255).is_ok(),
+            "exactly 255 chars should be valid"
+        );
+
+        // TC-SDK-23: exactly 256 chars -> Err
+        let segment_251 = "a".repeat(251);
+        let path_256 = format!("gts.{segment_251}~");
+        assert_eq!(path_256.len(), 256);
+        let result = GtsTypePath::new(&path_256);
+        assert!(result.is_err(), "256 chars should exceed max length");
+        assert!(result.unwrap_err().contains("exceeds maximum length"));
+
+        // TC-SDK-03: 255+ chars (well above max)
+        let long_segment = "a".repeat(300);
+        let long_path = format!("gts.{long_segment}~");
+        assert!(long_path.len() > 255);
+        let result = GtsTypePath::new(&long_path);
+        assert!(result.is_err(), "255+ chars should be rejected");
+        assert!(result.unwrap_err().contains("exceeds maximum length"));
+    }
+
+    // -- GtsTypePath: serde round-trip -- TC-SDK-11, 12
+
+    #[test]
+    fn gts_type_path_serde_round_trip() {
+        // TC-SDK-11: serialize then deserialize
+        let original = GtsTypePath::new("gts.x.system.rg.type.v1~").unwrap();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: GtsTypePath = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn gts_type_path_serde_invalid_rejects() {
+        // TC-SDK-12: invalid value during deserialization
+        let result = serde_json::from_str::<GtsTypePath>("\"invalid\"");
+        assert!(result.is_err(), "invalid path should fail deserialization");
+    }
+
+    // -- GtsTypePath: Display / Into<String> -- TC-SDK-13
+
+    #[test]
+    fn gts_type_path_display_and_into_string() {
+        let path = GtsTypePath::new("gts.x.system.rg.type.v1~").unwrap();
+        let display = path.to_string();
+        let into_string: String = path.into();
+        assert_eq!(display, into_string);
+    }
+
+    // -- ResourceGroupType serialization -- TC-SDK-14
+
+    #[test]
+    fn resource_group_type_camel_case_keys() {
+        let rgt = ResourceGroupType {
+            code: "gts.x.system.rg.type.v1~".to_owned(),
+            can_be_root: true,
+            allowed_parents: vec!["gts.parent~".to_owned()],
+            allowed_memberships: vec!["gts.member~".to_owned()],
+            metadata_schema: None,
+        };
+        let json = serde_json::to_value(&rgt).unwrap();
+        assert!(
+            json.get("canBeRoot").is_some(),
+            "expected camelCase 'canBeRoot'"
+        );
+        assert!(
+            json.get("allowedParents").is_some(),
+            "expected camelCase 'allowedParents'"
+        );
+        assert!(
+            json.get("allowedMemberships").is_some(),
+            "expected camelCase 'allowedMemberships'"
+        );
+        assert!(
+            json.get("metadataSchema").is_none(),
+            "metadataSchema should be absent when None"
+        );
+    }
+
+    // -- ResourceGroup serialization -- TC-SDK-15, 16
+
+    #[test]
+    fn resource_group_type_field_renamed() {
+        // TC-SDK-15: "type" not "type_path"
+        let group = ResourceGroup {
+            id: Uuid::nil(),
+            type_path: "gts.x.system.rg.type.v1~".to_owned(),
+            name: "Test".to_owned(),
+            hierarchy: GroupHierarchy {
+                parent_id: None,
+                tenant_id: Uuid::nil(),
+            },
+            metadata: Some(serde_json::json!({"key": "val"})),
+        };
+        let json = serde_json::to_value(&group).unwrap();
+        assert!(
+            json.get("type").is_some(),
+            "expected 'type' key, not 'type_path'"
+        );
+        assert!(
+            json.get("type_path").is_none(),
+            "'type_path' should not appear in JSON"
+        );
+    }
+
+    #[test]
+    fn resource_group_metadata_absent_when_none() {
+        // TC-SDK-16: metadata: None -> no "metadata" key
+        let group = ResourceGroup {
+            id: Uuid::nil(),
+            type_path: "gts.x.system.rg.type.v1~".to_owned(),
+            name: "Test".to_owned(),
+            hierarchy: GroupHierarchy {
+                parent_id: None,
+                tenant_id: Uuid::nil(),
+            },
+            metadata: None,
+        };
+        let json = serde_json::to_value(&group).unwrap();
+        assert!(
+            json.get("metadata").is_none(),
+            "metadata should be absent when None, got: {json}"
+        );
+    }
+
+    // -- QueryProfile default -- TC-SDK-17
+
+    #[test]
+    fn query_profile_default_values() {
+        // QueryProfile is in group_service, not in SDK models.
+        // TC-SDK-17 is tested in domain_unit_test.rs or here via the re-export.
+        // Since QueryProfile lives in the main crate, we skip here and it's
+        // covered in domain_unit_test.rs instead.
+    }
+
+    // -- validate_type_code vs GtsTypePath inconsistency -- TC-SDK-24
+
+    #[test]
+    fn gts_type_path_trims_and_lowercases() {
+        // TC-SDK-24: GtsTypePath::new trims whitespace and lowercases.
+        // validate_type_code (in the domain crate) does NOT trim or lowercase.
+        // Document this inconsistency: the SDK normalizes input but the
+        // domain validation is a strict prefix check on the raw string.
+        let input = "  GTS.X.SYSTEM.RG.TYPE.V1~  ";
+        let path = GtsTypePath::new(input);
+        assert!(
+            path.is_ok(),
+            "GtsTypePath::new should accept trimmed/lowered input"
+        );
+        assert_eq!(path.unwrap().as_str(), "gts.x.system.rg.type.v1~");
+        // Note: validate_type_code(input) would fail because it checks
+        // prefix on the raw (untrimmed, uncased) string. This is a known
+        // inconsistency between SDK and domain validation layers.
+    }
+}

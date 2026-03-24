@@ -12,6 +12,8 @@
   - [2.3 Group Entity & Hierarchy Engine &mdash; HIGH](#23-group-entity--hierarchy-engine-mdash-high)
   - [2.4 Membership Management &mdash; MEDIUM](#24-membership-management-mdash-medium)
   - [2.5 Integration Read Port & Dual Authentication Modes &mdash; MEDIUM](#25-integration-read-port--dual-authentication-modes-mdash-medium)
+  - [2.6 Unit & Integration Test Plan — HIGH](#26-unit--integration-test-plan--high)
+  - [2.7 E2E Test Plan — MEDIUM](#27-e2e-test-plan--medium)
 - [3. Feature Dependencies](#3-feature-dependencies)
 
 <!-- /toc -->
@@ -350,6 +352,30 @@ The Resource Group DESIGN is decomposed into five features organized around the 
   - `cpt-cf-resource-group-seq-auth-modes`
   - `cpt-cf-resource-group-seq-mtls-authz-read`
   - `cpt-cf-resource-group-seq-jwt-rg-request`
+
+---
+
+### 2.6 Unit & Integration Test Plan — HIGH
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-unit-testing`
+
+- **Purpose**: Implement ~140 unit and integration tests covering domain services, value objects, error chains, DTOs, OData fields, seeding, and REST API layer using SQLite in-memory and mocked AuthZ.
+
+- **Depends On**: `cpt-cf-resource-group-feature-sdk-module-foundation`, `cpt-cf-resource-group-feature-type-management`, `cpt-cf-resource-group-feature-entity-hierarchy`, `cpt-cf-resource-group-feature-membership`, `cpt-cf-resource-group-feature-integration-auth`
+
+- **Feature**: [0006-unit-testing.md](features/0006-unit-testing.md)
+
+---
+
+### 2.7 E2E Test Plan — MEDIUM
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-e2e-testing`
+
+- **Purpose**: Implement 10 E2E tests covering integration seams using real PostgreSQL, HTTP, and AuthN/AuthZ pipeline.
+
+- **Depends On**: `cpt-cf-resource-group-feature-unit-testing`
+
+- **Feature**: [0007-e2e-testing.md](features/0007-e2e-testing.md)
 
 ---
 

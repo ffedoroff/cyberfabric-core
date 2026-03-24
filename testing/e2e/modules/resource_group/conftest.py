@@ -6,6 +6,8 @@ import time
 import httpx
 import pytest
 
+REQUEST_TIMEOUT = 5.0  # per-request hard timeout for all E2E calls
+
 
 # ── Environment-driven fixtures ──────────────────────────────────────────
 
@@ -33,7 +35,7 @@ def _check_rg_reachable():
     url = os.getenv("E2E_BASE_URL", "http://localhost:8087")
     try:
         resp = httpx.get(
-            f"{url}/cf/resource-group/v1/groups",
+            f"{url}/resource-group/v1/groups",
             timeout=5.0,
             headers={"Authorization": "Bearer test"},
         )
@@ -74,7 +76,7 @@ def create_type(rg_base_url, rg_headers):
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{rg_base_url}/cf/resource-group/v1/types",
+                f"{rg_base_url}/types-registry/v1/types",
                 headers=rg_headers,
                 json=payload,
             )
@@ -92,17 +94,19 @@ def create_group(rg_base_url, rg_headers):
     """Factory fixture: create a resource group and return its data."""
     created_ids = []
 
-    async def _create(type_code: str, name: str, parent_id: str = None):
+    async def _create(type_code: str, name: str, parent_id: str = None, metadata=None):
         payload = {
             "type": type_code,
             "name": name,
         }
         if parent_id:
             payload["parent_id"] = parent_id
+        if metadata is not None:
+            payload["metadata"] = metadata
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{rg_base_url}/cf/resource-group/v1/groups",
+                f"{rg_base_url}/resource-group/v1/groups",
                 headers=rg_headers,
                 json=payload,
             )
@@ -114,3 +118,19 @@ def create_group(rg_base_url, rg_headers):
             return data
 
     return _create
+
+
+# ── Shared helpers ──────────────────────────────────────────────────────
+
+
+def assert_group_shape(data: dict):
+    """Verify JSON wire format matches OpenAPI GroupDto contract."""
+    uuid.UUID(data["id"])
+    assert isinstance(data["type"], str)
+    assert isinstance(data["name"], str)
+    hier = data["hierarchy"]
+    uuid.UUID(hier["tenant_id"])
+    if hier.get("parent_id") is not None:
+        uuid.UUID(hier["parent_id"])
+    if data.get("metadata") is not None:
+        assert isinstance(data["metadata"], dict)

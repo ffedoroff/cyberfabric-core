@@ -94,7 +94,7 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
    6. [x] - `p1` - Invoke query profile enforcement: check width limit (sibling count under parent) - `inst-create-group-4f`
 5. [x] - `p1` - **ELSE** (root group) - `inst-create-group-5`
    1. [x] - `p1` - **IF** type does not allow root placement (can_be_root=false) → **RETURN** Validation error - `inst-create-group-5a`
-6. [ ] - `p1` - **IF** metadata provided AND type has metadata_schema → validate metadata against the chained GTS type schema via `TypesRegistryClient` (types-registry-sdk, already in workspace). The `gts` crate (v0.8.4) validates metadata fields against the inline `metadata` sub-schema defined in the chained RG type (`additionalProperties: false`, field types, `maxLength`). **IF** invalid → **RETURN** Validation error with field-level details - `inst-create-group-5b`
+6. [x] - `p1` - **IF** metadata provided AND type has metadata_schema → validate metadata against the chained GTS type schema via `TypesRegistryClient` (types-registry-sdk, already in workspace). The `gts` crate (v0.8.4) validates metadata fields against the inline `metadata` sub-schema defined in the chained RG type (`additionalProperties: false`, field types, `maxLength`). **IF** invalid → **RETURN** Validation error with field-level details - `inst-create-group-5b`
 7. [x] - `p1` - DB: INSERT INTO resource_group (id, parent_id, gts_type_id, name, metadata, tenant_id) - `inst-create-group-6`
 7. [x] - `p1` - DB: INSERT INTO resource_group_closure (ancestor_id=id, descendant_id=id, depth=0) — self-row - `inst-create-group-7`
 8. [x] - `p1` - **IF** parent_id is provided - `inst-create-group-8`
@@ -127,7 +127,7 @@ Groups are the core nodes of the resource group hierarchy. This feature implemen
    2. [x] - `p1` - DB: SELECT gts_type_id FROM resource_group WHERE parent_id = {group_id} — load children types - `inst-update-group-4b`
    3. [x] - `p1` - **FOR EACH** child: verify child's type includes new type in allowed_parents - `inst-update-group-4c`
    4. [x] - `p1` - **IF** any child would become invalid → **RETURN** InvalidParentType with child details - `inst-update-group-4d`
-5. [ ] - `p1` - **IF** metadata provided AND type has metadata_schema → validate metadata against the chained GTS type schema via `TypesRegistryClient` / `gts` crate. **IF** invalid → **RETURN** Validation error - `inst-update-group-4e`
+5. [x] - `p1` - **IF** metadata provided AND type has metadata_schema → validate metadata against the chained GTS type schema via `TypesRegistryClient` / `gts` crate. **IF** invalid → **RETURN** Validation error - `inst-update-group-4e`
 6. [x] - `p1` - DB: UPDATE resource_group SET name, gts_type_id, metadata, updated_at — apply changes - `inst-update-group-5`
 7. [x] - `p1` - **RETURN** updated ResourceGroup - `inst-update-group-6`
 

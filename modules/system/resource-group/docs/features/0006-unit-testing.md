@@ -1,11 +1,58 @@
 # Feature: Unit & Integration Test Plan
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-featstatus-unit-testing`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-unit-testing`
 
-- [ ] `p1` - `cpt-cf-resource-group-feature-unit-testing`
+- [x] `p1` - `cpt-cf-resource-group-feature-unit-testing`
+
+## Feature Context
+
+### Overview
+
+Unit and integration test plan for the resource-group module. Covers ~140 tests across domain services, value objects, error chains, DTOs, OData fields, seeding, and REST API layer using SQLite in-memory and mocked AuthZ.
+
+### Purpose
+
+Ensure deterministic domain logic correctness for features 0001-0005 and ADR-001. Unit tests are the primary defense line; E2E tests (Feature 0007) cover integration seams only.
+
+**Requirements**: Features 0001-0005, ADR-001
+
+### Actors
+
+| Actor | Role in Feature |
+|-------|-----------------|
+| Developer | Runs tests via `cargo test`, adds new test cases |
+
+### References
+
+- **PRD**: [PRD.md](../PRD.md)
+- **Design**: [DESIGN.md](../DESIGN.md)
+- **Dependencies**: Features 0001-0005, ADR-001
+
+## Actor Flows (CDSL)
+
+No actor flows — this is a test specification feature.
+
+## Processes / Business Logic (CDSL)
+
+No processes — test logic is defined in test plan sections below.
 
 <!-- toc -->
 
+- [Feature Context](#feature-context)
+  - [Overview](#overview)
+  - [Purpose](#purpose)
+  - [Actors](#actors)
+  - [References](#references)
+- [Actor Flows (CDSL)](#actor-flows-cdsl)
+- [Processes / Business Logic (CDSL)](#processes--business-logic-cdsl)
+- [TL;DR](#tldr)
+- [Philosophy](#philosophy)
+  - [What Is a Unit Test in This Project](#what-is-a-unit-test-in-this-project)
+  - [Three Questions Before Adding a Test](#three-questions-before-adding-a-test)
+  - [What We Test Here](#what-we-test-here)
+  - [What We Do NOT Test Here](#what-we-do-not-test-here)
+  - [Relationship to Feature 0007 (E2E)](#relationship-to-feature-0007-e2e)
+  - [Reliability Principles](#reliability-principles)
 - [1. Overview](#1-overview)
 - [2. Gap Analysis: Current Coverage](#2-gap-analysis-current-coverage)
   - [2.1 What IS Covered](#21-what-is-covered)
@@ -21,13 +68,38 @@
   - [3.8 Error Conversions](#38-error-conversions)
   - [3.9 Metadata Tests](#39-metadata-tests)
   - [3.10 Invalid / Non-GTS Input Tests](#310-invalid--non-gts-input-tests)
-  - [3.11 REST API Layer](#311-rest-api-layer)
+  - [3.11 ADR-001 GTS Type System — RG-Level Validation of metadata Values](#311-adr-001-gts-type-system--rg-level-validation-of-metadata-values)
   - [3.12 GTS-Specific Logic Tests](#312-gts-specific-logic-tests)
-  - [3.13 REST API Layer (existing endpoints)](#313-rest-api-layer-existing-endpoints-without-tests)
+  - [3.13 REST API Layer (existing endpoints without tests)](#313-rest-api-layer-existing-endpoints-without-tests)
 - [4. Priority Matrix](#4-priority-matrix)
-- [5. Assert Guidelines](#5-assert-guidelines--what-to-verify-beyond-okerr)
+  - [P1 - Critical (must have, business invariants) — 62 tests](#p1---critical-must-have-business-invariants--62-tests)
+  - [P2 - Important (error paths, REST layer, edges) — 53 tests](#p2---important-error-paths-rest-layer-edges--53-tests)
+  - [P3 - Nice to have (boundary, cosmetic) — 4 tests](#p3---nice-to-have-boundary-cosmetic--4-tests)
+- [5. Assert Guidelines — What to Verify Beyond Ok/Err](#5-assert-guidelines--what-to-verify-beyond-okerr)
+  - [5.1 Closure Table Assertions (`resource_group_closure`)](#51-closure-table-assertions-resourcegroupclosure)
+  - [5.2 Junction Table Assertions (`gts_type_allowed_parent`, `gts_type_allowed_membership`)](#52-junction-table-assertions-gtstypeallowedparent-gtstypeallowedmembership)
+  - [5.3 Membership Table Assertions (`resource_group_membership`)](#53-membership-table-assertions-resourcegroupmembership)
+  - [5.4 Surrogate ID Non-Exposure (REST tests)](#54-surrogate-id-non-exposure-rest-tests)
+  - [5.5 Entity State Assertions (`resource_group` table)](#55-entity-state-assertions-resourcegroup-table)
+  - [5.6 Hierarchy Endpoint Response Shape](#56-hierarchy-endpoint-response-shape)
+  - [5.7 Seeding DB Verification](#57-seeding-db-verification)
 - [6. Test Infrastructure](#6-test-infrastructure)
+  - [Core Principles](#core-principles)
+  - [Anti-patterns (DO NOT)](#anti-patterns-do-not)
+  - [Assertion & Parameterization Patterns](#assertion--parameterization-patterns)
+  - [Shared Test Helpers (`tests/common/mod.rs`)](#shared-test-helpers-testscommonmodrs)
+  - [Naming Convention](#naming-convention)
+  - [Test File Organization](#test-file-organization)
 - [7. Definitions of Done](#7-definitions-of-done)
+  - [SDK Value Object & Model Tests](#sdk-value-object--model-tests)
+  - [Unit Test Coverage for Type Management](#unit-test-coverage-for-type-management)
+  - [Unit Test Coverage for Entity Hierarchy](#unit-test-coverage-for-entity-hierarchy)
+  - [Unit Test Coverage for Membership](#unit-test-coverage-for-membership)
+  - [OData Filter & DTO Tests](#odata-filter--dto-tests)
+  - [Seeding Tests](#seeding-tests)
+  - [Error Conversion Chain Tests](#error-conversion-chain-tests)
+  - [REST API Test Coverage](#rest-api-test-coverage)
+- [Acceptance Criteria](#acceptance-criteria)
 
 <!-- /toc -->
 
@@ -1085,7 +1157,7 @@ These tests verify the system is resilient to adversarial metadata_schema payloa
 
 ---
 
-### 3.12 ADR-001 GTS Type System — RG-Level Validation of metadata Values
+### 3.11 ADR-001 GTS Type System — RG-Level Validation of metadata Values
 
 **ADR-001 reference**: `rg_gts_type_system_tests.rs` (33 tests in types-registry) validates metadata field types, lengths, and unknown fields at GTS level. But **RG module does NOT call GTS validation on group create/update** — metadata is stored as-is in JSONB.
 
@@ -1294,7 +1366,7 @@ ADR Confirmation: "Code review: verify all API responses use GTS type paths, nev
 
 ---
 
-### 3.13 GTS-Specific Logic Tests
+### 3.12 GTS-Specific Logic Tests
 
 **ZERO** existing tests exercise GTS path resolution, roundtrip ID↔String, or metadata internal key handling in isolation.
 
@@ -1791,7 +1863,7 @@ tests/
 
 ### SDK Value Object & Model Tests
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-sdk-models`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-sdk-models`
 
 In-source `#[cfg(test)]` tests in `resource-group-sdk/src/models.rs`:
 - `GtsTypePath::new()` validation (empty, too long, invalid format, whitespace/case normalization, multi-segment paths)
@@ -1801,7 +1873,7 @@ In-source `#[cfg(test)]` tests in `resource-group-sdk/src/models.rs`:
 
 ### Unit Test Coverage for Type Management
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-type-mgmt`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-type-mgmt`
 
 All acceptance criteria from feature 0002 are covered by automated tests:
 - Create with valid/invalid `allowed_parents` and `allowed_memberships`
@@ -1811,7 +1883,7 @@ All acceptance criteria from feature 0002 are covered by automated tests:
 
 ### Unit Test Coverage for Entity Hierarchy
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-entity-hierarchy`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-entity-hierarchy`
 
 All acceptance criteria from feature 0003 are covered by automated tests:
 - Child group creation with closure table verification
@@ -1823,7 +1895,7 @@ All acceptance criteria from feature 0003 are covered by automated tests:
 
 ### Unit Test Coverage for Membership
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-membership`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-membership`
 
 All acceptance criteria from feature 0004 are covered by automated tests:
 - Add/remove lifecycle with composite key semantics
@@ -1833,7 +1905,7 @@ All acceptance criteria from feature 0004 are covered by automated tests:
 
 ### OData Filter & DTO Tests
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-odata-dto`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-odata-dto`
 
 In-source `#[cfg(test)]` tests for filter field definitions and DTO conversions:
 - `GroupFilterField`, `HierarchyFilterField`, `MembershipFilterField` name() and kind() correctness
@@ -1843,7 +1915,7 @@ In-source `#[cfg(test)]` tests for filter field definitions and DTO conversions:
 
 ### Seeding Tests
 
-- [ ] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-seeding`
+- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-seeding`
 
 Integration tests for deployment bootstrapping:
 - `seed_types`: create/update/skip idempotency with SeedResult tracking
@@ -1852,7 +1924,7 @@ Integration tests for deployment bootstrapping:
 
 ### Error Conversion Chain Tests
 
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-dod-testing-error-conversions`
+- [x] `p2` - **ID**: `cpt-cf-resource-group-dod-testing-error-conversions`
 
 Extend `domain_unit_test.rs` with FROM-direction error conversions:
 - `EnforcerError` (Denied, EvaluationFailed, CompileFailed) -> `DomainError::AccessDenied`
@@ -1861,10 +1933,18 @@ Extend `domain_unit_test.rs` with FROM-direction error conversions:
 
 ### REST API Test Coverage
 
-- [ ] `p2` - **ID**: `cpt-cf-resource-group-dod-testing-rest-api`
+- [x] `p2` - **ID**: `cpt-cf-resource-group-dod-testing-rest-api`
 
 REST-level tests for endpoints not covered by existing `api_rest_test.rs`:
 - PUT /types/{code} (update type)
 - POST/DELETE /memberships/{group_id}/{type}/{resource_id}
 - GET /groups/{id}/hierarchy
 - DELETE /groups/{id}?force=true
+
+## Acceptance Criteria
+
+- [x] All ~140 unit tests pass (`cargo test -p cf-resource-group -p cf-resource-group-sdk`) — 291 tests, 0 failed
+- [x] Full suite completes in < 5 seconds
+- [x] Zero `sleep`, `timeout`, or `tokio::time` usage in tests
+- [x] Every domain invariant from features 0001-0005 is covered by at least one test
+- [x] `make fmt && make lint && make test` passes with zero errors

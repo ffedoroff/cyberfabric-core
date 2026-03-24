@@ -1088,20 +1088,20 @@ See `cpt-cf-resource-group-fr-dual-auth-modes` in section 5.9 for the full authe
 
 ## 9. Acceptance Criteria
 
-- [ ] Dynamic type API is available with validation.
-- [ ] Entity hierarchy remains strict forest under all operations.
-- [ ] Closure-table ancestor/descendant queries are available and ordered by depth.
-- [ ] Subtree move/delete are supported with transactional closure updates.
-- [ ] Query profile (`max_depth`, `max_width`) behavior matches specified reduced-constraint rules, including disabled-limit (unlimited) mode.
-- [ ] RG remains AuthZ-agnostic while exposing integration read contracts.
-- [ ] No changes are required in existing AuthN/AuthZ resolver contracts.
-- [ ] Tenant-scoped constraints for AuthZ usage are enforced and tenant-incompatible links are rejected.
-- [ ] Integration read hierarchy rows include `tenant_id` (via `ResourceGroupWithDepth`); membership rows match REST `Membership` schema (no `tenant_id`). Callers derive membership tenant scope from group data.
-- [ ] `resource_group_membership` derives tenant scope from the referenced group's `tenant_id` via `group_id` JOIN, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
-- [ ] Platform-admin provisioning via RG API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
-- [ ] Membership operations use composite key `(group_id, resource_type, resource_id)`.
-- [ ] REST API endpoints available under `/api/resource-group/v1/` (groups/memberships) and `/api/types-registry/v1/` (types) with OData query support.
-- [ ] Dedicated group depth endpoint returns relative `depth` and supports depth-based filtering.
+- [x] Dynamic type API is available with validation.
+- [x] Entity hierarchy remains strict forest under all operations.
+- [x] Closure-table ancestor/descendant queries are available and ordered by depth.
+- [x] Subtree move/delete are supported with transactional closure updates.
+- [x] Query profile (`max_depth`, `max_width`) behavior matches specified reduced-constraint rules, including disabled-limit (unlimited) mode.
+- [x] RG remains AuthZ-agnostic while exposing integration read contracts.
+- [x] No changes are required in existing AuthN/AuthZ resolver contracts.
+- [x] Tenant-scoped constraints for AuthZ usage are enforced and tenant-incompatible links are rejected.
+- [x] Integration read hierarchy rows include `tenant_id` (via `ResourceGroupWithDepth`); membership rows match REST `Membership` schema (no `tenant_id`). Callers derive membership tenant scope from group data.
+- [x] `resource_group_membership` derives tenant scope from the referenced group's `tenant_id` via `group_id` JOIN, and AuthZ query path always uses effective tenant-scoped reads/SQL predicates.
+- [x] Platform-admin provisioning via RG API may run without caller tenant scoping, while tenant hierarchy compatibility invariants remain enforced.
+- [x] Membership operations use composite key `(group_id, resource_type, resource_id)`.
+- [x] REST API endpoints available under `/api/resource-group/v1/` (groups/memberships) and `/api/types-registry/v1/` (types) with OData query support.
+- [x] Dedicated group depth endpoint returns relative `depth` and supports depth-based filtering.
 
 ## 10. Dependencies
 
