@@ -110,7 +110,9 @@ pub async fn seed_groups(
                     parent_id: seed.parent_id,
                     metadata: seed.metadata.clone(),
                 };
-                group_service.create_group(req, seed.tenant_id).await?;
+                group_service
+                    .create_group(&anon, req, seed.tenant_id)
+                    .await?;
                 result.created += 1;
             }
             Err(e) => return Err(e),

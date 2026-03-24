@@ -90,13 +90,13 @@ impl Module for ResourceGroup {
         let rg_client: Arc<dyn ResourceGroupClient> = Arc::new(RgService::new(
             type_svc,
             group_svc.clone(),
-            membership_service,
+            membership_service.clone(),
         ));
         ctx.client_hub()
             .register::<dyn ResourceGroupClient>(rg_client);
 
         let read_client: Arc<dyn ResourceGroupReadHierarchy> =
-            Arc::new(RgReadService::new(group_svc));
+            Arc::new(RgReadService::new(group_svc, membership_service));
         ctx.client_hub()
             .register::<dyn ResourceGroupReadHierarchy>(read_client);
 

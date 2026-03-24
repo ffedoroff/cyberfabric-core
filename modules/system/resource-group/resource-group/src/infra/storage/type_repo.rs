@@ -3,9 +3,12 @@
 //! All surrogate SMALLINT ID resolution happens here. The domain and API layers
 //! work exclusively with string GTS type paths.
 
+use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt};
+use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
 use resource_group_sdk::ResourceGroupType;
+use resource_group_sdk::odata::TypeFilterField;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 
@@ -15,6 +18,13 @@ use crate::infra::storage::entity::{
     gts_type_allowed_membership::{self, Entity as AllowedMembershipEntity},
     gts_type_allowed_parent::{self, Entity as AllowedParentEntity},
     resource_group::{self as rg_entity, Entity as ResourceGroupEntity},
+};
+use crate::infra::storage::odata_mapper::TypeODataMapper;
+
+/// Default `OData` pagination limits for types.
+const TYPE_LIMIT_CFG: LimitCfg = LimitCfg {
+    default: 25,
+    max: 200,
 };
 
 /// System-level access scope (no tenant/resource filtering).
@@ -360,6 +370,8 @@ impl TypeRepository {
     }
 
     /// Find resource groups that have a specific parent type and are of a given child type.
+    ///
+    /// Uses a batch lookup instead of N+1 individual parent queries.
     pub async fn find_groups_using_parent_type(
         db: &impl DBRunner,
         child_type_id: i16,
@@ -374,23 +386,35 @@ impl TypeRepository {
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
 
-        let mut violations = Vec::new();
-        for group in groups {
-            if let Some(parent_id) = group.parent_id {
-                let parent = ResourceGroupEntity::find()
-                    .filter(rg_entity::Column::Id.eq(parent_id))
-                    .secure()
-                    .scope_with(&scope)
-                    .one(db)
-                    .await
-                    .map_err(|e| DomainError::database(e.to_string()))?;
-                if let Some(parent_model) = parent
-                    && parent_model.gts_type_id == parent_type_id
-                {
-                    violations.push((group.id, group.name));
-                }
-            }
+        // Collect all parent IDs in a single batch
+        let parent_ids: Vec<uuid::Uuid> = groups.iter().filter_map(|g| g.parent_id).collect();
+
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
         }
+
+        // Batch-load all parent groups in a single query
+        let parents: Vec<rg_entity::Model> = ResourceGroupEntity::find()
+            .filter(rg_entity::Column::Id.is_in(parent_ids))
+            .filter(rg_entity::Column::GtsTypeId.eq(parent_type_id))
+            .secure()
+            .scope_with(&scope)
+            .all(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?;
+
+        let matching_parent_ids: std::collections::HashSet<uuid::Uuid> =
+            parents.into_iter().map(|p| p.id).collect();
+
+        // Filter child groups whose parent matched the target type
+        let violations = groups
+            .into_iter()
+            .filter(|g| {
+                g.parent_id
+                    .is_some_and(|pid| matching_parent_ids.contains(&pid))
+            })
+            .map(|g| (g.id, g.name))
+            .collect();
 
         Ok(violations)
     }
@@ -413,16 +437,36 @@ impl TypeRepository {
         Ok(groups.into_iter().map(|g| (g.id, g.name)).collect())
     }
 
-    /// List all GTS types.
-    pub async fn list_all(db: &impl DBRunner) -> Result<Vec<gts_type::Model>, DomainError> {
+    /// List GTS types with `OData` filtering and cursor-based pagination.
+    pub async fn list_types(
+        db: &impl DBRunner,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroupType>, DomainError> {
         let scope = system_scope();
-        let types = GtsTypeEntity::find()
-            .secure()
-            .scope_with(&scope)
-            .all(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))?;
-        Ok(types)
+        let base_query = GtsTypeEntity::find().secure().scope_with(&scope);
+
+        let page = paginate_odata::<TypeFilterField, TypeODataMapper, _, _, _, _>(
+            base_query,
+            db,
+            query,
+            ("code", SortDir::Desc),
+            TYPE_LIMIT_CFG,
+            |m: gts_type::Model| m,
+        )
+        .await
+        .map_err(|e| DomainError::database(e.to_string()))?;
+
+        // Resolve full types (junction references) for each model in the page
+        let mut types = Vec::with_capacity(page.items.len());
+        for model in &page.items {
+            let rg_type = Self::load_full_type(db, model).await?;
+            types.push(rg_type);
+        }
+
+        Ok(Page {
+            items: types,
+            page_info: page.page_info,
+        })
     }
 
     /// Resolve multiple GTS type paths to their surrogate IDs.

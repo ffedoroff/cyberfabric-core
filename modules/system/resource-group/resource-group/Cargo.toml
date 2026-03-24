@@ -61,3 +61,5 @@ modkit-macros = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 modkit-db = { workspace = true, features = ["sqlite"] }
+tower = { workspace = true }
+http-body-util = { workspace = true }

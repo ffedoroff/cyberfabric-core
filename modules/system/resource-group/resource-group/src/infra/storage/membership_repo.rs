@@ -13,9 +13,8 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::infra::storage::entity::{
-    gts_type::{self, Entity as GtsTypeEntity},
-    resource_group_membership::{self as membership_entity, Entity as MembershipEntity},
+use crate::infra::storage::entity::resource_group_membership::{
+    self as membership_entity, Entity as MembershipEntity,
 };
 use crate::infra::storage::odata_mapper::MembershipODataMapper;
 
@@ -57,16 +56,29 @@ impl MembershipRepository {
         .await
         .map_err(|e| DomainError::database(e.to_string()))?;
 
-        // Resolve type IDs to GTS paths for each membership
-        let mut memberships = Vec::with_capacity(page.items.len());
-        for model in page.items {
-            let type_path = Self::resolve_type_path(db, model.gts_type_id).await?;
-            memberships.push(ResourceGroupMembership {
-                group_id: model.group_id,
-                resource_type: type_path,
-                resource_id: model.resource_id,
-            });
-        }
+        // Batch-resolve type IDs to GTS paths (single query)
+        let type_ids: Vec<i16> = page.items.iter().map(|m| m.gts_type_id).collect();
+        let type_map =
+            crate::infra::storage::group_repo::GroupRepository::resolve_type_paths_batch(
+                db, &type_ids,
+            )
+            .await?;
+
+        let memberships = page
+            .items
+            .into_iter()
+            .map(|model| {
+                let type_path = type_map
+                    .get(&model.gts_type_id)
+                    .cloned()
+                    .unwrap_or_default();
+                ResourceGroupMembership {
+                    group_id: model.group_id,
+                    resource_type: type_path,
+                    resource_id: model.resource_id,
+                }
+            })
+            .collect();
 
         Ok(Page {
             items: memberships,
@@ -192,19 +204,5 @@ impl MembershipRepository {
         tenant_ids.sort();
         tenant_ids.dedup();
         Ok(tenant_ids)
-    }
-
-    /// Resolve a SMALLINT type ID to its GTS type path string.
-    async fn resolve_type_path(db: &impl DBRunner, type_id: i16) -> Result<String, DomainError> {
-        let scope = system_scope();
-        let model = GtsTypeEntity::find()
-            .filter(gts_type::Column::Id.eq(type_id))
-            .secure()
-            .scope_with(&scope)
-            .one(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))?
-            .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
-        Ok(model.schema_id)
     }
 }

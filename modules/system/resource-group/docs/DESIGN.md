@@ -851,7 +851,7 @@ RG Module exposes its REST/gRPC API with **two authentication modes**. The mode 
 
 ##### Mode 1: JWT (public API — all endpoints)
 
-Standard user/service requests authenticated via JWT bearer token. **All** RG REST API endpoints are available. Every request goes through AuthZ evaluation via `PolicyEnforcer`, same as any other domain service (e.g. courses).
+Standard user/service requests authenticated via JWT bearer token. **All** RG REST API endpoints are available. Every request goes through AuthZ evaluation via `PolicyEnforcer`, same as any other domain service (e.g. courses). JWT token lifecycle (expiry, refresh, revocation) is managed by the AuthN Resolver and API Gateway — RG delegates token validation entirely to the platform authentication layer and does not implement its own session timeout or token renewal logic.
 
 Applies to:
 - `GET /api/types-registry/v1/types` — list/get types
@@ -1191,6 +1191,7 @@ RG relies on database-level performance rather than application-level caching:
 - **No application-level cache**: hierarchy and membership reads go directly to PostgreSQL. Performance is ensured by indexed closure table lookups (btree indexes on `ancestor_id`, `descendant_id`, `depth`). The closure table pattern eliminates N+1 queries by design — a single SQL query returns the complete ancestor/descendant set.
 - **Connection pooling**: handled by platform database infrastructure (connection pool configuration is deployment-specific).
 - **Scalability approach**: vertical scaling of the database instance is the primary strategy. Horizontal read replicas can be added for read-heavy AuthZ query paths. `resource_group_membership` partitioning is a candidate optimization for production scale (see PRD Open Questions).
+- **Application-tier horizontal scaling**: RG is a stateless service with no in-process caches, sessions, or local state. Multiple RG instances can run behind the platform load balancer without session affinity. Scaling the application tier is a simple matter of increasing replica count — the platform orchestration layer handles load distribution. All coordination is delegated to PostgreSQL (SERIALIZABLE transactions for write consistency, connection pool for concurrency control).
 - **Query cost protection**: all list endpoints enforce `limit` (max 200 per page). Unbounded hierarchy traversals are bounded by `max_depth` query profile. Database-level query timeout (statement_timeout) is configured at the connection pool level per platform defaults. API-layer rate limiting is handled by the API gateway — RG does not implement its own throttling.
 - **Closure write amplification bounds**: subtree move operations update `O(N × D)` closure rows where N = subtree size and D = depth. With `max_depth = 10` and typical organizational hierarchies (width >> depth), expected subtree sizes for move operations are under 10K nodes. For larger subtrees, SERIALIZABLE isolation + bounded retry (max 3) prevents runaway transactions. No hard cap on subtree size is enforced — `max_depth` and `max_width` provide indirect bounds.
 - **Optimistic concurrency**: v1 uses last-write-wins semantics for `PUT /groups/{id}`. ETag-based optimistic concurrency control is a candidate for future versions if concurrent update conflicts become a production concern.
@@ -1249,6 +1250,7 @@ Notes:
 RG is a stateless service layer backed by a PostgreSQL database:
 
 - **Fault tolerance**: HA, failover, and backup are handled at the platform database infrastructure level. RG does not implement its own circuit breakers or redundancy beyond transaction retry for serialization conflicts (see Concurrency Testing section).
+- **AuthZ dependency resilience**: Circuit breaking for the AuthZ Resolver dependency (PolicyEnforcer calls on JWT path) is handled at the platform PolicyEnforcer/SDK level. If the AuthZ Resolver becomes unavailable, JWT-authenticated RG requests will fail with access-denied errors. RG does not implement its own circuit breaker for this dependency.
 - **Recovery**: RPO/RTO follow platform defaults for stateful services with PostgreSQL persistence. No module-specific recovery architecture.
 
 ### Data Governance
@@ -1268,6 +1270,8 @@ RG follows standard CyberFabric observability patterns:
 - **Logging**: structured request/response logging via platform middleware (request ID, tenant ID, operation, latency). Domain-level events (type created, group moved, membership added) logged at INFO level. Error paths logged at WARN/ERROR with deterministic error category.
 - **Metrics**: standard HTTP endpoint metrics (request count, latency histogram, error rate) exposed via platform metrics infrastructure. No RG-specific custom metrics in v1.
 - **Alerting**: follows platform alerting defaults for error rate and latency thresholds. No RG-specific alert rules in v1.
+- **Health checks**: RG delegates health check and readiness/liveness probe endpoints to the platform infrastructure layer (`modkit` runtime). The platform exposes standard health endpoints (e.g., `GET /health`, `GET /ready`) that include database connectivity checks. RG does not implement its own health check endpoint.
+- **Distributed tracing**: RG participates in platform distributed tracing via OpenTelemetry trace propagation injected by platform middleware. Request spans include `request_id`, `tenant_id`, and operation context. No RG-specific trace instrumentation beyond structured logging and `#[tracing::instrument]` on API handlers.
 
 ### Architecture Evolution: RG as Persistent Storage for Types Registry
 

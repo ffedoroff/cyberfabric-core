@@ -104,6 +104,7 @@ fn make_group_service(db: Arc<DBProvider<DbError>>) -> GroupService {
 ///     -> `GroupRepository.list_groups(&conn, &scope, &query)`
 ///       -> `SecureORM` `.scope_with(&scope)` -> SQL WHERE `tenant_id` IN ('T')
 ///     -> only T's groups returned
+// Scenario: L2-Tenant-01 - Tenant isolation for list_groups
 #[tokio::test]
 async fn tenant_isolation_list_groups() {
     let db = test_db().await;
@@ -134,6 +135,7 @@ async fn tenant_isolation_list_groups() {
     // Tenant A creates 2 groups
     let ga1 = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: type_code.clone(),
                 name: "Tenant A - Group 1".to_owned(),
@@ -147,6 +149,7 @@ async fn tenant_isolation_list_groups() {
 
     let ga2 = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: type_code.clone(),
                 name: "Tenant A - Group 2".to_owned(),
@@ -161,6 +164,7 @@ async fn tenant_isolation_list_groups() {
     // Tenant B creates 1 group
     let gb1 = group_svc
         .create_group(
+            &ctx_b,
             resource_group_sdk::CreateGroupRequest {
                 type_path: type_code.clone(),
                 name: "Tenant B - Group 1".to_owned(),
@@ -208,6 +212,7 @@ async fn tenant_isolation_list_groups() {
 }
 
 /// Full chain: `get_group` with wrong tenant returns not-found.
+// Scenario: L2-Tenant-02 - Cross-tenant get_group invisible
 #[tokio::test]
 async fn tenant_isolation_get_group_cross_tenant_invisible() {
     let db = test_db().await;
@@ -216,6 +221,7 @@ async fn tenant_isolation_get_group_cross_tenant_invisible() {
 
     let tenant_a = Uuid::now_v7();
     let tenant_b = Uuid::now_v7();
+    let ctx_a = make_ctx(tenant_a);
     let ctx_b = make_ctx(tenant_b);
 
     // Create type
@@ -237,6 +243,7 @@ async fn tenant_isolation_get_group_cross_tenant_invisible() {
     // Tenant A creates a group
     let ga = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: type_code,
                 name: "A's secret group".to_owned(),
@@ -257,6 +264,7 @@ async fn tenant_isolation_get_group_cross_tenant_invisible() {
 }
 
 /// Full chain: `list_group_hierarchy` respects tenant scope.
+// Scenario: L2-Tenant-03 - Hierarchy queries are tenant-scoped
 #[tokio::test]
 async fn tenant_isolation_hierarchy_scoped() {
     let db = test_db().await;
@@ -266,6 +274,7 @@ async fn tenant_isolation_hierarchy_scoped() {
     let tenant_a = Uuid::now_v7();
     let tenant_b = Uuid::now_v7();
     let ctx_a = make_ctx(tenant_a);
+    let ctx_b = make_ctx(tenant_b);
 
     // Create parent and child types
     let parent_type = format!(
@@ -302,6 +311,7 @@ async fn tenant_isolation_hierarchy_scoped() {
     // Tenant A: parent + child
     let parent = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: parent_type.clone(),
                 name: "A Parent".to_owned(),
@@ -315,6 +325,7 @@ async fn tenant_isolation_hierarchy_scoped() {
 
     let _child = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: child_type.clone(),
                 name: "A Child".to_owned(),
@@ -329,6 +340,7 @@ async fn tenant_isolation_hierarchy_scoped() {
     // Tenant B: unrelated group (same parent type, different tenant)
     let _b_group = group_svc
         .create_group(
+            &ctx_b,
             resource_group_sdk::CreateGroupRequest {
                 type_path: parent_type,
                 name: "B Unrelated".to_owned(),
@@ -363,6 +375,7 @@ async fn tenant_isolation_hierarchy_scoped() {
 }
 
 /// Full chain: `update_group` with wrong tenant returns not-found.
+// Scenario: L2-Tenant-04 - Cross-tenant update blocked
 #[tokio::test]
 async fn tenant_isolation_update_cross_tenant_blocked() {
     let db = test_db().await;
@@ -371,6 +384,7 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
 
     let tenant_a = Uuid::now_v7();
     let tenant_b = Uuid::now_v7();
+    let ctx_a = make_ctx(tenant_a);
     let ctx_b = make_ctx(tenant_b);
 
     let type_code = format!(
@@ -391,6 +405,7 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
     // Tenant A creates a group
     let ga = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: type_code.clone(),
                 name: "A's group".to_owned(),
@@ -422,6 +437,7 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
 }
 
 /// Full chain: `delete_group` with wrong tenant returns not-found.
+// Scenario: L2-Tenant-05 - Cross-tenant delete blocked
 #[tokio::test]
 async fn tenant_isolation_delete_cross_tenant_blocked() {
     let db = test_db().await;
@@ -451,6 +467,7 @@ async fn tenant_isolation_delete_cross_tenant_blocked() {
     // Tenant A creates a group
     let ga = group_svc
         .create_group(
+            &ctx_a,
             resource_group_sdk::CreateGroupRequest {
                 type_path: type_code,
                 name: "A's group to delete".to_owned(),
@@ -530,6 +547,7 @@ impl AuthZResolverClient for GroupScopingAuthZ {
 
 /// Phase 2 test: `InGroup` predicate compiles to correct `AccessScope`
 /// containing both tenant filter AND group membership filter.
+// Scenario: L2-Tenant-06 - InGroup predicate produces combined scope (S14)
 #[tokio::test]
 async fn group_based_in_group_predicate_produces_combined_scope() {
     let group_a = Uuid::now_v7();
@@ -573,6 +591,7 @@ async fn group_based_in_group_predicate_produces_combined_scope() {
 /// This verifies the data layer works with the membership table that
 /// `InGroup` subqueries reference. The actual subquery SQL execution
 /// is validated by the `SecureORM` cond.rs unit tests.
+// Scenario: L2-Membership-01 - Membership data correctly stored
 #[tokio::test]
 async fn group_based_membership_data_correctly_stored() {
     let db = test_db().await;
@@ -580,6 +599,7 @@ async fn group_based_membership_data_correctly_stored() {
     let group_svc = make_group_service(db.clone());
 
     let tenant = Uuid::now_v7();
+    let ctx = make_ctx(tenant);
 
     // Create types: project (root, allows "task" members) and task
     let project_type = format!(
@@ -617,6 +637,7 @@ async fn group_based_membership_data_correctly_stored() {
     // Create ProjectA and ProjectB
     let project_a = group_svc
         .create_group(
+            &ctx,
             resource_group_sdk::CreateGroupRequest {
                 type_path: project_type.clone(),
                 name: "ProjectA".to_owned(),
@@ -630,6 +651,7 @@ async fn group_based_membership_data_correctly_stored() {
 
     let project_b = group_svc
         .create_group(
+            &ctx,
             resource_group_sdk::CreateGroupRequest {
                 type_path: project_type,
                 name: "ProjectB".to_owned(),
@@ -646,7 +668,6 @@ async fn group_based_membership_data_correctly_stored() {
     let enforcer = PolicyEnforcer::new(authz);
     let membership_svc =
         cf_resource_group::domain::membership_service::MembershipService::new(db.clone(), enforcer);
-    let ctx = make_ctx(tenant);
 
     // task-001, task-002 → ProjectA
     membership_svc

@@ -18,11 +18,12 @@ use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::models::{
     CreateGroupRequest, ResourceGroup, ResourceGroupWithDepth, UpdateGroupRequest,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
+use crate::domain::validation;
 use crate::infra::storage::group_repo::GroupRepository;
 use crate::infra::storage::type_repo::TypeRepository;
 
@@ -31,9 +32,6 @@ pub const RG_GROUP_RESOURCE: ResourceType = ResourceType {
     name: "gts.x.system.rg.group.v1~",
     supported_properties: &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 };
-
-/// GTS type path prefix required for resource group types.
-const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
 
 /// Maximum number of transaction retry attempts for serialization conflicts.
 const MAX_SERIALIZATION_RETRIES: u32 = 3;
@@ -87,11 +85,19 @@ impl GroupService {
     /// to ensure invariant checks and closure table mutations are atomic.
     pub async fn create_group(
         &self,
+        ctx: &SecurityContext,
         req: CreateGroupRequest,
         tenant_id: Uuid,
     ) -> Result<ResourceGroup, DomainError> {
+        // AuthZ gate: verify the caller can create groups
+        let _scope = self
+            .enforcer
+            .access_scope(ctx, &RG_GROUP_RESOURCE, "create", None)
+            .await
+            .map_err(DomainError::from)?;
+
         // Pre-validation (stateless, outside transaction)
-        Self::validate_type_code(&req.type_path)?;
+        validation::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
 
         let profile = self.profile.clone();
@@ -180,7 +186,7 @@ impl GroupService {
             .map_err(DomainError::from)?;
 
         // Pre-validation (stateless, outside transaction)
-        Self::validate_type_code(&req.type_path)?;
+        validation::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
 
         let profile = self.profile.clone();
@@ -633,6 +639,7 @@ impl GroupService {
     /// Performs cycle detection, type compatibility checks, query profile
     /// enforcement, and closure table rebuild. Must be called within a
     /// SERIALIZABLE transaction.
+    #[allow(clippy::cognitive_complexity)]
     async fn move_group_internal_impl(
         conn: &impl DBRunner,
         group_id: Uuid,
@@ -644,6 +651,7 @@ impl GroupService {
             // Cycle detection: check new parent is not in subtree of group being moved
             let is_desc = GroupRepository::is_descendant(conn, group_id, new_pid).await?;
             if is_desc {
+                debug!(group_id = %group_id, new_parent = %new_pid, "Cycle detected in move_group");
                 return Err(DomainError::cycle_detected(format!(
                     "Cannot move group '{group_id}' under '{new_pid}': would create a cycle"
                 )));
@@ -686,6 +694,7 @@ impl GroupService {
                 let new_deepest = parent_depth + 1 + max_subtree_depth;
                 #[allow(clippy::cast_possible_wrap)]
                 if new_deepest >= max_depth as i32 {
+                    debug!(group_id = %group_id, new_deepest, max_depth, "Depth limit exceeded on move");
                     return Err(DomainError::limit_violation(format!(
                         "Depth limit exceeded: moving subtree would create depth {new_deepest}, max_depth is {max_depth}"
                     )));
@@ -802,18 +811,6 @@ impl GroupService {
             .map_err(|e| DomainError::database(e.to_string()))?
             .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
         Ok(model.schema_id)
-    }
-
-    fn validate_type_code(code: &str) -> Result<(), DomainError> {
-        if code.is_empty() {
-            return Err(DomainError::validation("Type code must not be empty"));
-        }
-        if !code.starts_with(RG_TYPE_PREFIX) {
-            return Err(DomainError::validation(format!(
-                "Type code must start with prefix '{RG_TYPE_PREFIX}', got: '{code}'"
-            )));
-        }
-        Ok(())
     }
 
     fn validate_name(name: &str) -> Result<(), DomainError> {

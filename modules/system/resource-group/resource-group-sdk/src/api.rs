@@ -38,11 +38,12 @@ pub trait ResourceGroupClient: Send + Sync {
         code: &str,
     ) -> Result<ResourceGroupType, ResourceGroupError>;
 
-    /// List all GTS type definitions.
+    /// List GTS type definitions with `OData` filtering and cursor-based pagination.
     async fn list_types(
         &self,
         ctx: &SecurityContext,
-    ) -> Result<Vec<ResourceGroupType>, ResourceGroupError>;
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroupType>, ResourceGroupError>;
 
     /// Update a GTS type definition (full replacement).
     async fn update_type(

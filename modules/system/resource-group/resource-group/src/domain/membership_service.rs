@@ -11,6 +11,8 @@ use modkit_security::{SecurityContext, pep_properties};
 use resource_group_sdk::models::ResourceGroupMembership;
 use uuid::Uuid;
 
+use tracing::debug;
+
 use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
 use crate::infra::storage::group_repo::GroupRepository;
@@ -117,6 +119,12 @@ impl MembershipService {
 
         // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-4
         if !existing_tenants.is_empty() && !existing_tenants.contains(&group_model.tenant_id) {
+            debug!(
+                group_id = %group_id,
+                resource_type = %resource_type,
+                resource_id = %resource_id,
+                "Tenant incompatibility on membership add"
+            );
             return Err(DomainError::tenant_incompatibility(format!(
                 "Resource ({resource_type}, {resource_id}) is already linked in tenant {:?}, cannot add to tenant {}",
                 existing_tenants, group_model.tenant_id
@@ -169,8 +177,8 @@ impl MembershipService {
         MembershipRepository::find_by_composite_key(&conn, group_id, gts_type_id, resource_id)
             .await?
             .ok_or_else(|| {
-                DomainError::type_not_found(format!(
-                    "Membership ({group_id}, {resource_type}, {resource_id})"
+                DomainError::membership_not_found(format!(
+                    "({group_id}, {resource_type}, {resource_id})"
                 ))
             })?;
 

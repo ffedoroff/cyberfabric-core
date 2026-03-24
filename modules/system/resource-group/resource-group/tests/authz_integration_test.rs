@@ -126,6 +126,7 @@ fn make_ctx(tenant_id: Uuid) -> SecurityContext {
 
 /// Enforcer with tenant-scoping plugin returns `AccessScope` containing
 /// the subject's `tenant_id` as an `In` filter on `owner_tenant_id`.
+// Scenario: L2-AuthZ-01 - Tenant scoping produces correct AccessScope
 #[tokio::test]
 async fn enforcer_tenant_scoping_produces_correct_access_scope() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
@@ -147,6 +148,7 @@ async fn enforcer_tenant_scoping_produces_correct_access_scope() {
 }
 
 /// Different tenants get different scopes.
+// Scenario: L2-AuthZ-02 - Different tenants get different scopes
 #[tokio::test]
 async fn enforcer_different_tenants_get_different_scopes() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
@@ -174,6 +176,7 @@ async fn enforcer_different_tenants_get_different_scopes() {
 }
 
 /// Deny-all plugin returns `EnforcerError::Denied`.
+// Scenario: L2-AuthZ-03 - Deny-all returns denied error
 #[tokio::test]
 async fn enforcer_deny_all_returns_denied_error() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(DenyAllAuthZ);
@@ -192,6 +195,7 @@ async fn enforcer_deny_all_returns_denied_error() {
 }
 
 /// Allow-all with `require_constraints=false` returns `allow_all` scope.
+// Scenario: L2-AuthZ-04 - Allow-all with no constraints returns AllowAll scope
 #[tokio::test]
 async fn enforcer_allow_all_no_constraints_returns_allow_all() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(AllowAllAuthZ);
@@ -214,6 +218,7 @@ async fn enforcer_allow_all_no_constraints_returns_allow_all() {
 
 /// Allow-all with `require_constraints=true` (default) returns `CompileFailed`
 /// because constraints are required but absent.
+// Scenario: L2-AuthZ-05 - Allow-all with required constraints fails
 #[tokio::test]
 async fn enforcer_allow_all_with_required_constraints_fails() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(AllowAllAuthZ);
@@ -236,6 +241,7 @@ async fn enforcer_allow_all_with_required_constraints_fails() {
 }
 
 /// Enforcer correctly sets `resource_id` when provided.
+// Scenario: L2-AuthZ-06 - Enforcer passes resource_id to PDP
 #[tokio::test]
 async fn enforcer_passes_resource_id_to_pdp() {
     use std::sync::Mutex;
@@ -296,6 +302,7 @@ async fn enforcer_passes_resource_id_to_pdp() {
 }
 
 /// Enforcer works for all CRUD actions: create, list, get, update, delete.
+// Scenario: L2-AuthZ-07 - Enforcer works for all CRUD actions
 #[tokio::test]
 async fn enforcer_works_for_all_crud_actions() {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
@@ -328,6 +335,7 @@ async fn enforcer_works_for_all_crud_actions() {
 /// This test uses a capturing mock to inspect the evaluation request
 /// rather than hitting a real database. The SQL-level scoping
 /// (`WHERE tenant_id IN (…)`) is covered by E2E tests against a live server.
+// Scenario: L2-AuthZ-08 - Full chain list_groups calls enforcer with correct params
 #[tokio::test]
 async fn full_chain_list_groups_calls_enforcer_with_correct_params() {
     use cf_resource_group::domain::group_service::RG_GROUP_RESOURCE;
@@ -416,6 +424,7 @@ async fn full_chain_list_groups_calls_enforcer_with_correct_params() {
 
 /// Verifies that a deny-all `AuthZ` plugin causes `GroupService`-level
 /// operations to fail with `AccessDenied` -- the full deny path.
+// Scenario: L2-AuthZ-09 - Full chain deny-all blocks list_groups
 #[tokio::test]
 async fn full_chain_deny_all_blocks_list_groups() {
     use cf_resource_group::domain::group_service::RG_GROUP_RESOURCE;

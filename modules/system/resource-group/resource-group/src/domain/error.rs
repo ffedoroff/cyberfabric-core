@@ -26,6 +26,9 @@ pub enum DomainError {
     #[error("Group not found: {id}")]
     GroupNotFound { id: uuid::Uuid },
 
+    #[error("Membership not found: {key}")]
+    MembershipNotFound { key: String },
+
     #[error("Invalid parent type: {message}")]
     InvalidParentType { message: String },
 
@@ -97,6 +100,10 @@ impl DomainError {
         Self::GroupNotFound { id }
     }
 
+    pub fn membership_not_found(key: impl Into<String>) -> Self {
+        Self::MembershipNotFound { key: key.into() }
+    }
+
     pub fn invalid_parent_type(message: impl Into<String>) -> Self {
         Self::InvalidParentType {
             message: message.into(),
@@ -156,6 +163,7 @@ impl From<DomainError> for ResourceGroupError {
                 ResourceGroupError::conflict_active_references(message)
             }
             DomainError::GroupNotFound { id } => ResourceGroupError::not_found(id.to_string()),
+            DomainError::MembershipNotFound { key } => ResourceGroupError::not_found(key),
             DomainError::TenantIncompatibility { message } => {
                 ResourceGroupError::tenant_incompatibility(message)
             }

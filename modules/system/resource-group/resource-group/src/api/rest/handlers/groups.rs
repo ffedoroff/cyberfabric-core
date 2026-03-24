@@ -60,7 +60,7 @@ pub async fn create_group(
     // Derive tenant_id from SecurityContext
     let tenant_id = ctx.subject_tenant_id();
 
-    let group = svc.create_group(req_body.into(), tenant_id).await?;
+    let group = svc.create_group(&ctx, req_body.into(), tenant_id).await?;
     let id_str = group.id.to_string();
     let dto = GroupDto::from(group);
 

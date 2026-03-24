@@ -74,9 +74,10 @@ impl ResourceGroupClient for RgService {
     async fn list_types(
         &self,
         _ctx: &SecurityContext,
-    ) -> Result<Vec<ResourceGroupType>, ResourceGroupError> {
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroupType>, ResourceGroupError> {
         self.type_service
-            .list_types()
+            .list_types(query)
             .await
             .map_err(ResourceGroupError::from)
     }
@@ -113,7 +114,7 @@ impl ResourceGroupClient for RgService {
     ) -> Result<ResourceGroup, ResourceGroupError> {
         let tenant_id = ctx.subject_tenant_id();
         self.group_service
-            .create_group(request, tenant_id)
+            .create_group(ctx, request, tenant_id)
             .await
             .map_err(ResourceGroupError::from)
     }

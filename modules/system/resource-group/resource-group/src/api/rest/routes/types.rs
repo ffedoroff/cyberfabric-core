@@ -24,7 +24,7 @@ pub(super) fn register_type_routes(mut router: Router, openapi: &dyn OpenApiRegi
         )
         .query_param("cursor", false, "Cursor for pagination")
         .handler(handlers::list_types)
-        .json_response_with_schema::<Vec<dto::TypeDto>>(
+        .json_response_with_schema::<modkit_odata::Page<dto::TypeDto>>(
             openapi,
             http::StatusCode::OK,
             "List of GTS types",

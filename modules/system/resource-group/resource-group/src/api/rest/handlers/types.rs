@@ -13,22 +13,22 @@ use modkit::api::prelude::*;
 use super::{CreateTypeDto, SecurityContext, TypeDto, UpdateTypeDto, info};
 use crate::domain::type_service::TypeService;
 
-/// List GTS types with optional `OData` filtering.
+/// List GTS types with optional `OData` filtering and pagination.
 #[tracing::instrument(
-    skip(svc, _ctx, _query),
+    skip(svc, _ctx, query),
     fields(request_id = Empty)
 )]
 pub async fn list_types(
     Extension(_ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<TypeService>>,
-    OData(_query): OData,
-) -> ApiResult<Json<Vec<TypeDto>>> {
+    OData(query): OData,
+) -> ApiResult<Json<modkit_odata::Page<TypeDto>>> {
     info!("Listing GTS types");
 
-    let types = svc.list_types().await?;
-    let dtos: Vec<TypeDto> = types.into_iter().map(TypeDto::from).collect();
+    let page = svc.list_types(&query).await?;
+    let dto_page = page.map_items(TypeDto::from);
 
-    Ok(Json(dtos))
+    Ok(Json(dto_page))
 }
 
 /// Create a new GTS type definition.

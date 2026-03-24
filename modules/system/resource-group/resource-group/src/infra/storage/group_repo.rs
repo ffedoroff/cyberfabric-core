@@ -122,12 +122,21 @@ impl GroupRepository {
         .await
         .map_err(|e| DomainError::database(e.to_string()))?;
 
-        // Resolve type paths for each group in the page
-        let mut groups = Vec::with_capacity(page.items.len());
-        for model in page.items {
-            let type_path = Self::resolve_type_path(db, model.gts_type_id).await?;
-            groups.push(Self::model_to_resource_group(model, type_path));
-        }
+        // Batch-resolve type paths for all groups in the page (single query)
+        let type_ids: Vec<i16> = page.items.iter().map(|m| m.gts_type_id).collect();
+        let type_map = Self::resolve_type_paths_batch(db, &type_ids).await?;
+
+        let groups = page
+            .items
+            .into_iter()
+            .map(|model| {
+                let type_path = type_map
+                    .get(&model.gts_type_id)
+                    .cloned()
+                    .unwrap_or_default();
+                Self::model_to_resource_group(model, type_path)
+            })
+            .collect();
 
         Ok(Page {
             items: groups,
@@ -244,19 +253,40 @@ impl GroupRepository {
         // Since paginate_odata expects a SeaORM Select, we cannot easily use UNION.
         // Instead, we'll query the closure table directly and apply OData filters manually.
 
-        // Get all closure rows involving this group (both as ancestor and descendant)
+        // Parse OData depth and type filters early so we can push depth bounds into SQL
+        let (depth_filter, type_filter) = Self::parse_hierarchy_filter(query);
+
+        // Get closure rows involving this group (both as ancestor and descendant).
+        // Push depth bounds into SQL when available to avoid loading unbounded data.
         let sys = system_scope(); // closure table has no tenant column, use system scope
-        let ancestor_rows = ClosureEntity::find()
-            .filter(closure_entity::Column::AncestorId.eq(group_id))
+
+        let mut desc_query =
+            ClosureEntity::find().filter(closure_entity::Column::AncestorId.eq(group_id));
+        if let Some(max_desc) = depth_filter
+            .as_ref()
+            .and_then(DepthFilter::max_descendant_depth)
+            && max_desc >= 0
+        {
+            desc_query = desc_query.filter(closure_entity::Column::Depth.lte(max_desc));
+        }
+        let ancestor_rows = desc_query
             .secure()
             .scope_with(&sys)
             .all(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
 
-        let descendant_rows = ClosureEntity::find()
+        let mut anc_query = ClosureEntity::find()
             .filter(closure_entity::Column::DescendantId.eq(group_id))
-            .filter(closure_entity::Column::Depth.ne(0)) // exclude self-row (already in ancestor_rows)
+            .filter(closure_entity::Column::Depth.ne(0)); // exclude self-row
+        if let Some(max_anc) = depth_filter
+            .as_ref()
+            .and_then(DepthFilter::max_ancestor_depth)
+            && max_anc > 0
+        {
+            anc_query = anc_query.filter(closure_entity::Column::Depth.lte(max_anc));
+        }
+        let descendant_rows = anc_query
             .secure()
             .scope_with(&sys)
             .all(db)
@@ -275,9 +305,6 @@ impl GroupRepository {
         for row in &descendant_rows {
             group_depths.push((row.ancestor_id, -row.depth));
         }
-
-        // Apply OData depth and type filters
-        let (depth_filter, type_filter) = Self::parse_hierarchy_filter(query);
 
         // Load all referenced groups
         let group_ids: Vec<Uuid> = group_depths.iter().map(|(id, _)| *id).collect();
@@ -305,7 +332,11 @@ impl GroupRepository {
         let group_map: std::collections::HashMap<Uuid, rg_entity::Model> =
             groups.into_iter().map(|g| (g.id, g)).collect();
 
-        // Build results with type path resolution and filtering
+        // Batch-resolve type paths for all groups (single query)
+        let all_type_ids: Vec<i16> = group_map.values().map(|g| g.gts_type_id).collect();
+        let type_path_map = Self::resolve_type_paths_batch(db, &all_type_ids).await?;
+
+        // Build results with type path lookup and filtering
         let mut results: Vec<ResourceGroupWithDepth> = Vec::new();
         for (gid, depth) in &group_depths {
             // Apply depth filter
@@ -316,7 +347,10 @@ impl GroupRepository {
             }
 
             if let Some(model) = group_map.get(gid) {
-                let type_path = Self::resolve_type_path(db, model.gts_type_id).await?;
+                let type_path = type_path_map
+                    .get(&model.gts_type_id)
+                    .cloned()
+                    .unwrap_or_default();
 
                 // Apply type filter
                 if let Some(ref tf) = type_filter
@@ -670,33 +704,49 @@ impl GroupRepository {
             .map(|r| (r.descendant_id, r.depth))
             .collect();
 
-        // Delete old ancestor closure rows for all subtree members
-        // (keep only internal subtree rows)
-        for &desc_id in &subtree_ids {
-            // Delete rows where this node is descendant AND the ancestor is NOT in the subtree
-            let all_ancestor_rows = ClosureEntity::find()
-                .filter(closure_entity::Column::DescendantId.eq(desc_id))
+        // Batch-delete old ancestor closure rows for all subtree members.
+        // Delete rows where descendant is in subtree AND ancestor is NOT in subtree.
+        let subtree_set: std::collections::HashSet<Uuid> = subtree_ids.iter().copied().collect();
+
+        // Single query: get all external ancestor rows for subtree nodes
+        let all_desc_rows = ClosureEntity::find()
+            .filter(closure_entity::Column::DescendantId.is_in(subtree_ids.clone()))
+            .secure()
+            .scope_with(&scope)
+            .all(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?;
+
+        // Collect (ancestor_id, descendant_id) pairs where ancestor is outside subtree
+        let external_pairs: Vec<(Uuid, Uuid)> = all_desc_rows
+            .iter()
+            .filter(|r| !subtree_set.contains(&r.ancestor_id))
+            .map(|r| (r.ancestor_id, r.descendant_id))
+            .collect();
+
+        // Batch-delete: delete rows where ancestor is NOT in subtree for each subtree descendant.
+        // Group by descendant_id to minimize queries.
+        if !external_pairs.is_empty() {
+            // Delete all external ancestor rows for all subtree descendants in one query
+            // We delete rows where descendant_id IN (subtree) AND ancestor_id NOT IN (subtree)
+            let external_ancestor_ids: Vec<Uuid> = external_pairs
+                .iter()
+                .map(|(a, _)| *a)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            ClosureEntity::delete_many()
+                .filter(closure_entity::Column::DescendantId.is_in(subtree_ids.clone()))
+                .filter(closure_entity::Column::AncestorId.is_in(external_ancestor_ids))
                 .secure()
                 .scope_with(&scope)
-                .all(db)
+                .exec(db)
                 .await
                 .map_err(|e| DomainError::database(e.to_string()))?;
-
-            for row in all_ancestor_rows {
-                if !subtree_ids.contains(&row.ancestor_id) {
-                    ClosureEntity::delete_many()
-                        .filter(closure_entity::Column::AncestorId.eq(row.ancestor_id))
-                        .filter(closure_entity::Column::DescendantId.eq(row.descendant_id))
-                        .secure()
-                        .scope_with(&scope)
-                        .exec(db)
-                        .await
-                        .map_err(|e| DomainError::database(e.to_string()))?;
-                }
-            }
         }
 
-        // If new_parent_id is Some, insert new ancestor paths
+        // If new_parent_id is Some, batch-insert new ancestor paths
         if let Some(parent_id) = new_parent_id {
             let parent_ancestors = ClosureEntity::find()
                 .filter(closure_entity::Column::DescendantId.eq(parent_id))
@@ -706,20 +756,25 @@ impl GroupRepository {
                 .await
                 .map_err(|e| DomainError::database(e.to_string()))?;
 
-            // For each ancestor of the new parent, create paths to each subtree node
+            // Build all new closure rows in memory, then batch-insert
+            let mut new_rows: Vec<closure_entity::ActiveModel> = Vec::new();
             for ancestor_row in &parent_ancestors {
                 for &desc_id in &subtree_ids {
                     let internal_depth = subtree_internal.get(&desc_id).copied().unwrap_or(0);
                     let new_depth = ancestor_row.depth + 1 + internal_depth;
-                    let model = closure_entity::ActiveModel {
+                    new_rows.push(closure_entity::ActiveModel {
                         ancestor_id: Set(ancestor_row.ancestor_id),
                         descendant_id: Set(desc_id),
                         depth: Set(new_depth),
-                    };
-                    modkit_db::secure::secure_insert::<ClosureEntity>(model, &scope, db)
-                        .await
-                        .map_err(|e| DomainError::database(e.to_string()))?;
+                    });
                 }
+            }
+
+            // Insert closure rows (one INSERT per row via secure_insert)
+            for row in new_rows {
+                modkit_db::secure::secure_insert::<ClosureEntity>(row, &scope, db)
+                    .await
+                    .map_err(|e| DomainError::database(e.to_string()))?;
             }
         }
 
@@ -766,6 +821,39 @@ impl GroupRepository {
             .map_err(|e| DomainError::database(e.to_string()))?
             .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
         Ok(model.schema_id)
+    }
+
+    /// Batch-resolve SMALLINT type IDs to GTS type path strings.
+    ///
+    /// Issues a single `SELECT ... WHERE id IN (...)` query for all distinct type IDs,
+    /// returning a `HashMap` for O(1) lookup. Eliminates N+1 queries in list operations.
+    pub async fn resolve_type_paths_batch(
+        db: &impl DBRunner,
+        type_ids: &[i16],
+    ) -> Result<std::collections::HashMap<i16, String>, DomainError> {
+        use std::collections::HashMap;
+
+        if type_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let unique_ids: Vec<i16> = {
+            let mut ids: Vec<i16> = type_ids.to_vec();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        };
+
+        let scope = system_scope();
+        let models = GtsTypeEntity::find()
+            .filter(gts_type::Column::Id.is_in(unique_ids))
+            .secure()
+            .scope_with(&scope)
+            .all(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?;
+
+        Ok(models.into_iter().map(|m| (m.id, m.schema_id)).collect())
     }
 
     /// Convert a database model to the SDK `ResourceGroup` type.
@@ -915,6 +1003,35 @@ impl DepthFilter {
                 _ => true, // Unsupported ops pass through
             },
             Self::And(filters) => filters.iter().all(|f| f.matches(depth)),
+        }
+    }
+
+    /// Derive the maximum descendant depth (positive) implied by this filter.
+    /// Returns `None` if no upper bound can be derived.
+    fn max_descendant_depth(&self) -> Option<i32> {
+        use modkit_odata::filter::FilterOp;
+        match self {
+            Self::Single(op, v) => match op {
+                FilterOp::Eq | FilterOp::Le => Some(*v),
+                FilterOp::Lt => Some(*v - 1),
+                _ => None,
+            },
+            Self::And(filters) => filters.iter().filter_map(Self::max_descendant_depth).min(),
+        }
+    }
+
+    /// Derive the maximum ancestor depth (positive closure depth) implied by this filter.
+    /// Since ancestors have negative relative depth, `depth ge -3` means closure depth <= 3.
+    /// Returns `None` if no lower bound can be derived.
+    fn max_ancestor_depth(&self) -> Option<i32> {
+        use modkit_odata::filter::FilterOp;
+        match self {
+            Self::Single(op, v) => match op {
+                FilterOp::Eq | FilterOp::Ge => Some(v.abs()),
+                FilterOp::Gt => Some((v - 1).abs()),
+                _ => None,
+            },
+            Self::And(filters) => filters.iter().filter_map(Self::max_ancestor_depth).min(),
         }
     }
 }

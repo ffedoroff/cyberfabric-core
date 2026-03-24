@@ -32,7 +32,10 @@ pub struct RgReadService {
 impl RgReadService {
     /// Create a new `RgReadService`.
     #[must_use]
-    pub fn new(group_service: Arc<GroupService>, membership_service: Arc<MembershipService>) -> Self {
+    pub fn new(
+        group_service: Arc<GroupService>,
+        membership_service: Arc<MembershipService>,
+    ) -> Self {
         Self {
             group_service,
             membership_service,
@@ -59,20 +62,12 @@ impl ResourceGroupReadHierarchy for RgReadService {
 impl ResourceGroupReadPluginClient for RgReadService {
     async fn list_memberships(
         &self,
-        _ctx: &SecurityContext,
-        _query: &ODataQuery,
+        ctx: &SecurityContext,
+        query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError> {
-        // Membership service is not yet implemented (Feature 4: Membership).
-        // Return an empty page until the membership domain is available.
-        Ok(Page {
-            items: Vec::new(),
-            page_info: modkit_odata::PageInfo {
-                next_cursor: None,
-                prev_cursor: None,
-                limit: _query.limit.unwrap_or(20),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-        })
+        self.membership_service
+            .list_memberships(ctx, query)
+            .await
+            .map_err(ResourceGroupError::from)
     }
 }

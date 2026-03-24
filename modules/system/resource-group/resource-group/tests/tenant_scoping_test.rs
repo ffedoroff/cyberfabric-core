@@ -11,6 +11,7 @@ use modkit_security::{AccessScope, pep_properties};
 
 // ── AccessScope construction from tenant context ────────────────────────
 
+// Scenario: L1-Scope-01 - for_tenant contains tenant_id
 /// `AccessScope::for_tenant()` produces a scope that contains exactly
 /// the given `tenant_id` under `owner_tenant_id`.
 #[test]
@@ -22,6 +23,7 @@ fn for_tenant_contains_tenant_id() {
     assert!(scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tid));
 }
 
+// Scenario: L1-Scope-02 - for_tenant excludes other tenants
 /// `AccessScope::for_tenant()` does NOT contain a different tenant.
 #[test]
 fn for_tenant_excludes_other_tenants() {
@@ -32,6 +34,7 @@ fn for_tenant_excludes_other_tenants() {
     assert!(!scope.contains_uuid(pep_properties::OWNER_TENANT_ID, other));
 }
 
+// Scenario: L1-Scope-03 - for_tenants contains all given IDs
 /// `AccessScope::for_tenants()` with multiple IDs contains all of them.
 #[test]
 fn for_tenants_contains_all_given_ids() {
@@ -45,6 +48,7 @@ fn for_tenants_contains_all_given_ids() {
     assert!(scope.contains_uuid(pep_properties::OWNER_TENANT_ID, t3));
 }
 
+// Scenario: L1-Scope-04 - all_uuid_values_for extracts tenant IDs
 /// `all_uuid_values_for()` extracts all tenant IDs from a scope.
 #[test]
 fn all_uuid_values_extracts_tenant_ids() {
@@ -58,6 +62,7 @@ fn all_uuid_values_extracts_tenant_ids() {
     assert!(ids.contains(&t2));
 }
 
+// Scenario: L1-Scope-05 - allow_all is unconstrained
 /// `allow_all()` scope is unconstrained — no tenant filtering.
 #[test]
 fn allow_all_is_unconstrained() {
@@ -65,6 +70,7 @@ fn allow_all_is_unconstrained() {
     assert!(scope.is_unconstrained());
 }
 
+// Scenario: L1-Scope-06 - deny_all has no values
 /// `deny_all()` scope is not unconstrained and contains no values.
 #[test]
 fn deny_all_has_no_values() {
@@ -79,6 +85,7 @@ fn deny_all_has_no_values() {
 
 // ── tenant_only() helper ────────────────────────────────────────────────
 
+// Scenario: L1-Scope-07 - tenant_only preserves tenant filter
 /// `tenant_only()` on a tenant scope keeps the tenant filter.
 #[test]
 fn tenant_only_preserves_tenant_filter() {
@@ -88,6 +95,7 @@ fn tenant_only_preserves_tenant_filter() {
     assert!(scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tid));
 }
 
+// Scenario: L1-Scope-08 - tenant_only on allow_all becomes deny_all
 /// `tenant_only()` on an `allow_all` scope becomes `deny_all` (fail-closed).
 /// This is by design: unconstrained scopes have no tenant filters to retain.
 #[test]
@@ -98,6 +106,7 @@ fn tenant_only_on_allow_all_becomes_deny_all() {
 
 // ── Scope combination scenarios ─────────────────────────────────────────
 
+// Scenario: L1-Scope-09 - Separate tenant scopes are isolated
 /// Two scopes for different tenants are distinct (no cross-contamination).
 #[test]
 fn separate_tenant_scopes_are_isolated() {
@@ -116,6 +125,7 @@ fn separate_tenant_scopes_are_isolated() {
     assert!(!scope_b.contains_uuid(pep_properties::OWNER_TENANT_ID, tid_a));
 }
 
+// Scenario: L1-Scope-10 - for_resource scopes by id, not tenant
 /// `for_resource` creates a scope on the `id` property, not `owner_tenant_id`.
 #[test]
 fn for_resource_scopes_by_id_not_tenant() {

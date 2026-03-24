@@ -6,14 +6,15 @@
 use std::sync::Arc;
 
 use modkit_db::secure::DBRunner;
+use modkit_odata::{ODataQuery, Page};
 use resource_group_sdk::models::{CreateTypeRequest, ResourceGroupType, UpdateTypeRequest};
+
+use tracing::{debug, warn};
 
 use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
+use crate::domain::validation;
 use crate::infra::storage::type_repo::TypeRepository;
-
-/// GTS type path prefix required for resource group types.
-const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";
 
 // @cpt-dod:cpt-cf-resource-group-dod-type-mgmt-service-crud:p1
 /// Service for GTS type lifecycle management.
@@ -36,7 +37,7 @@ impl TypeService {
         &self,
         req: CreateTypeRequest,
     ) -> Result<ResourceGroupType, DomainError> {
-        Self::validate_type_code(&req.code)?;
+        validation::validate_type_code(&req.code)?;
         Self::validate_placement_invariant(req.can_be_root, &req.allowed_parents)?;
 
         let conn = self.db.conn()?;
@@ -44,6 +45,7 @@ impl TypeService {
         // Check uniqueness
         let existing = TypeRepository::find_by_code(&conn, &req.code).await?;
         if existing.is_some() {
+            debug!(code = %req.code, "Type already exists, rejecting create");
             return Err(DomainError::type_already_exists(&req.code));
         }
 
@@ -52,7 +54,7 @@ impl TypeService {
             Vec::new()
         } else {
             for parent_code in &req.allowed_parents {
-                Self::validate_type_code(parent_code)?;
+                validation::validate_type_code(parent_code)?;
             }
             TypeRepository::resolve_ids(&conn, &req.allowed_parents).await?
         };
@@ -89,16 +91,13 @@ impl TypeService {
             .ok_or_else(|| DomainError::type_not_found(code))
     }
 
-    /// List GTS type definitions.
-    pub async fn list_types(&self) -> Result<Vec<ResourceGroupType>, DomainError> {
+    /// List GTS type definitions with `OData` filtering and pagination.
+    pub async fn list_types(
+        &self,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroupType>, DomainError> {
         let conn = self.db.conn()?;
-        let models = TypeRepository::list_all(&conn).await?;
-        let mut types = Vec::with_capacity(models.len());
-        for model in &models {
-            let rg_type = TypeRepository::load_full_type(&conn, model).await?;
-            types.push(rg_type);
-        }
-        Ok(types)
+        TypeRepository::list_types(&conn, query).await
     }
 
     // @cpt-flow:cpt-cf-resource-group-flow-type-mgmt-update-type:p1
@@ -123,7 +122,7 @@ impl TypeService {
             Vec::new()
         } else {
             for parent_code in &req.allowed_parents {
-                Self::validate_type_code(parent_code)?;
+                validation::validate_type_code(parent_code)?;
             }
             TypeRepository::resolve_ids(&conn, &req.allowed_parents).await?
         };
@@ -173,6 +172,7 @@ impl TypeService {
         // Check for active references
         let count = TypeRepository::count_groups_of_type(&conn, type_id).await?;
         if count > 0 {
+            warn!(code = %code, count, "Cannot delete type: active group references exist");
             return Err(DomainError::conflict_active_references(format!(
                 "Cannot delete type '{code}': {count} group(s) of this type exist"
             )));
@@ -182,25 +182,6 @@ impl TypeService {
     }
 
     // -- Validation helpers --
-
-    // @cpt-algo:cpt-cf-resource-group-algo-sdk-foundation-validate-gts-type-path:p1
-    // @cpt-algo:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1
-    fn validate_type_code(code: &str) -> Result<(), DomainError> {
-        if code.is_empty() {
-            return Err(DomainError::validation("Type code must not be empty"));
-        }
-        if !code.starts_with(RG_TYPE_PREFIX) {
-            return Err(DomainError::validation(format!(
-                "Type code must start with prefix '{RG_TYPE_PREFIX}', got: '{code}'"
-            )));
-        }
-        if code.len() > 1024 {
-            return Err(DomainError::validation(
-                "Type code must not exceed 1024 characters",
-            ));
-        }
-        Ok(())
-    }
 
     fn validate_placement_invariant(
         can_be_root: bool,

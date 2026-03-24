@@ -37,6 +37,11 @@ impl From<DomainError> for Problem {
                 "Group not found",
                 format!("Resource group with id '{id}' was not found"),
             ),
+            DomainError::MembershipNotFound { key } => Problem::new(
+                http::StatusCode::NOT_FOUND,
+                "Membership not found",
+                format!("Membership '{key}' was not found"),
+            ),
             DomainError::InvalidParentType { message } => Problem::new(
                 http::StatusCode::BAD_REQUEST,
                 "Invalid parent type",

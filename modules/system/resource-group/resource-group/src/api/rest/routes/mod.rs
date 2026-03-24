@@ -14,7 +14,7 @@ mod types;
 
 /// Register all routes for the resource-group module.
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn register_routes(
+pub fn register_routes(
     mut router: Router,
     openapi: &dyn OpenApiRegistry,
     type_service: Arc<TypeService>,

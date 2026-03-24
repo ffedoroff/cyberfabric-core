@@ -77,7 +77,7 @@
 - **Priority**: HIGH
 - **Type**: code
 - **Checklist ID**: ENG-CODE-009
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/read_service.rs:54-71` -- `list_memberships` returns hardcoded empty page with stale comment "Membership service is not yet implemented"
   - `resource-group/src/domain/read_service.rs:25-27` -- `RgReadService` struct only contains `group_service: Arc<GroupService>`, no `MembershipService`
@@ -90,7 +90,7 @@
 - **Priority**: HIGH
 - **Type**: test
 - **Checklist ID**: TEST-CODE-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs` -- zero `#[cfg(test)]` or `#[test]` attributes
   - `resource-group/src/domain/type_service.rs` -- zero test attributes
@@ -116,7 +116,7 @@
 - **Priority**: HIGH
 - **Type**: code
 - **Checklist ID**: SEC-CODE-002
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs:76-80` -- `create_group` accepts `(req, tenant_id)` but no `SecurityContext`, never calls `enforcer.access_scope()`
   - `resource-group/src/domain/group_service.rs:198-212` -- contrast: `get_group` calls `self.enforcer.access_scope(ctx, &RG_GROUP_RESOURCE, "get", ...)`
@@ -133,7 +133,7 @@
 - **Priority**: MEDIUM
 - **Type**: design
 - **Checklist ID**: PERF-DESIGN-004
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `docs/DESIGN.md:1191` -- "vertical scaling of the database instance is the primary strategy. Horizontal read replicas can be added for read-heavy AuthZ query paths."
   - `docs/DESIGN.md:1247` -- "RG is a stateless service layer" (statelessness noted but horizontal scaling not documented)
@@ -144,7 +144,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: PERF-CODE-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/infra/storage/group_repo.rs:117-121` -- `for model in page.items { let type_path = Self::resolve_type_path(db, model.gts_type_id).await?; }` in `list_groups`
   - `resource-group/src/infra/storage/group_repo.rs:314-315` -- same N+1 pattern in `list_hierarchy`
@@ -157,7 +157,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: PERF-CODE-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/infra/storage/type_repo.rs:378-392` -- inner loop: `for group in groups { if let Some(parent_id) = group.parent_id { let parent = ResourceGroupEntity::find()...one(db).await?; } }`
   - `resource-group/src/infra/storage/type_repo.rs:363-396` -- full `find_groups_using_parent_type` method
@@ -168,7 +168,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: PERF-CODE-002
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/infra/storage/group_repo.rs:245-260` -- fetches ALL ancestor_rows and descendant_rows without limit
   - `resource-group/src/infra/storage/group_repo.rs:293-299` -- loads ALL referenced groups into memory
@@ -180,7 +180,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: PERF-CODE-002
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/infra/storage/group_repo.rs:647-668` -- inner loop: for each descendant, queries all ancestor rows, then deletes each non-subtree ancestor individually
   - `resource-group/src/infra/storage/group_repo.rs:682-695` -- nested loop: for each ancestor x each subtree node, issues individual INSERT
@@ -192,7 +192,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: ENG-CODE-007
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs:29` -- `const RG_TYPE_PREFIX: &str = "gts.x.system.rg.type.v1~";`
   - `resource-group/src/domain/type_service.rs:15` -- same constant defined independently
@@ -205,7 +205,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: ENG-CODE-002 / Design alignment
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/api/rest/handlers/types.rs:25` -- returns `ApiResult<Json<Vec<TypeDto>>>` instead of `Page<TypeDto>`
   - `resource-group/src/api/rest/handlers/types.rs:24` -- `OData(_query): OData` with underscore prefix, query is ignored
@@ -220,7 +220,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: QUAL-CODE-003
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs` -- calls `GroupRepository::find_model_by_id(&conn, ...)`, `TypeRepository::resolve_id(&conn, ...)` as static methods throughout
   - `resource-group/src/domain/type_service.rs` -- calls `TypeRepository::find_by_code(&conn, ...)` as static methods
@@ -232,7 +232,7 @@
 - **Priority**: MEDIUM
 - **Type**: test
 - **Checklist ID**: TEST-CODE-003
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/tests/authz_integration_test.rs` -- tests AuthZ scoping, not REST endpoints
   - `resource-group/tests/tenant_filtering_db_test.rs` -- tests tenant isolation at DB level
@@ -245,7 +245,7 @@
 - **Priority**: MEDIUM
 - **Type**: design
 - **Checklist ID**: OPS-DESIGN-002
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `docs/DESIGN.md:1262-1269` -- Observability section documents logging, metrics, alerting but omits health check endpoints
   - `docs/DESIGN.md:1247` -- delegates OPS to platform defaults but does not mention health checks
@@ -256,7 +256,7 @@
 - **Priority**: MEDIUM
 - **Type**: code
 - **Checklist ID**: ERR-CODE-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/membership_service.rs:140-144` -- uses `DomainError::type_not_found(...)` for a missing membership
   - `resource-group/src/api/rest/error.rs:12-15` -- `DomainError::TypeNotFound` maps to HTTP 404 with title "Type not found" and detail "GTS type with code '...' was not found"
@@ -268,7 +268,7 @@
 - **Priority**: MEDIUM
 - **Type**: test
 - **Checklist ID**: TEST-CODE-003
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/tests/authz_integration_test.rs` -- no `// @cpt-` markers or scenario ID references
   - `resource-group/tests/tenant_filtering_db_test.rs` -- no scenario ID references
@@ -285,7 +285,7 @@
 - **Priority**: LOW
 - **Type**: design
 - **Checklist ID**: SEC-DESIGN-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `docs/DESIGN.md:820-822` -- "AuthN Resolver validates the token and returns a SecurityContext..." but no mention of token expiry, refresh, or session timeout
 - **Issue**: Session timeout and token renewal strategy are not explicitly documented for JWT-authenticated requests. The document describes JWT authentication flow but does not specify token expiry handling, refresh token strategy, or session timeout behavior. For a security-critical service, unclear token lifecycle means operators cannot configure appropriate session timeouts.
@@ -295,7 +295,7 @@
 - **Priority**: LOW
 - **Type**: design
 - **Checklist ID**: REL-DESIGN-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `docs/DESIGN.md:1249` -- "RG does not implement its own circuit breakers or redundancy beyond transaction retry for serialization conflicts."
 - **Issue**: Circuit breaker and bulkhead patterns are not documented for the AuthZ Resolver dependency. The reliability section documents absence of circuit breakers for the database, but does not address circuit breakers for the AuthZ Resolver dependency (PolicyEnforcer calls on JWT path). If AuthZ Resolver becomes unavailable, all JWT-authenticated RG requests will fail without circuit-breaking protection.
@@ -305,7 +305,7 @@
 - **Priority**: LOW
 - **Type**: design
 - **Checklist ID**: OPS-DESIGN-002
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `docs/DESIGN.md:1266` -- "structured request/response logging via platform middleware (request ID, tenant ID, operation, latency)" but no mention of trace propagation
 - **Issue**: Distributed tracing is not explicitly documented. While structured request logging includes request_id, the document does not mention trace propagation, span correlation, or integration with a distributed tracing system. In a system where AuthZ calls RG which calls the database, distributed tracing is important for diagnosing latency issues.
@@ -315,7 +315,7 @@
 - **Priority**: LOW
 - **Type**: code
 - **Checklist ID**: OBS-CODE-001
-- **Status**: [ ] pending
+- **Status**: [x] resolved
 - **References**:
   - `resource-group/src/domain/group_service.rs` -- zero `tracing::` calls in entire file
   - `resource-group/src/domain/type_service.rs` -- zero `tracing::` calls in entire file
