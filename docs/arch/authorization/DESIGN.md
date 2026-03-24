@@ -1,5 +1,3 @@
-<!-- Updated: 2026-04-07 by Constructor Tech -->
-
 # Authentication & Authorization Design
 
 ## Table of Contents
@@ -341,22 +339,19 @@ scope mismatch without calling PDP.
 
 **Configuration:**
 ```yaml
-api-gateway:
-  config:
-    route_policies:
-      enabled: true
-      rules:
-        - path: "/admin/**"
-          required_scopes: ["admin"]
-        - path: "/events/v1/*"
-          required_scopes: ["read:events", "write:events"]  # any of these
+auth:
+  gateway_scope_checks:
+    enabled: true
+    routes:
+      "/admin/*":
+        required_scopes: ["admin"]
+      "/events/v1/*":
+        required_scopes: ["read:events", "write:events"]  # any of these
 ```
 
 **Behavior:**
-- Rules are evaluated in declaration order (first match wins)
-- If `token_scopes: ["*"]` → always pass (first-party app)
+- If `token_scopes: ["*"]` → always pass
 - If `token_scopes` contains any of `required_scopes` → pass
-- Empty `token_scopes` → 403 Forbidden (fail-closed)
 - Otherwise → 403 Forbidden (before PDP call)
 
 **Note:** This is coarse-grained optimization. Fine-grained permission checks still happen in PDP.
@@ -1265,17 +1260,10 @@ Capabilities declare what predicate types the PEP can enforce locally:
 | Capability | Enables Predicate Types | Required Projection |
 |------------|---------------------|---------------------|
 | `tenant_hierarchy` | `in_tenant_subtree` | `tenant_closure` |
-| `group_membership` | `in_group` | `resource_group_membership` (projection not recommended — see below) |
-| `group_hierarchy` | `in_group_subtree` | `resource_group_closure` + `resource_group_membership` (projection not recommended — see below) |
+| `group_membership` | `in_group` | `resource_group_membership` (not projected to domain services) |
+| `group_hierarchy` | `in_group_subtree` | `resource_group_closure` + `resource_group_membership` (not projected to domain services) |
 
-**Progressive projection guidance:**
-- **Monolith** (single shared DB): no projections needed — PEP JOINs canonical tables directly.
-- **Microservices** (typical): project `resource_group` + `resource_group_closure` (small tables). Leave `resource_group_membership` to PDP capability degradation (→ `in` predicates with explicit IDs).
-- **Microservices** with membership filtering/pagination where the two-request pattern causes unacceptable N-request fan-out: project `resource_group_membership`. This table is expected to be **10× or more larger** (~455 M rows, ~110 GB at scale) — only project after profiling confirms the need.
-
-Do not add projections speculatively — each projection creates an additional database and synchronization load.
-
-`group_membership` and `group_hierarchy` capabilities are only available when the membership table is present in the PEP's database (RG module, monolith with shared DB, or an explicit projection). Domain services that choose **not** to project the table rely on PDP capability degradation — PDP expands group memberships to explicit resource IDs and returns `in` predicates.
+**Important:** `resource_group_membership` is **not projected** to domain services — it is too large (~455M rows at scale) and remains canonical to the RG module's database only. `group_membership` and `group_hierarchy` capabilities are only available when the membership table is present in the PEP's database (RG module or monolith with shared DB). Domain services rely on PDP capability degradation — PDP expands group memberships to explicit resource IDs and returns `in` predicates.
 
 **Predicate type availability by capability:**
 
@@ -1298,7 +1286,8 @@ Do not add projections speculatively — each projection creates an additional d
 
 These tables are maintained locally by Cyber Fabric modules (Tenant Resolver, Resource Group module) and used by PEPs to execute constraint queries efficiently without calling back to the vendor platform.
 
-**Projectable to domain services:** `tenant_closure`, `resource_group`, `resource_group_closure`, `resource_group_membership` (progressively — see [Capabilities and Projection Tables](#capabilities-and-projection-tables) for guidance on when to project each table).
+**Projectable to domain services:** `tenant_closure`, `resource_group_closure`.
+**RG-internal only (not projected):** `resource_group_membership` — too large for projection; stays in the RG module's database. Described here for reference as it is used by `in_group`/`in_group_subtree` predicates within the RG module.
 
 #### `tenant_closure`
 
@@ -1343,9 +1332,9 @@ Closure table for resource group hierarchy. Similar structure to tenant_closure 
 - Self-referential rows exist: each group has a row where `ancestor_id = descendant_id`.
 - **Predicate mapping:** `in_group_subtree` predicate compiles to SQL using this closure table.
 
-#### `resource_group_membership` (RG-owned — project only when needed)
+#### `resource_group_membership` (RG-internal — not projected)
 
-Association between resources and groups. A resource can belong to multiple groups. This table is expected to be **10× or more larger** than other projection tables (~455M rows, ~110 GB at scale). Project only after profiling confirms the two-request pattern causes unacceptable latency — see [Capabilities and Projection Tables](#capabilities-and-projection-tables) for the progressive projection strategy.
+Association between resources and groups. A resource can belong to multiple groups. This table is **not projected** to domain services due to its expected size (~455M rows, ~110 GB at scale). It resides only in the RG module's database.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -1432,7 +1421,7 @@ These questions require further design work.
 
 2. **Projection tables scalability** - Closure table approach works well for moderate scale, but may not perform for all scenarios. Key factors: tenant hierarchy depth (10+ levels), total object count (10M+), object distribution across tenants, and query patterns (root tenant queries are heavier than leaf). For large-scale deployments, vendors may need alternative strategies: denormalization (e.g., PostgreSQL ltree), materialized views, or sharding. This design doc describes the reference architecture; concrete optimization strategy depends on vendor's data model and scale requirements.
 
-3. **Local projections sync** - How to keep projection tables (`tenant_closure`, `resource_group_closure`) in sync with vendor's source of truth? Possible approaches: event-based sync (requires event broker), CDC-based (Debezium-like), or periodic polling via Resolver APIs. Each has trade-offs in consistency, latency, and infrastructure complexity. Note: `resource_group_membership` projection is not recommended (see [Capabilities and Projection Tables](#capabilities-and-projection-tables)) but is not forbidden if the use case demands it.
+3. **Local projections sync** - How to keep projection tables (`tenant_closure`, `resource_group_closure`) in sync with vendor's source of truth? Possible approaches: event-based sync (requires event broker), CDC-based (Debezium-like), or periodic polling via Resolver APIs. Each has trade-offs in consistency, latency, and infrastructure complexity. Note: `resource_group_membership` is not projected — it stays in the RG module's database only.
 
 4. **Resource Group Service** - Should Cyber Fabric have its own Resource Group Service, or is Resource Group Resolver (module bridging to vendor's service) sufficient? Having a Cyber Fabric-native service has pros and cons. Needs design.
 

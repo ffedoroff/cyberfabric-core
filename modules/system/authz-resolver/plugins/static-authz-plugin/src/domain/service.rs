@@ -134,7 +134,7 @@ mod tests {
                 assert_eq!(in_pred.property, pep_properties::OWNER_TENANT_ID);
                 assert_eq!(in_pred.values, vec![tenant_id.into_filter_value()]);
             }
-            other @ Predicate::Eq(_) => panic!("Expected In predicate, got: {other:?}"),
+            other => panic!("Expected In predicate, got: {other:?}"),
         }
     }
 
@@ -158,7 +158,7 @@ mod tests {
                     ]
                 );
             }
-            other @ Predicate::Eq(_) => panic!("Expected In predicate, got: {other:?}"),
+            other => panic!("Expected In predicate, got: {other:?}"),
         }
     }
 

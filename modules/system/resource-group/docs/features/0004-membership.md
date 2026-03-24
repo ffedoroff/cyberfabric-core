@@ -1,5 +1,3 @@
-<!-- Created: 2026-04-07 by Constructor Tech -->
-
 # Feature: Membership Management
 
 - [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-membership`
@@ -25,15 +23,7 @@
   - [Membership Service](#membership-service)
   - [Membership REST Handlers](#membership-rest-handlers)
   - [Membership Data Seeding](#membership-data-seeding-1)
-  - [Unit Test Coverage for Membership](#unit-test-coverage-for-membership)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
-- [7. Unit Test Plan](#7-unit-test-plan)
-  - [Membership Test Cases](#membership-test-cases)
-  - [Seeding — Memberships](#seeding--memberships)
-  - [Membership Table Assertions (`resource_group_membership`)](#membership-table-assertions-resource_group_membership)
-- [8. E2E Test Plan](#8-e2e-test-plan)
-  - [S10: `test_membership_filter_wiring`](#s10-test_membership_filter_wiring)
-  - [Acceptance Criteria (S10)](#acceptance-criteria-s10)
 
 <!-- /toc -->
 
@@ -63,7 +53,6 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 - **Design**: [DESIGN.md](../DESIGN.md) — sections 3.2 (Membership Service), 3.3 (API), 3.7 (resource_group_membership)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) entry 2.4
 - **Dependencies**: Features 0001, 0003 — SDK foundation, group existence, tenant scope
-- **Not applicable**: UX (backend API — no user interface); COMPL (internal platform module — no regulatory data handling); OPS observability and rollout are managed at the module infrastructure level (DESIGN §3.7 and platform runbooks); PERF targets are set at the system level in PRD.md NFR section.
 
 ## 2. Actor Flows (CDSL)
 
@@ -133,7 +122,7 @@ Memberships link resources (users, courses, documents, etc.) to groups in the hi
 3. [x] - `p1` - Resolve any GTS type paths in filter values to surrogate IDs at persistence boundary - `inst-list-memb-3`
 4. [x] - `p1` - DB: SELECT group_id, gts_type_id, resource_id FROM resource_group_membership WHERE {filter} ORDER BY {stable} LIMIT {limit+1} - `inst-list-memb-4`
 5. [x] - `p1` - Resolve surrogate IDs back to GTS type paths for response - `inst-list-memb-5`
-6. [x] - `p1` - Build Page response with items and cursor tokens - `inst-list-memb-6`
+6. [x] - `p1` - Build Page response with items, has_next_page, cursor tokens - `inst-list-memb-6`
 7. [x] - `p1` - **RETURN** Page<ResourceGroupMembership> - `inst-list-memb-7`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -238,16 +227,6 @@ The system **MUST** provide an idempotent membership seeding mechanism for deplo
 **Touches**:
 - DB: `resource_group_membership`
 
-### Unit Test Coverage for Membership
-
-- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-membership`
-
-All acceptance criteria from feature 0004 are covered by automated tests:
-- Add/remove lifecycle with composite key semantics
-- allowed_memberships validation
-- Tenant compatibility enforcement
-- Duplicate detection
-
 ## 6. Acceptance Criteria
 
 - [x] Adding membership `(G1, User, R1)` creates link and returns 201 with membership body
@@ -265,146 +244,3 @@ All acceptance criteria from feature 0004 are covered by automated tests:
 - [x] No SMALLINT surrogate IDs exposed in membership REST responses
 - [x] Membership seeding creates links, skips duplicates, validates tenant compatibility (idempotent)
 - [x] Tenant deprovisioning cascade-deletes associated memberships
-
----
-
-## 7. Unit Test Plan
-
-> General testing philosophy, patterns, and infrastructure: [`docs/modkit_unified_system/12_unit_testing.md`](../../../../../docs/modkit_unified_system/12_unit_testing.md).
-
-### Membership Test Cases
-
-**File**: `membership_service_test.rs`
-
-Test setup: SQLite in-memory + TypeService + GroupService + MembershipService.
-
-#### TC-MBR-01: Add membership happy path [P1]
-- **Covers**: G25, 0004-AC-1
-- **Setup**: Create type with allowed_memberships=[member_type], create group. Add membership.
-- **Assert**: Membership returned with group_id, resource_type, resource_id
-
-#### TC-MBR-02: Add membership to nonexistent group [P1]
-- **Covers**: G26, 0004-AC-2
-- **Assert**: `DomainError::GroupNotFound`
-
-#### TC-MBR-03: Add duplicate membership [P1]
-- **Covers**: G27, 0004-AC-3
-- **Setup**: Add membership, then add same (group_id, resource_type, resource_id) again
-- **Assert**: `DomainError::Conflict`
-
-#### TC-MBR-04: Add membership with unregistered resource_type [P1]
-- **Covers**: G28, 0004-AC-4
-- **Assert**: `DomainError::Validation` with "Unknown resource type"
-
-#### TC-MBR-05: Add membership with resource_type not in allowed_memberships [P1]
-- **Covers**: G29, 0004-AC-5
-- **Setup**: Create group of type that does NOT include resource_type in allowed_memberships
-- **Assert**: `DomainError::Validation` with "not in allowed_memberships"
-
-#### TC-MBR-06: Tenant compatibility violation [P1]
-- **Covers**: G30, 0004-AC-7
-- **Setup**: Create group in tenant A, add membership (type, resource-1). Create group in tenant B. Try to add same resource (type, resource-1) to group in tenant B.
-- **Assert**: `DomainError::TenantIncompatibility`
-
-#### TC-MBR-07: Remove existing membership [P1]
-- **Covers**: G31, 0004-AC-8
-- **Setup**: Add membership, then remove it
-- **Assert**: Success (no error)
-
-#### TC-MBR-08: Remove nonexistent membership [P1]
-- **Covers**: G32, 0004-AC-9
-- **Assert**: `DomainError::MembershipNotFound`
-
-#### TC-MBR-09: Multiple resource types in same group [P2]
-- **Covers**: 0004-AC-6
-- **Setup**: Type with allowed_memberships=[typeA, typeB]. Create group. Add (group, typeA, R1) and (group, typeB, R2).
-- **Assert**: Both succeed, list_memberships returns both
-
-#### TC-MBR-10: Tenant compatibility - first membership always allowed [P2]
-- **Covers**: 0004-algo-tenant-check-2
-- **Setup**: First add for any resource should succeed regardless of tenant
-- **Assert**: Success
-
-#### TC-MBR-11: Add membership with empty resource_id [P2]
-- No validation on resource_id in code — empty string will be inserted
-- Verify it either fails at DB constraint or succeeds (document behavior)
-
-#### TC-MBR-12: Remove membership with unregistered resource_type [P2]
-- resolve_id returns None → `DomainError::Validation("Unknown resource type")`
-
-#### TC-MBR-13: Add membership to group with empty allowed_memberships [P1]
-- Group type has `allowed_memberships: []` — any resource_type should be rejected
-- **Assert**: `DomainError::Validation("not in allowed_memberships")`
-
-#### TC-MBR-14: Same resource linked in multiple groups of same tenant [P1]
-- Resource (type, R1) added to Group A (tenant T), then to Group B (tenant T)
-- `existing_tenants.contains(&tenant_id)` = true → pass
-- **Assert**: Both succeed
-
-#### TC-MBR-15: List memberships empty result [P3]
-- No memberships exist, query returns empty Page
-- **Assert**: `page.items.is_empty()`
-
-### Seeding — Memberships
-
-**File**: `seeding_test.rs` (integration tests with SQLite)
-
-#### TC-SEED-07: seed_memberships creates links [P1]
-- **Covers**: G48, 0004-AC-14
-- **Setup**: Create group + type, seed membership definitions.
-- **Assert**: `result.created == N`
-
-#### TC-SEED-08: seed_memberships skips duplicates (Conflict -> skip) [P1]
-- **Covers**: G48
-- **Setup**: Seed membership, seed again.
-- **Assert**: `result.unchanged == 1`
-
-#### TC-SEED-09: seed_memberships skips tenant-incompatible (TenantIncompatibility -> skip) [P2]
-- **Covers**: G48
-- **Setup**: Seed membership in tenant A, then seed same resource to tenant B group.
-- **Assert**: `result.skipped == 1`
-
-#### TC-SEED-12: seed_memberships with nonexistent group [P2]
-- group_id not in DB → error NOT caught by Conflict/TenantIncompatibility → early return Err
-- **Assert**: Error propagated (not silently skipped)
-
-### Membership Table Assertions (`resource_group_membership`)
-
-| Operation | Required DB Assertions |
-|-----------|----------------------|
-| **Add membership** | Row exists with correct composite key `(group_id, gts_type_id, resource_id)`. `gts_type_id` is SMALLINT (resolved). |
-| **Remove membership** | Row **gone**. Other memberships of same group **untouched**. |
-| **Force delete group** | All membership rows for subtree groups → **0**. |
-| **Same resource multiple groups** | Two rows with different `group_id`, same `(gts_type_id, resource_id)`. |
-
----
-
-## 8. E2E Test Plan
-
-> General E2E testing philosophy, patterns, and infrastructure: [`docs/modkit_unified_system/13_e2e_testing.md`](../../../../../docs/modkit_unified_system/13_e2e_testing.md).
-
-### S10: `test_membership_filter_wiring`
-
-**Seam**: OData `$filter` parsing → SQL WHERE clause for memberships.
-
-**Why not in unit tests**: TC-ODATA-05 verifies that `MembershipFilterField` maps `group_id` to the correct column name and kind. The full chain — HTTP `$filter=group_id eq '{id}'` → OData parser → FilterField lookup → SQL `WHERE group_id = ?` — is never tested end-to-end. A mismatch between the parser's expected field name and the FilterField impl breaks filtering silently (returns all rows instead of filtered).
-
-```
-POST type (with allowed_memberships)
-POST group_a, group_b
-
-PUT /groups/{a.id}/memberships/{type}/res-1     → 201
-PUT /groups/{b.id}/memberships/{type}/res-2     → 201
-
-GET /memberships?$filter=group_id eq '{a.id}'   → 200
-  assert all items have group_id == a.id
-  assert res-2 NOT in items                      (filter actually applied)
-
-GET /memberships?$filter=group_id eq '{b.id}'   → 200
-  assert all items have group_id == b.id
-```
-
-### Acceptance Criteria (S10)
-
-- [x] S10 verifies the full `$filter` parse → SQL → subset chain — not just that the request is accepted
-- [x] Test creates data in two groups and verifies each filter returns only the correct subset

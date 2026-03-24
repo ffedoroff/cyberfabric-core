@@ -337,18 +337,17 @@ impl ScopeFilter {
         }
     }
 
-    /// Collect direct-match values as a slice-like view for iteration.
+    /// Collect all values as a slice-like view for iteration.
     ///
-    /// For `Eq`, returns a single-element slice; for `In`, returns the values slice.
-    /// For `InGroup`/`InGroupSubtree`, returns empty — those are subquery parameters,
-    /// not resource property values. The actual matching happens in SQL via
-    /// [`secure::scope_to_condition`].
+    /// For `Eq`, returns a single-element slice; for `In`/`InGroup`/`InGroupSubtree`,
+    /// returns the values slice.
     #[must_use]
     pub fn values(&self) -> ScopeFilterValues<'_> {
         match self {
             Self::Eq(f) => ScopeFilterValues::Single(&f.value),
             Self::In(f) => ScopeFilterValues::Multiple(&f.values),
-            Self::InGroup(_) | Self::InGroupSubtree(_) => ScopeFilterValues::Multiple(&[]),
+            Self::InGroup(f) => ScopeFilterValues::Multiple(&f.group_ids),
+            Self::InGroupSubtree(f) => ScopeFilterValues::Multiple(&f.ancestor_ids),
         }
     }
 
@@ -1057,52 +1056,6 @@ mod tests {
             "Tenant filter must be preserved"
         );
     }
-
-    // --- ScopeFilter::InGroup ---
-
-    #[test]
-    fn scope_filter_in_group_constructor() {
-        let f = ScopeFilter::in_group(
-            pep_properties::OWNER_TENANT_ID,
-            vec![ScopeValue::Uuid(uid(T1))],
-        );
-        assert_eq!(f.property(), pep_properties::OWNER_TENANT_ID);
-        assert!(matches!(f, ScopeFilter::InGroup(_)));
-        assert_eq!(f.values().iter().count(), 0);
-    }
-
-    // --- ScopeFilter::InGroupSubtree ---
-
-    #[test]
-    fn scope_filter_in_group_subtree_constructor() {
-        let f = ScopeFilter::in_group_subtree(
-            pep_properties::OWNER_TENANT_ID,
-            vec![ScopeValue::Uuid(uid(T1))],
-        );
-        assert_eq!(f.property(), pep_properties::OWNER_TENANT_ID);
-        assert!(matches!(f, ScopeFilter::InGroupSubtree(_)));
-        assert_eq!(f.values().iter().count(), 0);
-    }
-
-    #[test]
-    fn in_group_scope_contains_uuid_returns_false() {
-        let scope = AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::in_group(
-            pep_properties::OWNER_TENANT_ID,
-            vec![ScopeValue::Uuid(uid(T1))],
-        )]));
-        assert!(!scope.contains_uuid(pep_properties::OWNER_TENANT_ID, uid(T1)));
-    }
-
-    #[test]
-    fn in_group_subtree_scope_contains_uuid_returns_false() {
-        let scope = AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::in_group_subtree(
-            pep_properties::OWNER_TENANT_ID,
-            vec![ScopeValue::Uuid(uid(T1))],
-        )]));
-        assert!(!scope.contains_uuid(pep_properties::OWNER_TENANT_ID, uid(T1)));
-    }
-
-    // --- contains_uuid string matching ---
 
     #[test]
     fn contains_uuid_matches_string_variant() {

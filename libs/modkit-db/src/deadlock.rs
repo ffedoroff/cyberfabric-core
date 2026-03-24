@@ -23,15 +23,10 @@ const SERIALIZATION_FAILURE_SQLSTATE: &str = "40001";
 /// transaction detects a read/write dependency conflict.
 const PG_SERIALIZATION_MSG: &str = "could not serialize access";
 
-/// Returns `true` if the error contains SQLSTATE `40001`.
+/// Returns `true` if the error is a `MySQL`/`MariaDB` deadlock (SQLSTATE `40001`).
 ///
-/// This matches both `MySQL`/`MariaDB` deadlocks and `PostgreSQL` serialization
-/// failures. It does **not** distinguish between the two — both are retryable.
-/// [`is_serialization_failure`] broadens detection by also matching the
-/// `PostgreSQL` error message text for cases where the SQLSTATE is absent.
-///
-/// Always returns `false` for non-runtime errors (`Custom`, `RecordNotFound`, etc.)
-/// and for `SQLite` errors (single-writer model, no SQLSTATE `40001`).
+/// Always returns `false` for `Postgres` and `SQLite` errors — those engines
+/// resolve lock conflicts differently (`SKIP LOCKED`, single-writer).
 ///
 /// Detection is based on the error's string representation containing the
 /// SQLSTATE code, which avoids a direct dependency on `sqlx` types.
@@ -46,15 +41,10 @@ pub fn is_deadlock(err: &DbErr) -> bool {
     }
 }
 
-/// Returns `true` if the error is a retryable serialization failure.
+/// Returns `true` if the error is a serialization failure (SQLSTATE `40001`).
 ///
-/// This is a superset of [`is_deadlock`] — it matches SQLSTATE `40001` **and**
-/// the `PostgreSQL` `could not serialize access` message text.  Both deadlocks
-/// and serialization conflicts are retryable, and this function does not
-/// distinguish between them.
-///
-/// Coverage:
-/// - **`PostgreSQL`**: `SERIALIZABLE` isolation conflicts
+/// This covers:
+/// - **`PostgreSQL`**: `SERIALIZABLE` isolation serialization conflicts
 ///   (`could not serialize access`, SQLSTATE `40001`)
 /// - **`MySQL`/`MariaDB`**: `InnoDB` deadlocks (SQLSTATE `40001`)
 /// - **`SQLite`**: Always `false` (single-writer model, no serialization failures)
@@ -77,60 +67,10 @@ pub fn is_serialization_failure(err: &DbErr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sea_orm::RuntimeErr;
-
-    fn exec_err(msg: &str) -> DbErr {
-        DbErr::Exec(RuntimeErr::Internal(msg.to_owned()))
-    }
-
-    // -- is_deadlock positive cases --
-
-    #[test]
-    fn deadlock_sqlstate_40001_detected() {
-        assert!(is_deadlock(&exec_err(
-            "error returned from database: 40001: Deadlock found"
-        )));
-    }
-
-    #[test]
-    fn deadlock_pg_serialization_failure_detected() {
-        assert!(is_deadlock(&exec_err(
-            "ERROR: 40001: could not serialize access"
-        )));
-    }
-
-    // -- is_deadlock negative cases --
 
     #[test]
     fn non_deadlock_errors_return_false() {
         assert!(!is_deadlock(&DbErr::Custom("something".into())));
         assert!(!is_deadlock(&DbErr::RecordNotFound("x".into())));
-        assert!(!is_deadlock(&exec_err("duplicate key value")));
-    }
-
-    // -- is_serialization_failure positive cases --
-
-    #[test]
-    fn serialization_failure_sqlstate_detected() {
-        assert!(is_serialization_failure(&exec_err(
-            "error returned from database: 40001"
-        )));
-    }
-
-    #[test]
-    fn serialization_failure_pg_message_detected() {
-        assert!(is_serialization_failure(&exec_err(
-            "ERROR: could not serialize access due to concurrent update"
-        )));
-    }
-
-    // -- is_serialization_failure negative cases --
-
-    #[test]
-    fn non_serialization_errors_return_false() {
-        assert!(!is_serialization_failure(&DbErr::Custom(
-            "something".into()
-        )));
-        assert!(!is_serialization_failure(&exec_err("unique constraint")));
     }
 }

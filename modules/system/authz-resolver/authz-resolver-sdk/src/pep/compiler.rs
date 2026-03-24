@@ -128,6 +128,28 @@ fn compile_constraint(
                     .collect::<Result<_, _>>()?;
                 (p.property.as_str(), ScopeFilter::r#in(&p.property, values))
             }
+            Predicate::InGroup(p) => {
+                let group_ids: Vec<ScopeValue> = p
+                    .group_ids
+                    .iter()
+                    .map(json_to_scope_value)
+                    .collect::<Result<_, _>>()?;
+                (
+                    p.property.as_str(),
+                    ScopeFilter::in_group(&p.property, group_ids),
+                )
+            }
+            Predicate::InGroupSubtree(p) => {
+                let ancestor_ids: Vec<ScopeValue> = p
+                    .ancestor_ids
+                    .iter()
+                    .map(json_to_scope_value)
+                    .collect::<Result<_, _>>()?;
+                (
+                    p.property.as_str(),
+                    ScopeFilter::in_group_subtree(&p.property, ancestor_ids),
+                )
+            }
         };
 
         if !supported_properties.contains(&property) {
@@ -479,6 +501,92 @@ mod tests {
         // First constraint has 2 filters (AND), second has 1 filter
         assert_eq!(scope.constraints()[0].filters().len(), 2);
         assert_eq!(scope.constraints()[1].filters().len(), 1);
+    }
+
+    // === InGroup / InGroupSubtree Compilation Tests ===
+
+    #[test]
+    fn in_group_predicate_compiles_to_in_group_filter() {
+        use crate::constraints::InGroupPredicate;
+
+        let g1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::InGroup(InGroupPredicate {
+                        property: pep_properties::RESOURCE_ID.to_owned(),
+                        group_ids: vec![jid(g1)],
+                    })],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        assert_eq!(scope.constraints().len(), 1);
+        let filter = &scope.constraints()[0].filters()[0];
+        assert!(
+            matches!(filter, ScopeFilter::InGroup(_)),
+            "expected InGroup filter, got: {filter:?}"
+        );
+        assert_eq!(filter.property(), pep_properties::RESOURCE_ID);
+    }
+
+    #[test]
+    fn in_group_subtree_predicate_compiles_to_subtree_filter() {
+        use crate::constraints::InGroupSubtreePredicate;
+
+        let ancestor = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::InGroupSubtree(InGroupSubtreePredicate {
+                        property: pep_properties::RESOURCE_ID.to_owned(),
+                        ancestor_ids: vec![jid(ancestor)],
+                    })],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        assert_eq!(scope.constraints().len(), 1);
+        let filter = &scope.constraints()[0].filters()[0];
+        assert!(
+            matches!(filter, ScopeFilter::InGroupSubtree(_)),
+            "expected InGroupSubtree filter, got: {filter:?}"
+        );
+    }
+
+    #[test]
+    fn tenant_plus_in_group_in_single_constraint() {
+        use crate::constraints::InGroupPredicate;
+
+        let response = EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![
+                        Predicate::In(InPredicate {
+                            property: pep_properties::OWNER_TENANT_ID.to_owned(),
+                            values: vec![jid(T1)],
+                        }),
+                        Predicate::InGroup(InGroupPredicate {
+                            property: pep_properties::RESOURCE_ID.to_owned(),
+                            group_ids: vec![jid(R1)],
+                        }),
+                    ],
+                }],
+                ..Default::default()
+            },
+        };
+
+        let scope = compile_to_access_scope(&response, true, DEFAULT_PROPS).unwrap();
+        assert_eq!(scope.constraints().len(), 1);
+        // Constraint should have 2 filters: In(tenant) AND InGroup(resource)
+        assert_eq!(scope.constraints()[0].filters().len(), 2);
     }
 
     #[test]

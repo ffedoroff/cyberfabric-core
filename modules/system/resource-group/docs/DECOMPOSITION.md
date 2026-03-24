@@ -1,5 +1,3 @@
-<!-- Created: 2026-04-07 by Constructor Tech -->
-
 # Decomposition: Resource Group (RG)
 
 **Overall implementation status:**
@@ -14,13 +12,15 @@
   - [2.3 Group Entity & Hierarchy Engine &mdash; HIGH](#23-group-entity--hierarchy-engine-mdash-high)
   - [2.4 Membership Management &mdash; MEDIUM](#24-membership-management-mdash-medium)
   - [2.5 Integration Read Port & Dual Authentication Modes &mdash; MEDIUM](#25-integration-read-port--dual-authentication-modes-mdash-medium)
+  - [2.6 Unit & Integration Test Plan — HIGH](#26-unit--integration-test-plan--high)
+  - [2.7 E2E Test Plan — MEDIUM](#27-e2e-test-plan--medium)
 - [3. Feature Dependencies](#3-feature-dependencies)
 
 <!-- /toc -->
 
 ## 1. Overview
 
-The Resource Group DESIGN is decomposed into seven features organized around the module's core domain boundaries: type management, group entity lifecycle with hierarchy, membership management, external integration with authentication modes, and test plans.
+The Resource Group DESIGN is decomposed into five features organized around the module's core domain boundaries: type management, group entity lifecycle with hierarchy, membership management, and external integration with authentication modes.
 
 **Decomposition Strategy**:
 - Features grouped by functional domain cohesion (one domain service per feature, foundation first)
@@ -169,7 +169,7 @@ The Resource Group DESIGN is decomposed into seven features organized around the
 - **Depends On**: `cpt-cf-resource-group-feature-type-management`
 
 - **Scope**:
-  - Entity service: create/get/update (PUT full replace)/move/delete group operations with domain validation
+  - Entity service: create/get/update (PUT full replace)/patch (PATCH partial update)/move/delete group operations with domain validation
   - Forest integrity: cycle detection and single-parent validation inside SERIALIZABLE write transactions
   - Parent type compatibility: validate parent-child type rules on create, move, and type change (including validation that children's types still permit the new type in their `allowed_parents`)
   - Entity delete safety: reject when active references (children, memberships) prevent removal per configured deletion policy
@@ -203,6 +203,7 @@ The Resource Group DESIGN is decomposed into seven features organized around the
   - [x] `p1` - `cpt-cf-resource-group-fr-reduced-constraints-behavior`
   - [x] `p1` - `cpt-cf-resource-group-fr-list-groups-depth`
   - [x] `p2` - `cpt-cf-resource-group-fr-force-delete`
+  - [x] `p2` - `cpt-cf-resource-group-fr-partial-update-group`
   - [x] `p1` - `cpt-cf-resource-group-nfr-hierarchy-query-latency`
 
 - **Design Principles Covered**:
@@ -229,6 +230,7 @@ The Resource Group DESIGN is decomposed into seven features organized around the
   - POST /api/resource-group/v1/groups
   - GET /api/resource-group/v1/groups/{group_id}
   - PUT /api/resource-group/v1/groups/{group_id}
+  - PATCH /api/resource-group/v1/groups/{group_id}
   - DELETE /api/resource-group/v1/groups/{group_id}
   - GET /api/resource-group/v1/groups/{group_id}/hierarchy
 
@@ -352,6 +354,30 @@ The Resource Group DESIGN is decomposed into seven features organized around the
   - `cpt-cf-resource-group-seq-auth-modes`
   - `cpt-cf-resource-group-seq-mtls-authz-read`
   - `cpt-cf-resource-group-seq-jwt-rg-request`
+
+---
+
+### 2.6 Unit & Integration Test Plan — HIGH
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-unit-testing`
+
+- **Purpose**: Implement ~140 unit and integration tests covering domain services, value objects, error chains, DTOs, OData fields, seeding, and REST API layer using SQLite in-memory and mocked AuthZ.
+
+- **Depends On**: `cpt-cf-resource-group-feature-sdk-module-foundation`, `cpt-cf-resource-group-feature-type-management`, `cpt-cf-resource-group-feature-entity-hierarchy`, `cpt-cf-resource-group-feature-membership`, `cpt-cf-resource-group-feature-integration-auth`
+
+- **Feature**: [0006-unit-testing.md](features/0006-unit-testing.md)
+
+---
+
+### 2.7 E2E Test Plan — MEDIUM
+
+- [x] `p1` - **ID**: `cpt-cf-resource-group-feature-e2e-testing`
+
+- **Purpose**: Implement 10 E2E tests covering integration seams using real PostgreSQL, HTTP, and AuthN/AuthZ pipeline.
+
+- **Depends On**: `cpt-cf-resource-group-feature-unit-testing`
+
+- **Feature**: [0007-e2e-testing.md](features/0007-e2e-testing.md)
 
 ---
 

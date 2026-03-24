@@ -155,14 +155,10 @@ where
             build_binary_condition(column, *op, value)
         }
         FilterNode::InList { field, values } => {
-            if values.is_empty() {
-                return Err("IN list must not be empty".to_owned());
-            }
             let column = M::map_field(*field);
-            let kind = field.kind();
             let sea_values: Vec<sea_orm::Value> = values
                 .iter()
-                .map(|v| odata_value_to_sea_value_for_kind(v, kind))
+                .map(odata_value_to_sea_value)
                 .collect::<Result<_, _>>()?;
             Ok(Condition::all().add(Expr::col(column).is_in(sea_values)))
         }
@@ -261,32 +257,6 @@ fn odata_value_to_sea_value(value: &ODataValue) -> Result<sea_orm::Value, String
             return Err("NULL values should be handled separately".to_owned());
         }
     })
-}
-
-/// Convert an `ODataValue` to a `sea_orm::Value`, using the field's `FieldKind`
-/// to coerce numeric values to the correct SQL type (especially Decimal).
-fn odata_value_to_sea_value_for_kind(
-    value: &ODataValue,
-    kind: FieldKind,
-) -> Result<sea_orm::Value, String> {
-    match (kind, value) {
-        (FieldKind::I64, ODataValue::Number(n)) => n
-            .to_i64()
-            .map(|i| sea_orm::Value::BigInt(Some(i)))
-            .ok_or_else(|| "Number value out of range for i64".to_owned()),
-        (FieldKind::F64, ODataValue::Number(n)) => n
-            .to_f64()
-            .map(|f| sea_orm::Value::Double(Some(f)))
-            .ok_or_else(|| "Number value out of range for f64".to_owned()),
-        (FieldKind::Decimal, ODataValue::Number(n)) => {
-            let d = n
-                .to_string()
-                .parse::<rust_decimal::Decimal>()
-                .map_err(|_| "Invalid decimal value".to_owned())?;
-            Ok(sea_orm::Value::Decimal(Some(Box::new(d))))
-        }
-        _ => odata_value_to_sea_value(value),
-    }
 }
 
 /// Extract a string from an `ODataValue`.
@@ -619,12 +589,17 @@ where
 
     let items = rows.into_iter().map(model_to_domain).collect();
 
+    let has_next_page = next_cursor.is_some();
+    let has_previous_page = prev_cursor.is_some();
+
     Ok(Page {
         items,
         page_info: PageInfo {
             next_cursor,
             prev_cursor,
             limit,
+            has_next_page,
+            has_previous_page,
         },
     })
 }

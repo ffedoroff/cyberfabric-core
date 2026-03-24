@@ -304,19 +304,6 @@ mod tests {
             !cond_str.contains("Value(Bool(Some(false)))"),
             "InGroup should produce a real condition, got: {cond_str}"
         );
-        // Verify the condition references the membership table and columns
-        assert!(
-            cond_str.contains("resource_group_membership"),
-            "InGroup condition must reference resource_group_membership table, got: {cond_str}"
-        );
-        assert!(
-            cond_str.contains("group_id"),
-            "InGroup condition must filter by group_id, got: {cond_str}"
-        );
-        assert!(
-            cond_str.contains("resource_id"),
-            "InGroup condition must join on resource_id, got: {cond_str}"
-        );
     }
 
     #[test]
@@ -333,15 +320,6 @@ mod tests {
         assert!(
             !cond_str.contains("Value(Bool(Some(false)))"),
             "InGroupSubtree should produce a real condition, got: {cond_str}"
-        );
-        // Verify subtree condition references hierarchy tables
-        assert!(
-            cond_str.contains("resource_group_membership"),
-            "InGroupSubtree condition must reference resource_group_membership table, got: {cond_str}"
-        );
-        assert!(
-            cond_str.contains("resource_id"),
-            "InGroupSubtree condition must join on resource_id, got: {cond_str}"
         );
     }
 

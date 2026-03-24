@@ -1,5 +1,3 @@
-<!-- Created: 2026-04-07 by Constructor Tech -->
-
 # Feature: Integration Read Port & Dual Authentication Modes
 
 - [x] `p1` - **ID**: `cpt-cf-resource-group-featstatus-integration-auth`
@@ -25,16 +23,7 @@
   - [Integration Read Service](#integration-read-service)
   - [Dual Authentication Mode Routing](#dual-authentication-mode-routing)
   - [Tenant Scope Enforcement for Ownership-Graph Profile](#tenant-scope-enforcement-for-ownership-graph-profile)
-  - [Unit Test Coverage for Integration Auth](#unit-test-coverage-for-integration-auth)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
-- [7. Unit Test Plan](#7-unit-test-plan)
-  - [Auth Mode Decision](#auth-mode-decision)
-  - [Tenant Scope Enforcement](#tenant-scope-enforcement)
-  - [Integration Read Service](#integration-read-service-1)
-- [8. E2E Test Plan](#8-e2e-test-plan)
-  - [S3: `test_authz_tenant_filter_applied`](#s3-test_authz_tenant_filter_applied)
-  - [S4: `test_cross_tenant_invisible`](#s4-test_cross_tenant_invisible)
-  - [Acceptance Criteria (S3, S4)](#acceptance-criteria-s3-s4)
 
 <!-- /toc -->
 
@@ -67,7 +56,6 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
 - **Design**: [DESIGN.md](../DESIGN.md) — sections 3.2 (Integration Read Service), 3.3 (API Contracts, Integration Read), 3.6 (sequences: authz-rg-sql-split, auth-modes, mtls-authz-read, jwt-rg-request, e2e-authz-flow)
 - **DECOMPOSITION**: [DECOMPOSITION.md](../DECOMPOSITION.md) entry 2.5
 - **Dependencies**: Features 0003, 0004 — hierarchy data, membership data
-- **Not applicable**: UX (backend API — no user interface); COMPL (internal platform module — no regulatory data handling); OPS observability and rollout are managed at the module infrastructure level (DESIGN §3.7 and platform runbooks); PERF targets are set at the system level in PRD.md NFR section.
 
 ## 2. Actor Flows (CDSL)
 
@@ -260,16 +248,6 @@ The system **MUST** enforce tenant-hierarchy-compatible writes in ownership-grap
 **Touches**:
 - DB: `resource_group` (tenant_id validation, metadata.barrier storage)
 
-### Unit Test Coverage for Integration Auth
-
-- [x] `p1` - **ID**: `cpt-cf-resource-group-dod-testing-integration-auth`
-
-In-source `#[cfg(test)]` tests covering auth-mode decision and tenant-scope enforcement:
-- Auth mode decision: JWT path dispatches to PolicyEnforcer; MTLS path bypasses AuthZ with system SecurityContext
-- MTLS validation: valid CN in allowed_clients passes; unknown CN returns 403; expired certificate returns 403; endpoint not in allowlist returns 403
-- Tenant-scope enforcement: compatible tenant passes; incompatible tenant returns TenantIncompatibility; platform-admin provisioning exception bypasses caller scope but enforces data invariants
-- Integration read service: policy-agnostic response (no AuthZ fields in output); plugin gateway routes to built-in vs vendor-specific provider
-
 ## 6. Acceptance Criteria
 
 - [x] AuthZ plugin resolves `dyn ResourceGroupReadHierarchy` from ClientHub and successfully calls `list_group_depth`
@@ -286,81 +264,3 @@ In-source `#[cfg(test)]` tests covering auth-mode decision and tenant-scope enfo
 - [x] Group with `metadata.barrier = true` is stored and returned in API responses — RG does not filter based on barrier
 - [x] In monolith deployment, AuthZ plugin uses ClientHub direct call (no MTLS needed)
 - [x] In microservice deployment, AuthZ plugin uses MTLS-authenticated remote call to hierarchy endpoint
-
----
-
-## 7. Unit Test Plan
-
-### Auth Mode Decision
-
-| TC | Scenario | Assert |
-|----|----------|--------|
-| TC-AUTH-01 | Request with valid MTLS cert + CN in allowed_clients + endpoint in allowlist | system SecurityContext created, AuthZ bypassed |
-| TC-AUTH-02 | Request with valid MTLS cert but CN not in allowed_clients | Returns 403 Forbidden |
-| TC-AUTH-03 | Request with expired MTLS certificate | Returns 403 Forbidden |
-| TC-AUTH-04 | MTLS request to endpoint not in allowed_endpoints | Returns 403 Forbidden |
-| TC-AUTH-05 | Request with JWT bearer token | AuthNResolverClient called, PolicyEnforcer evaluated |
-| TC-AUTH-06 | Request with no credentials | Returns 401 Unauthorized |
-
-### Tenant Scope Enforcement
-
-| TC | Scenario | Assert |
-|----|----------|--------|
-| TC-TENANT-01 | Write with parent and child in same tenant | Passes |
-| TC-TENANT-02 | Write with parent in tenant A, child in tenant B (incompatible) | Returns TenantIncompatibility |
-| TC-TENANT-03 | Platform-admin provisioning call (cross-tenant) | Bypasses caller scope; data invariants still enforced |
-| TC-TENANT-04 | Membership write: group and resource in compatible tenant | Passes |
-| TC-TENANT-05 | Membership write: tenant mismatch | Returns TenantIncompatibility |
-
-### Integration Read Service
-
-| TC | Scenario | Assert |
-|----|----------|--------|
-| TC-READ-01 | `list_group_depth` response | Contains `tenant_id` and `metadata` per group; no AuthZ decision fields |
-| TC-READ-02 | Plugin gateway with built-in provider configured | Routes to local persistence path |
-| TC-READ-03 | Plugin gateway with vendor-specific provider configured | Delegates to `ResourceGroupReadPluginClient` |
-
----
-
-## 8. E2E Test Plan
-
-> General E2E testing philosophy, patterns, and infrastructure: [`docs/modkit_unified_system/13_e2e_testing.md`](../../../../../docs/modkit_unified_system/13_e2e_testing.md).
-
-Tests S3 and S4 verify the real AuthZ wiring in `module.rs` that unit tests cannot reach: `authz_integration_test.rs` mocks the PDP, `tenant_filtering_db_test.rs` constructs `AccessScope` manually — neither exercises the live `PolicyEnforcer` → `SecureORM` pipeline.
-
-### S3: `test_authz_tenant_filter_applied`
-
-**Seam**: AuthZ → SecureORM full chain — SecurityContext → PolicyEnforcer → AccessScope → `WHERE tenant_id IN (...)`.
-
-**Why not in unit tests**: Unit tests mock the PDP or pass a manually constructed `AccessScope` directly to the repo. Neither verifies the real wiring in `module.rs` where `PolicyEnforcer` is created from `ClientHub` and injected into `GroupService`.
-
-```
-POST /groups {name: "AuthZ Test"}       → 201, note tenant_id from response
-GET  /groups                            → 200
-  assert created group appears in list   (tenant filter allows own groups)
-GET  /groups/{id}                       → 200
-  assert tenant_id matches              (single-entity fetch also scoped)
-```
-
-Positive-only test. Cross-tenant negative testing is in S4.
-
-### S4: `test_cross_tenant_invisible`
-
-**Seam**: AuthZ → SecureORM negative — tenant boundary enforced, existence hidden across tenants.
-
-**Why not in unit tests**: `tenant_filtering_db_test.rs` creates two `AccessScope` objects manually on SQLite. E2E uses two real HTTP tokens producing different SecurityContexts, exercising the full authn → authz → scope → SQL chain on PostgreSQL.
-
-> **Skip if** `E2E_AUTH_TOKEN_TENANT_B` not set.
-
-```
-[Token A] POST /groups              → 201, group_id
-[Token B] GET  /groups/{group_id}   → 404 (not 403 — hides existence)
-[Token B] GET  /groups              → 200, group_id NOT in items
-[Token A] GET  /groups/{group_id}   → 200 (still visible to owner)
-```
-
-### Acceptance Criteria (S3, S4)
-
-- [x] S3 verifies own data is visible through the real `PolicyEnforcer` + real DB pipeline
-- [x] S4 uses two real HTTP tokens and verifies tenant boundary hides existence (404 not 403)
-- [x] S4 skips gracefully when `E2E_AUTH_TOKEN_TENANT_B` is not set
