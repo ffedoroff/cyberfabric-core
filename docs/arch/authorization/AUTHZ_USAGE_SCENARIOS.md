@@ -43,15 +43,15 @@ All examples use a Task Management domain:
       - [S12: CREATE, PEP without tenant\_closure](#s12-create-pep-without-tenant_closure)
       - [S13: GET, context tenant only (no subtree)](#s13-get-context-tenant-only-no-subtree)
     - [Resource Groups](#resource-groups)
-      - [S14: LIST, group membership, PEP has resource\_group\_membership](#s14-list-group-membership-pep-has-resource_group_membership)
-      - [S15: LIST, group subtree, PEP has resource\_group\_closure](#s15-list-group-subtree-pep-has-resource_group_closure)
-      - [S16: UPDATE, group membership, PEP has resource\_group\_membership](#s16-update-group-membership-pep-has-resource_group_membership)
-      - [S17: UPDATE, group subtree, PEP has resource\_group\_closure](#s17-update-group-subtree-pep-has-resource_group_closure)
-      - [S18: GET, group membership, PEP without resource\_group\_membership](#s18-get-group-membership-pep-without-resource_group_membership)
-      - [S19: LIST, group subtree, PEP has membership but no closure](#s19-list-group-subtree-pep-has-membership-but-no-closure)
+      - [S14: LIST, group membership, PEP has resource\_group\_membership (reference)](#s14-list-group-membership-pep-has-resource_group_membership-reference)
+      - [S15: LIST, group subtree, PEP has closure + membership (reference)](#s15-list-group-subtree-pep-has-closure--membership-reference)
+      - [S16: UPDATE, group membership, PEP has resource\_group\_membership (reference)](#s16-update-group-membership-pep-has-resource_group_membership-reference)
+      - [S17: UPDATE, group subtree, PEP has closure + membership (reference)](#s17-update-group-subtree-pep-has-closure--membership-reference)
+      - [S18: GET, group membership, domain service (no membership table)](#s18-get-group-membership-domain-service-no-membership-table)
+      - [S19: LIST, group-based filtering, domain service (no group tables)](#s19-list-group-based-filtering-domain-service-no-group-tables)
     - [Advanced Patterns](#advanced-patterns)
-      - [S20: LIST, tenant subtree and group membership (AND)](#s20-list-tenant-subtree-and-group-membership-and)
-      - [S21: LIST, tenant subtree and group subtree](#s21-list-tenant-subtree-and-group-subtree)
+      - [S20: LIST, tenant subtree and group membership (AND), domain service](#s20-list-tenant-subtree-and-group-membership-and-domain-service)
+      - [S21: LIST, tenant subtree and group subtree, domain service](#s21-list-tenant-subtree-and-group-subtree-domain-service)
       - [S22: LIST, multiple access paths (OR)](#s22-list-multiple-access-paths-or)
       - [S23: Access denied](#s23-access-denied)
     - [Subject Owner-Based Access](#subject-owner-based-access)
@@ -80,13 +80,18 @@ All examples use a Task Management domain:
 
 Projection tables allow PEP to JOIN against local data, making authorization O(1) regardless of hierarchy size.
 
-**Types of projection tables:**
+**Types of projection tables (projectable to domain services):**
 
 | Table | Purpose | Enables |
 |-------|---------|---------|
 | `tenant_closure` | Denormalized tenant hierarchy (ancestor→descendant pairs) | `in_tenant_subtree` predicate — efficient subtree queries without recursive CTEs |
-| `resource_group_membership` | Resource-to-group associations | `in_group` predicate — filter by group membership |
-| `resource_group_closure` | Denormalized group hierarchy | `in_group_subtree` predicate — filter by group subtree |
+| `resource_group_closure` | Denormalized group hierarchy | Group hierarchy queries for PDP/PIP resolution |
+
+**RG-internal table (not projected to domain services):**
+
+| Table | Purpose | Why Not Projected |
+|-------|---------|-------------------|
+| `resource_group_membership` | Resource-to-group M:N associations | Too large (~455M rows at scale). `in_group`/`in_group_subtree` predicates that use this table are only executable within the RG module. For domain services, PDP degrades to explicit `in` predicates with resolved resource IDs. |
 
 **Closure tables** specifically solve the hierarchy traversal problem. A closure table contains all ancestor-descendant pairs, allowing subtree queries with a simple `WHERE ancestor_id = X` instead of recursive tree walking.
 
@@ -96,13 +101,15 @@ The choice depends on the application's tenant structure, resource organization,
 
 ### Capabilities and PDP Response
 
-| PEP Capability | Closure Table | Prefetch | PDP Response |
-|----------------|---------------|----------|--------------|
-| `tenant_hierarchy` | tenant_closure ✅ | **No** | `in_tenant_subtree` predicate |
-| (none) | ❌ | **Yes** | `eq`/`in` or decision only |
-| `group_hierarchy` | resource_group_closure ✅ | **No** | `in_group_subtree` predicate |
-| `group_membership` | resource_group_membership ✅ | **No** | `in_group` predicate |
-| (none for groups) | ❌ | **Yes** | explicit resource IDs |
+| PEP Capability | Projection Table | Prefetch | PDP Response | Available To |
+|----------------|-----------------|----------|--------------|--------------|
+| `tenant_hierarchy` | tenant_closure ✅ | **No** | `in_tenant_subtree` predicate | Domain services |
+| (none) | ❌ | **Yes** | `eq`/`in` or decision only | Domain services |
+| `group_hierarchy` | resource_group_closure + resource_group_membership ✅ | **No** | `in_group_subtree` predicate | RG module only |
+| `group_membership` | resource_group_membership ✅ | **No** | `in_group` predicate | RG module only |
+| (none for groups) | ❌ | **Yes** | explicit resource IDs via `in` | Domain services |
+
+**Note:** `group_membership` and `group_hierarchy` capabilities require the `resource_group_membership` table, which is **not projected** to domain services. Domain services always operate in the "(none for groups)" row — PDP resolves group memberships into explicit resource IDs.
 
 ### When No Projection Tables Are Needed
 
@@ -129,15 +136,13 @@ The choice depends on the application's tenant structure, resource organization,
 
 **Example:** Multi-tenant SaaS with organization hierarchy (org → teams → projects) and thousands of tenants.
 
-### When to Use `resource_group_membership`
+### `resource_group_membership` — RG-Internal Only
 
-| Condition | Why Membership Table Is Needed |
-|-----------|-------------------------------|
-| Resources belong to groups | Projects, workspaces, folders |
-| Frequent group-based filters | "Show all tasks in Project X" |
-| Access control via groups | Role assignments at group level |
+The `resource_group_membership` table is **not projected** to domain services. It is too large (~455M rows, ~110 GB at scale) and stays in the RG module's database only.
 
-**Example:** Project management tool where tasks belong to projects.
+**For domain services:** PDP resolves group memberships and returns explicit resource IDs via `in` predicates (capability degradation). No local membership table is needed.
+
+**Within the RG module:** `in_group` and `in_group_subtree` predicates use membership natively for efficient SQL subqueries.
 
 ### When to Use `resource_group_closure`
 
@@ -985,17 +990,21 @@ WHERE id = 'task456-uuid'
 
 ### Resource Groups
 
-> **Note:** Resource groups are tenant-scoped. **PDP guarantees** that any `group_ids` or `root_group_id` returned in constraints belong to the request context tenant. PEP trusts this guarantee — it has no group metadata to validate against (only `resource_group_membership` table).
+> **Note:** Resource groups are tenant-scoped. **PDP guarantees** that any `group_ids` or `root_group_id` returned in constraints belong to the request context tenant. PEP trusts this guarantee.
 >
 > All group-based constraints also include a tenant predicate on the resource (typically `eq` on `owner_tenant_id`) as defense in depth, ensuring tenant isolation at the resource level.
+>
+> **Important — projection architecture:** `resource_group_membership` is **not projected** to domain services (too large at ~455M rows). `in_group`/`in_group_subtree` predicates require this table and are only executable when it is present in the PEP's database (RG module or monolith with shared DB). For domain services, PDP resolves group memberships internally and returns degraded predicates: explicit resource IDs via `in`, or `eq` for point operations. Scenarios S14–S17 below are reference patterns (require membership table); S18–S19 are the standard domain service patterns.
 
 ---
 
-#### S14: LIST, group membership, PEP has resource_group_membership
+#### S14: LIST, group membership, PEP has resource_group_membership (reference)
 
 `GET /tasks`
 
 User has access to specific projects (flat group membership, no hierarchy).
+
+> **Reference pattern:** This scenario requires `resource_group_membership` in the PEP's database. Since membership is not projected to domain services, this pattern only applies within the RG module or in monolith deployments with a shared database. For the standard domain service pattern, see S19.
 
 **Request:**
 ```http
@@ -1065,11 +1074,13 @@ WHERE owner_tenant_id = 'T1-uuid'
 
 ---
 
-#### S15: LIST, group subtree, PEP has resource_group_closure
+#### S15: LIST, group subtree, PEP has closure + membership (reference)
 
 `GET /tasks`
 
 User has access to a project folder and all its subfolders.
+
+> **Reference pattern:** This scenario requires both `resource_group_closure` and `resource_group_membership` in the PEP's database. Since membership is not projected to domain services, this pattern only applies within the RG module or in monolith deployments with a shared database. For the standard domain service pattern, see S19.
 
 **Request:**
 ```http
@@ -1142,11 +1153,13 @@ WHERE owner_tenant_id = 'T1-uuid'
 
 ---
 
-#### S16: UPDATE, group membership, PEP has resource_group_membership
+#### S16: UPDATE, group membership, PEP has resource_group_membership (reference)
 
 `PUT /tasks/{id}`
 
 User updates a task; PEP has resource_group_membership table. Similar to tenant-based S03, but filtering by group membership.
+
+> **Reference pattern:** Requires `resource_group_membership` in the PEP's database (not projected to domain services). For the standard domain service pattern for mutations, see S18.
 
 **Request:**
 ```http
@@ -1228,11 +1241,13 @@ WHERE id = 'task456-uuid'
 
 ---
 
-#### S17: UPDATE, group subtree, PEP has resource_group_closure
+#### S17: UPDATE, group subtree, PEP has closure + membership (reference)
 
 `PUT /tasks/{id}`
 
 User updates a task; PEP has both resource_group_membership and resource_group_closure tables.
+
+> **Reference pattern:** Requires both `resource_group_closure` and `resource_group_membership` in the PEP's database (membership not projected to domain services). For the standard domain service pattern for mutations, see S18.
 
 **Request:**
 ```http
@@ -1313,11 +1328,11 @@ WHERE id = 'task456-uuid'
 
 ---
 
-#### S18: GET, group membership, PEP without resource_group_membership
+#### S18: GET, group membership, domain service (no membership table)
 
 `GET /tasks/{id}`
 
-PEP doesn't have resource_group_membership table. PDP resolves group membership internally and returns a tenant constraint for defense in depth.
+Standard domain service pattern for point operations. PEP doesn't have `resource_group_membership` table (it is not projected). PDP resolves group membership internally and returns a tenant constraint for defense in depth.
 
 **Request:**
 ```http
@@ -1389,15 +1404,15 @@ WHERE id = 'task456-uuid'
 - 1 row → return task
 - 0 rows → **404 Not Found**
 
-**Note:** This pattern requires PDP to have access to group membership data. For LIST operations without resource_group_membership on PEP side, PDP would need to return explicit resource IDs (impractical for large datasets). This scenario works best for point operations (GET, UPDATE, DELETE by ID).
+**Note:** This is the standard domain service pattern — `resource_group_membership` is not projected to domain services. PDP resolves group membership internally via PIP. For LIST operations, PDP returns explicit resource IDs via `in` predicate (see S19). This pattern works best for point operations (GET, UPDATE, DELETE by ID) where PDP can check a single resource's membership efficiently.
 
 ---
 
-#### S19: LIST, group subtree, PEP has membership but no closure
+#### S19: LIST, group-based filtering, domain service (no group tables)
 
 `GET /tasks`
 
-PEP has resource_group_membership but not resource_group_closure. PDP expands group hierarchy to explicit group IDs.
+Standard domain service pattern for LIST operations with group-based access control. PEP has no `resource_group_membership` (not projected) and no `resource_group_closure`. PDP resolves group memberships internally and returns explicit resource IDs.
 
 **Request:**
 ```http
@@ -1421,17 +1436,17 @@ Authorization: Bearer <token>
       "root_id": "T1-uuid"
     },
     "require_constraints": true,
-    "capabilities": ["group_membership"],
+    "capabilities": [],
     "supported_properties": ["owner_tenant_id", "id"]
   }
 }
 ```
 
-**Note:** PEP declares `group_membership` capability (has the membership table) but NOT `group_hierarchy` (no closure table).
+**Note:** PEP declares no group capabilities — `resource_group_membership` is not projected to domain services. PDP must resolve group memberships internally and degrade to explicit IDs.
 
 **PDP → PEP Response:**
 
-PDP knows user has access to FolderA and its subfolders. Since PEP can't handle `in_group_subtree`, PDP expands the hierarchy to explicit group IDs. Tenant constraint is always included:
+PDP knows user has access to FolderA and its subfolders. PDP resolves the hierarchy (via closure) and group memberships (via membership) internally, then returns explicit resource IDs. Tenant constraint is always included:
 
 ```json
 {
@@ -1446,9 +1461,9 @@ PDP knows user has access to FolderA and its subfolders. Since PEP can't handle 
             "value": "T1-uuid"
           },
           {
-            "type": "in_group",
+            "type": "in",
             "resource_property": "id",
-            "group_ids": ["FolderA-uuid", "FolderASub1-uuid", "FolderASub2-uuid", "FolderASub1Deep-uuid"]
+            "values": ["task1-uuid", "task2-uuid", "task5-uuid", "task7-uuid"]
           }
         ]
       }
@@ -1461,13 +1476,10 @@ PDP knows user has access to FolderA and its subfolders. Since PEP can't handle 
 ```sql
 SELECT * FROM tasks
 WHERE owner_tenant_id = 'T1-uuid'
-  AND id IN (
-    SELECT resource_id FROM resource_group_membership
-    WHERE group_id IN ('FolderA-uuid', 'FolderASub1-uuid', 'FolderASub2-uuid', 'FolderASub1Deep-uuid')
-  )
+  AND id IN ('task1-uuid', 'task2-uuid', 'task5-uuid', 'task7-uuid')
 ```
 
-**Trade-off:** PDP must know the group hierarchy and expand it. Works well for shallow hierarchies or small group counts; may not scale for deep/wide hierarchies with thousands of groups.
+**Trade-off:** PDP must resolve group hierarchy, membership, and map to resource IDs internally. Works well for moderate result sets; may not scale for groups containing thousands of resources. For point operations (GET/UPDATE/DELETE by ID), prefer S18 pattern.
 
 ---
 
@@ -1475,11 +1487,11 @@ WHERE owner_tenant_id = 'T1-uuid'
 
 ---
 
-#### S20: LIST, tenant subtree and group membership (AND)
+#### S20: LIST, tenant subtree and group membership (AND), domain service
 
 `GET /tasks?tenant_subtree=true`
 
-User has access to tasks in their tenant subtree AND in specific projects. Both conditions must be satisfied.
+User has access to tasks in their tenant subtree AND in specific projects. Both conditions must be satisfied. Domain service has `tenant_closure` projection but no `resource_group_membership` — PDP degrades group constraint to explicit resource IDs.
 
 **Request:**
 ```http
@@ -1503,7 +1515,7 @@ Authorization: Bearer <token>
       "root_id": "T1-uuid"
     },
     "require_constraints": true,
-    "capabilities": ["tenant_hierarchy", "group_membership"],
+    "capabilities": ["tenant_hierarchy"],
     "supported_properties": ["owner_tenant_id", "id"]
   }
 }
@@ -1511,7 +1523,7 @@ Authorization: Bearer <token>
 
 **PDP → PEP Response:**
 
-Single constraint with multiple predicates (AND semantics):
+Single constraint with multiple predicates (AND semantics). Tenant subtree uses `in_tenant_subtree` (PEP has closure), group constraint is degraded to explicit IDs:
 
 ```json
 {
@@ -1526,9 +1538,9 @@ Single constraint with multiple predicates (AND semantics):
             "root_tenant_id": "T1-uuid"
           },
           {
-            "type": "in_group",
+            "type": "in",
             "resource_property": "id",
-            "group_ids": ["ProjectA-uuid"]
+            "values": ["task1-uuid", "task3-uuid"]
           }
         ]
       }
@@ -1545,19 +1557,16 @@ WHERE owner_tenant_id IN (
     WHERE ancestor_id = 'T1-uuid'
       AND barrier = 0  -- barrier_mode defaults to "all"
   )
-  AND id IN (
-    SELECT resource_id FROM resource_group_membership
-    WHERE group_id = 'ProjectA-uuid'
-  )
+  AND id IN ('task1-uuid', 'task3-uuid')
 ```
 
 ---
 
-#### S21: LIST, tenant subtree and group subtree
+#### S21: LIST, tenant subtree and group subtree, domain service
 
 `GET /tasks?tenant_subtree=true`
 
-User has access to tasks that are owned by tenants in their subtree AND belong to a folder or any of its subfolders. This scenario demonstrates the most complex constraint combination using all three projection tables.
+User has access to tasks that are owned by tenants in their subtree AND belong to a folder or any of its subfolders. Domain service has `tenant_closure` but no group tables — PDP resolves group hierarchy and memberships internally.
 
 **Use case:** Manager can see tasks from their department (tenant subtree) that are in the "Q1 Projects" folder or any nested subfolder.
 
@@ -1583,7 +1592,7 @@ Authorization: Bearer <token>
       "root_id": "T1-uuid"
     },
     "require_constraints": true,
-    "capabilities": ["tenant_hierarchy", "group_hierarchy"],
+    "capabilities": ["tenant_hierarchy"],
     "supported_properties": ["owner_tenant_id", "id"]
   }
 }
@@ -1591,7 +1600,7 @@ Authorization: Bearer <token>
 
 **PDP → PEP Response:**
 
-Single constraint with two predicates (AND semantics):
+Single constraint with two predicates (AND semantics). Tenant subtree uses `in_tenant_subtree` (PEP has closure); group constraint is degraded to explicit resource IDs (PDP resolved hierarchy + membership internally):
 
 ```json
 {
@@ -1606,9 +1615,9 @@ Single constraint with two predicates (AND semantics):
             "root_tenant_id": "T1-uuid"
           },
           {
-            "type": "in_group_subtree",
+            "type": "in",
             "resource_property": "id",
-            "root_group_id": "FolderA-uuid"
+            "values": ["task1-uuid", "task2-uuid", "task5-uuid"]
           }
         ]
       }
@@ -1625,21 +1634,13 @@ WHERE owner_tenant_id IN (
     WHERE ancestor_id = 'T1-uuid'
       AND barrier = 0
   )
-  AND id IN (
-    SELECT resource_id FROM resource_group_membership
-    WHERE group_id IN (
-      SELECT descendant_id FROM resource_group_closure
-      WHERE ancestor_id = 'FolderA-uuid'
-    )
-  )
+  AND id IN ('task1-uuid', 'task2-uuid', 'task5-uuid')
 ```
 
 **Projection tables used:**
 - `tenant_closure` — resolves tenant subtree (T1 and all descendants)
-- `resource_group_closure` — resolves folder hierarchy (FolderA and all subfolders)
-- `resource_group_membership` — maps resources to groups
 
-**Note:** This is the most demanding query pattern. For large datasets, ensure proper indexing on all three projection tables and consider the scalability considerations in [DESIGN.md Open Questions](./DESIGN.md#open-questions).
+**Note:** PDP resolves group hierarchy (via closure) and group membership internally. The domain service only receives degraded `in` predicates with explicit resource IDs. For the equivalent pattern within the RG module (using all three tables natively), see S15.
 
 ---
 
@@ -1671,7 +1672,7 @@ Authorization: Bearer <token>
       "root_id": "T1-uuid"
     },
     "require_constraints": true,
-    "capabilities": ["group_membership"],
+    "capabilities": [],
     "supported_properties": ["owner_tenant_id", "id"]
   }
 }
@@ -1679,7 +1680,7 @@ Authorization: Bearer <token>
 
 **PDP → PEP Response:**
 
-Multiple constraints (OR semantics). Tenant constraint is included in each path:
+Multiple constraints (OR semantics). Tenant constraint is included in each path. PDP resolves group memberships internally and returns explicit resource IDs:
 
 ```json
 {
@@ -1694,9 +1695,9 @@ Multiple constraints (OR semantics). Tenant constraint is included in each path:
             "value": "T1-uuid"
           },
           {
-            "type": "in_group",
+            "type": "in",
             "resource_property": "id",
-            "group_ids": ["ProjectA-uuid"]
+            "values": ["task1-uuid", "task2-uuid", "task3-uuid"]
           }
         ]
       },
@@ -1724,10 +1725,7 @@ Multiple constraints (OR semantics). Tenant constraint is included in each path:
 SELECT * FROM tasks
 WHERE (
     owner_tenant_id = 'T1-uuid'
-    AND id IN (
-      SELECT resource_id FROM resource_group_membership
-      WHERE group_id = 'ProjectA-uuid'
-    )
+    AND id IN ('task1-uuid', 'task2-uuid', 'task3-uuid')
   )
   OR (
     owner_tenant_id = 'T1-uuid'
@@ -2160,14 +2158,20 @@ TOCTOU is a security concern only for **mutations** (UPDATE, DELETE). For **read
 | S10, S11 | UPDATE/DELETE | ❌ | `eq` (prefetched) | ✅ Atomic SQL check |
 | S05, S06, S12 | CREATE | N/A | `eq` (from PDP) | N/A (no existing resource) |
 
-**Resource group scenarios:**
+**Resource group scenarios (reference — require membership table):**
 
-| Scenario | Operation | Projection Tables | Constraint | TOCTOU Protection |
-|----------|-----------|-------------------|------------|-------------------|
-| S14, S15 | LIST | ✅ | `in_group` / `in_group_subtree` | ✅ Atomic SQL check |
-| S16, S17 | UPDATE | ✅ | `in_group` / `in_group_subtree` | ✅ Atomic SQL check |
-| S18 | GET | ❌ | `eq` (tenant) | N/A (read-only) |
-| S19 | LIST | membership only | `in_group` (expanded) | ✅ Atomic SQL check |
+| Scenario | Operation | Constraint | TOCTOU Protection |
+|----------|-----------|------------|-------------------|
+| S14, S15 | LIST | `in_group` / `in_group_subtree` | ✅ Atomic SQL check |
+| S16, S17 | UPDATE | `in_group` / `in_group_subtree` | ✅ Atomic SQL check |
+
+**Resource group scenarios (domain services — standard, no membership table):**
+
+| Scenario | Operation | Constraint | TOCTOU Protection |
+|----------|-----------|------------|-------------------|
+| S18 | GET | `eq` (tenant, PDP resolves group internally) | N/A (read-only) |
+| S19 | LIST | `in` (explicit resource IDs from PDP) | ✅ Atomic SQL check |
+| S20, S21 | LIST | `in_tenant_subtree` + `in` (explicit IDs) | ✅ Atomic SQL check |
 
 **Subject owner-based scenarios:**
 

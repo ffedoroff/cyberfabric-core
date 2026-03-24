@@ -244,6 +244,12 @@ modules:
         client_secret: "mini-chat-dev-secret"
 
 
+  resource-group:
+    database:
+      server: "sqlite_users"
+      file: "resource_group.db"
+    config: {}
+
   simple-user-settings:
     # Module-specific database configuration
     database:

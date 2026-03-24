@@ -38,16 +38,16 @@ AuthZ consumes RG data as a **PIP (Policy Information Point)** source. RG is pol
 
 ### Projection Tables
 
-PEP enforces group-based constraints (`in_group`, `in_group_subtree`) in SQL by joining against projection tables. Two RG tables are relevant for AuthZ projections:
+Only the **group hierarchy** is projected to domain services. Two RG tables are projectable:
 
 - **`resource_group`** — group entities with hierarchy (`parent_id`) and tenant scope (`tenant_id`)
 - **`resource_group_closure`** — pre-computed ancestor-descendant pairs with depth, enabling efficient subtree queries
 
-These tables are the canonical source of truth, owned by the RG module. External consumers (AuthZ resolver, Tenant Resolver, domain services) may maintain their own **projection copies** of these tables in their databases for efficient SQL joins — synchronized from RG via read contracts (`ResourceGroupReadHierarchy`).
+These tables are the canonical source of truth, owned by the RG module. External consumers (AuthZ resolver, domain services) may maintain **projection copies** of these hierarchy tables in their databases — synchronized from RG via read contracts (`ResourceGroupReadHierarchy`).
 
-> **Note:** `resource_group_membership` (resource-to-group M:N links) is a separate RG canonical table used for `in_group` predicates. It is not part of the hierarchy projection. Is expected to be very big and not recommended for projection.
+> **Important:** `resource_group_membership` (resource-to-group M:N links) is **not projected** to domain services. It is expected to be very large (~455M rows, ~110 GB at scale) and stays in the RG module's database only. The `in_group` and `in_group_subtree` predicates that use this table are only executable within the RG module. For domain services, PDP resolves group memberships and returns explicit resource IDs via `in` predicates (capability degradation).
 
-PEP compiles SQL predicates that reference whichever projection is available in the domain service's database. The RG module does not dictate the projection schema in domain services — it only provides the canonical data and read contracts.
+PEP within the RG module compiles `in_group`/`in_group_subtree` predicates into SQL subqueries using the membership table. Domain services receive degraded `in` predicates and do not need group-related projection tables for authorization filtering.
 
 - RG canonical table schemas: [RG DESIGN §Database Schemas](../../../modules/system/resource-group/docs/DESIGN.md#37-database-schemas--tables)
 - When to use which table: [AUTHZ_USAGE_SCENARIOS §Choosing Projection Tables](./AUTHZ_USAGE_SCENARIOS.md#choosing-projection-tables)

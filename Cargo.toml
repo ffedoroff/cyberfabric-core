@@ -51,6 +51,8 @@ members = [
     "modules/system/grpc-hub",
     "modules/system/nodes-registry/nodes-registry",
     "modules/system/nodes-registry/nodes-registry-sdk",
+    "modules/system/resource-group/resource-group-sdk",
+    "modules/system/resource-group/resource-group",
     "modules/system/module-orchestrator",
     "examples/modkit/users-info/users-info-sdk",
     "examples/modkit/users-info/users-info",
@@ -78,6 +80,8 @@ members = [
     "modules/system/oagw/oagw-sdk",
     "modules/mini-chat/mini-chat-sdk",
     "modules/mini-chat/mini-chat",
+    "modules/system/resource-group/resource-group-sdk",
+    "modules/system/resource-group/resource-group",
 ]
 exclude = ["fuzz"]
 resolver = "3"
@@ -243,13 +247,16 @@ credstore-sdk = { package = "cf-credstore-sdk", version = "0.1.16", path = "modu
 # mini-chat
 mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.9.0", path = "modules/mini-chat/mini-chat-sdk" }
 
+# resource-group
+resource-group-sdk = { package = "cf-resource-group-sdk", version = "0.5.10", path = "modules/system/resource-group/resource-group-sdk" }
+
 # system modules
 grpc_hub = { package = "cf-grpc-hub", version = "0.1.18", path = "modules/system/grpc-hub" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde-saphyr = "0.0.16"
+serde-saphyr = "0.0.22"
 secrecy = { version = "0.10", features = ["serde"] }
 serde_urlencoded = "0.7"
 schemars = { version = "1.2", features = ["derive", "uuid1"] }
@@ -404,7 +411,7 @@ regex = "1.10"
 glob = "0.3"
 colored = "3.1"
 supports-color = "3"
-enable-ansi-support = "0.2"
+enable-ansi-support = "0.3"
 
 # gRPC support
 tonic = { version = "0.14", features = ["transport"] }
@@ -447,7 +454,7 @@ hostname = "0.4"
 starship-battery = "0.10"
 local-ip-address = "0.6"
 machine-uid = "0.5"
-nvml-wrapper = "0.11"
+nvml-wrapper = "0.12"
 
 # Public Suffix List
 psl = "2"
@@ -462,7 +469,7 @@ strsim = "0.11"
 
 # OData parsing
 peg = "0.8"
-chrono-tz = "0.9"
+chrono-tz = "0.10"
 
 # Procedural macros
 proc-macro2 = "1.0"
@@ -479,7 +486,7 @@ proc-macro-error2 = "2.0"
 
 # Testing utilities
 trybuild = "1"
-criterion = { version = "0.5", default-features = false }
+criterion = { version = "0.8", default-features = false }
 testcontainers = { version = "0.27", default-features = false, features = ["aws-lc-rs"] }
 testcontainers-modules = { version = "0.15", default-features = false, features = ["aws-lc-rs", "postgres", "mysql"] }
 httpmock = "0.8"
@@ -504,7 +511,7 @@ mime = "0.3"
 tl = "0.7"
 pdf-extract = "0.10"
 docx-rust = "0.1.11"
-calamine = "0.32"
+calamine = "0.34"
 pptx-to-md = "0.4"
 
 # Additional testing utilities
@@ -518,7 +525,7 @@ nanoid = "0.4"
 tokio-metrics = { version = "0.4", features = ["rt"] }
 
 # GTS dependencies
-jsonschema = "0.40"
+jsonschema = { version = "0.40", default-features = false, features = ["resolve-file"] }
 walkdir = "2.5"
 shellexpand = "3.1"
 

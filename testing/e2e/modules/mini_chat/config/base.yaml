@@ -106,6 +106,12 @@ modules:
     config:
       allowed_local_base_dir: /tmp
 
+  resource-group:
+    database:
+      server: "sqlite_users"
+      file: "resource_group.db"
+    config: {}
+
   mini-chat:
     database:
       server: "sqlite_users"
