@@ -50,6 +50,7 @@ pub async fn list_memberships(
         request_id = Empty,
     )
 )]
+// @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-1
 pub async fn add_membership(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<MembershipService>>,
@@ -74,6 +75,7 @@ pub async fn add_membership(
 
     Ok((StatusCode::CREATED, Json(dto)).into_response())
 }
+// @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-1
 
 /// Remove a membership link.
 #[tracing::instrument(

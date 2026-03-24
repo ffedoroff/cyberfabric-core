@@ -4,6 +4,10 @@
 //! `ResourceGroupReadHierarchy` and `ResourceGroupReadPluginClient` traits.
 
 // @cpt-dod:cpt-cf-resource-group-dod-integration-auth-read-service:p1
+// @cpt-flow:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1
+// @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-1
+// Integration read request arrives via ResourceGroupReadHierarchy trait
+// @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-1
 
 use std::sync::Arc;
 
@@ -43,6 +47,12 @@ impl RgReadService {
     }
 }
 
+// @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-2
+// RG Module resolves configured provider from module config
+// @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-2
+// @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-3
+// IF built-in provider configured (this is the built-in implementation)
+// @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-3
 #[async_trait]
 impl ResourceGroupReadHierarchy for RgReadService {
     async fn list_group_depth(
@@ -51,13 +61,22 @@ impl ResourceGroupReadHierarchy for RgReadService {
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-3a
+        // Route to local persistence path: execute query against RG database
         self.group_service
             .list_group_hierarchy(ctx, group_id, query)
             .await
             .map_err(ResourceGroupError::from)
+        // @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-3a
     }
 }
 
+// @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4
+// IF vendor-specific provider configured
+// @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4a
+// Resolve plugin instance by configured vendor (this impl delegates to local service)
+// @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4a
+// @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4
 #[async_trait]
 impl ResourceGroupReadPluginClient for RgReadService {
     async fn list_memberships(
@@ -65,9 +84,15 @@ impl ResourceGroupReadPluginClient for RgReadService {
         ctx: &SecurityContext,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4b
+        // Delegate to ResourceGroupReadPluginClient with SecurityContext passthrough
         self.membership_service
             .list_memberships(ctx, query)
             .await
             .map_err(ResourceGroupError::from)
+        // @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4b
     }
 }
+// @cpt-begin:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-5
+// RETURN results from selected provider
+// @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-5

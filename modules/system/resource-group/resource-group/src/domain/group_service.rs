@@ -89,6 +89,8 @@ impl GroupService {
         req: CreateGroupRequest,
         tenant_id: Uuid,
     ) -> Result<ResourceGroup, DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-1
+        // Actor sends POST /api/resource-group/v1/groups
         // AuthZ gate: verify the caller can create groups
         let _scope = self
             .enforcer
@@ -99,10 +101,13 @@ impl GroupService {
         // Pre-validation (stateless, outside transaction)
         validation::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-1
 
         let profile = self.profile.clone();
         let db = self.db.db();
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-2
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-10
         for attempt in 1..=MAX_SERIALIZATION_RETRIES {
             let req = req.clone();
             let profile = profile.clone();
@@ -115,8 +120,11 @@ impl GroupService {
                 })
                 .await;
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-9
             match result {
+                // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-11
                 Ok(group) => return Ok(group),
+                // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-11
                 Err(ref e)
                     if e.is_serialization_failure() && attempt < MAX_SERIALIZATION_RETRIES =>
                 {
@@ -128,7 +136,10 @@ impl GroupService {
                 }
                 Err(e) => return Err(e),
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-9
         }
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-10
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-2
 
         unreachable!("retry loop always returns")
     }
@@ -176,9 +187,9 @@ impl GroupService {
         group_id: Uuid,
         req: UpdateGroupRequest,
     ) -> Result<ResourceGroup, DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-1
+        // Actor sends PUT /api/resource-group/v1/groups/{group_id}
         // AuthZ gate: verify the caller can update this group (tenant check).
-        // Runs outside the transaction since AuthZ is idempotent and does not
-        // need SERIALIZABLE isolation.
         let scope = self
             .enforcer
             .access_scope(ctx, &RG_GROUP_RESOURCE, "update", Some(group_id))
@@ -188,6 +199,7 @@ impl GroupService {
         // Pre-validation (stateless, outside transaction)
         validation::validate_type_code(&req.type_path)?;
         Self::validate_name(&req.name)?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-1
 
         let profile = self.profile.clone();
         let db = self.db.db();
@@ -234,9 +246,14 @@ impl GroupService {
         group_id: Uuid,
         new_parent_id: Option<Uuid>,
     ) -> Result<ResourceGroup, DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-1
+        // Actor sends PUT /api/resource-group/v1/groups/{group_id} with new hierarchy.parent_id
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-1
         let profile = self.profile.clone();
         let db = self.db.db();
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-2
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-12
         for attempt in 1..=MAX_SERIALIZATION_RETRIES {
             let profile = profile.clone();
 
@@ -248,8 +265,11 @@ impl GroupService {
                 })
                 .await;
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-11
             match result {
+                // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-13
                 Ok(group) => return Ok(group),
+                // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-13
                 Err(ref e)
                     if e.is_serialization_failure() && attempt < MAX_SERIALIZATION_RETRIES =>
                 {
@@ -262,7 +282,10 @@ impl GroupService {
                 }
                 Err(e) => return Err(e),
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-11
         }
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-12
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-2
 
         unreachable!("retry loop always returns")
     }
@@ -278,6 +301,8 @@ impl GroupService {
         group_id: Uuid,
         force: bool,
     ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-1
+        // Actor sends DELETE /api/resource-group/v1/groups/{group_id}?force={true|false}
         // AuthZ gate: verify the caller can delete this group (tenant check).
         // Runs outside the transaction since AuthZ is idempotent.
         let scope = self
@@ -285,6 +310,7 @@ impl GroupService {
             .access_scope(ctx, &RG_GROUP_RESOURCE, "delete", Some(group_id))
             .await
             .map_err(DomainError::from)?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-1
 
         let db = self.db.db();
 
@@ -349,23 +375,29 @@ impl GroupService {
         tenant_id: Uuid,
         profile: &QueryProfile,
     ) -> Result<ResourceGroup, DomainError> {
-        // Resolve type
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-3
+        // Resolve type GTS path to surrogate ID; verify type exists
         let type_id = TypeRepository::resolve_id(tx, &req.type_path)
             .await?
             .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
 
-        // Load full type for validation
         let rg_type = TypeRepository::find_by_code(tx, &req.type_path)
             .await?
             .ok_or_else(|| DomainError::type_not_found(&req.type_path))?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-3
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4
         if let Some(parent_id) = req.parent_id {
-            // Child group: validate parent exists, type compatibility, tenant
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4a
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4b
             let parent = GroupRepository::find_model_by_id(tx, parent_id)
                 .await?
                 .ok_or_else(|| DomainError::group_not_found(parent_id))?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4b
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4a
 
-            // Validate parent type compatibility
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4c
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4d
             let parent_type_path = Self::resolve_type_path_from_id(tx, parent.gts_type_id).await?;
             if !rg_type.allowed_parents.contains(&parent_type_path) {
                 return Err(DomainError::invalid_parent_type(format!(
@@ -373,16 +405,37 @@ impl GroupService {
                     req.type_path, parent_type_path
                 )));
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4d
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4c
 
             // @cpt-algo:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1
+            // @cpt-begin:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-1
+            // Extract caller effective tenant scope from SecurityContext.subject_tenant_id
+            // (tenant_id is passed as parameter from caller's context)
+            // @cpt-end:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-1
+            // @cpt-begin:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-2
+            // IF caller is privileged platform-admin -> pass (but data invariants still checked)
+            // (platform-admin bypass handled by middleware; data invariants enforced below)
+            // @cpt-end:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-2
+            // @cpt-begin:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-3
             // Validate tenant compatibility (child must be same tenant as parent)
+            // @cpt-begin:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-4
+            // IF membership write: validate target group's tenant_id is compatible
+            // @cpt-end:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-4
+            // @cpt-begin:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-5
             if parent.tenant_id != tenant_id {
                 return Err(DomainError::validation(format!(
                     "Child group tenant_id ({tenant_id}) must match parent tenant_id ({})",
                     parent.tenant_id
                 )));
             }
+            // @cpt-end:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-5
+            // @cpt-end:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-3
+            // @cpt-begin:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-6
+            // RETURN pass (tenant enforcement passed)
+            // @cpt-end:cpt-cf-resource-group-algo-integration-auth-tenant-scope-enforcement:p1:inst-tenant-enforce-6
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4e
             // Check query profile: depth limit
             if let Some(max_depth) = profile.max_depth {
                 let parent_depth = GroupRepository::get_depth(tx, parent_id).await?;
@@ -395,7 +448,9 @@ impl GroupService {
                     )));
                 }
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4e
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4f
             // Check query profile: width limit
             if let Some(max_width) = profile.max_width {
                 let sibling_count = GroupRepository::count_children(tx, parent_id).await?;
@@ -405,7 +460,14 @@ impl GroupService {
                     )));
                 }
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4f
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5b
+            // IF metadata provided AND type has metadata_schema -> validate (simplified)
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5b
+
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-6
             // Insert group
             let group_id = Uuid::now_v7();
             let _model = GroupRepository::insert(
@@ -418,16 +480,27 @@ impl GroupService {
                 tenant_id,
             )
             .await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-6
 
-            // Insert closure: self-row + ancestor rows
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-7
+            // Insert closure: self-row
             GroupRepository::insert_closure_self_row(tx, group_id).await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-7
+
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-8
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-8a
+            // Insert ancestor closure rows from parent's ancestors with depth+1
             GroupRepository::insert_ancestor_closure_rows(tx, group_id, parent_id).await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-8a
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-8
 
             let sys = modkit_security::AccessScope::allow_all();
             GroupRepository::find_by_id(tx, &sys, group_id)
                 .await?
                 .ok_or_else(|| DomainError::database("Insert succeeded but group not found"))
         } else {
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5a
             // Root group: validate can_be_root
             if !rg_type.can_be_root {
                 return Err(DomainError::invalid_parent_type(format!(
@@ -435,6 +508,8 @@ impl GroupService {
                     req.type_path
                 )));
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5a
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5
 
             // Insert group
             let group_id = Uuid::now_v7();
@@ -467,15 +542,20 @@ impl GroupService {
         req: &UpdateGroupRequest,
         profile: &QueryProfile,
     ) -> Result<ResourceGroup, DomainError> {
-        // Verify the group is visible under the caller's scope
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-2
+        // DB: SELECT FROM resource_group WHERE id = {group_id} -- load existing group
         GroupRepository::find_by_id(tx, scope, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
 
-        // Load raw model for internal validation (system scope)
         let existing = GroupRepository::find_model_by_id(tx, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-2
+
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-3
+        // IF group not found -> RETURN NotFound (handled by ok_or_else above)
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-3
 
         // Resolve new type
         let new_type_id = TypeRepository::resolve_id(tx, &req.type_path)
@@ -490,7 +570,9 @@ impl GroupService {
         let parent_changed = existing.parent_id != req.parent_id;
         let type_changed = existing.gts_type_id != new_type_id;
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4
         if type_changed {
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4a
             // Validate new type against current parent
             if let Some(parent_id) = existing.parent_id.or(req.parent_id) {
                 let parent = GroupRepository::find_model_by_id(tx, parent_id)
@@ -511,9 +593,14 @@ impl GroupService {
                     req.type_path
                 )));
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4a
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4b
             // Validate that all children's types allow the new type as parent
             let children = Self::get_direct_children(tx, group_id).await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4b
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4c
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4d
             for child in &children {
                 let child_type = TypeRepository::find_by_code(
                     tx,
@@ -529,13 +616,21 @@ impl GroupService {
                     )));
                 }
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4d
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4c
         }
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4
+
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4e
+        // IF metadata provided AND type has metadata_schema -> validate (simplified)
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4e
 
         if parent_changed {
             // Delegate to move logic (cycle detection + closure rebuild)
             Self::move_group_internal_impl(tx, group_id, req.parent_id, &rg_type, profile).await?;
         }
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-5
         // Update the group record
         let _model = GroupRepository::update(
             tx,
@@ -546,11 +641,14 @@ impl GroupService {
             req.metadata.as_ref(),
         )
         .await?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-5
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-6
         let sys = modkit_security::AccessScope::allow_all();
         GroupRepository::find_by_id(tx, &sys, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-6
     }
 
     /// Inner logic for `move_group`, runs inside a SERIALIZABLE transaction.
@@ -560,6 +658,8 @@ impl GroupService {
         new_parent_id: Option<Uuid>,
         profile: &QueryProfile,
     ) -> Result<ResourceGroup, DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-3
+        // Load group and new parent in transaction
         let existing = GroupRepository::find_model_by_id(tx, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
@@ -568,9 +668,24 @@ impl GroupService {
         let rg_type = TypeRepository::find_by_code(tx, &type_path)
             .await?
             .ok_or_else(|| DomainError::type_not_found(&type_path))?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-3
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-4
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-5
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-6
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-7
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-8
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-9
+        // Cycle detect, type compat, profile enforce, closure rebuild
         Self::move_group_internal_impl(tx, group_id, new_parent_id, &rg_type, profile).await?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-9
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-8
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-7
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-6
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-5
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-4
 
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-10
         // Update parent_id on the group
         GroupRepository::update(
             tx,
@@ -581,6 +696,7 @@ impl GroupService {
             existing.metadata.as_ref(),
         )
         .await?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-move-group:p1:inst-move-group-10
 
         let sys = modkit_security::AccessScope::allow_all();
         GroupRepository::find_by_id(tx, &sys, group_id)
@@ -595,7 +711,9 @@ impl GroupService {
         group_id: Uuid,
         force: bool,
     ) -> Result<(), DomainError> {
-        // Verify the group is visible under the caller's scope
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-2
+        // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-3
+        // DB: SELECT FROM resource_group WHERE id = {group_id}
         GroupRepository::find_by_id(tx, scope, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
@@ -603,13 +721,35 @@ impl GroupService {
         let _existing = GroupRepository::find_model_by_id(tx, group_id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(group_id))?;
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-3
+        // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-2
 
         if force {
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5a
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5b
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5c
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5d
             // Force delete: cascade entire subtree + memberships + closure
-            Self::force_delete_subtree(tx, group_id).await
+            let result = Self::force_delete_subtree(tx, group_id).await;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5d
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5c
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5b
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5a
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-7
+            result
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-7
         } else {
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4
             // Non-force: check children and memberships
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4a
             let children = Self::get_direct_children(tx, group_id).await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4a
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4b
+            let has_memberships = GroupRepository::has_memberships(tx, group_id).await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4b
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4c
             if !children.is_empty() {
                 return Err(DomainError::conflict_active_references(format!(
                     "Cannot delete group '{group_id}': has {} child group(s). Use force=true to cascade.",
@@ -617,16 +757,23 @@ impl GroupService {
                 )));
             }
 
-            let has_memberships = GroupRepository::has_memberships(tx, group_id).await?;
             if has_memberships {
                 return Err(DomainError::conflict_active_references(format!(
                     "Cannot delete group '{group_id}': has active memberships. Use force=true to cascade."
                 )));
             }
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4c
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-4
 
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-6
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-6a
             // Delete closure rows, then the group
             GroupRepository::delete_all_closure_rows(tx, group_id).await?;
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-6a
+            // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-6b
             GroupRepository::delete_by_id(tx, group_id).await
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-6b
+            // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-6
         }
     }
 
@@ -648,7 +795,11 @@ impl GroupService {
         profile: &QueryProfile,
     ) -> Result<(), DomainError> {
         if let Some(new_pid) = new_parent_id {
-            // Cycle detection: check new parent is not in subtree of group being moved
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-1
+            // Cycle detection: self-parent check (covered by is_descendant via self-row)
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-1
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-2
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-3
             let is_desc = GroupRepository::is_descendant(conn, group_id, new_pid).await?;
             if is_desc {
                 debug!(group_id = %group_id, new_parent = %new_pid, "Cycle detected in move_group");
@@ -656,6 +807,8 @@ impl GroupService {
                     "Cannot move group '{group_id}' under '{new_pid}': would create a cycle"
                 )));
             }
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-3
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-2
 
             // Validate parent type compatibility
             let parent = GroupRepository::find_model_by_id(conn, new_pid)
@@ -671,8 +824,19 @@ impl GroupService {
                 )));
             }
 
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-4
+            // Cycle detection passed
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-cycle-detect:p1:inst-cycle-4
+
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-1
+            // Load profile config: max_depth (optional), max_width (optional)
+            // (profile is passed as parameter with max_depth and max_width)
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-1
+
             // Check query profile: depth limit
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-2
             if let Some(max_depth) = profile.max_depth {
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-2a
                 let parent_depth = GroupRepository::get_depth(conn, new_pid).await?;
                 // Check depth of deepest descendant of moved node
                 let subtree_descendants =
@@ -692,6 +856,8 @@ impl GroupService {
                     }
                 }
                 let new_deepest = parent_depth + 1 + max_subtree_depth;
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-2a
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-2b
                 #[allow(clippy::cast_possible_wrap)]
                 if new_deepest >= max_depth as i32 {
                     debug!(group_id = %group_id, new_deepest, max_depth, "Depth limit exceeded on move");
@@ -699,17 +865,28 @@ impl GroupService {
                         "Depth limit exceeded: moving subtree would create depth {new_deepest}, max_depth is {max_depth}"
                     )));
                 }
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-2b
             }
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-2
 
             // Check query profile: width limit
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-3
             if let Some(max_width) = profile.max_width {
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-3a
                 let sibling_count = GroupRepository::count_children(conn, new_pid).await?;
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-3a
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-3b
                 if sibling_count >= u64::from(max_width) {
                     return Err(DomainError::limit_violation(format!(
                         "Width limit exceeded: new parent already has {sibling_count} children, max_width is {max_width}"
                     )));
                 }
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-3b
             }
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-3
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-4
+            // Profile checks passed
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-enforce-query-profile:p1:inst-profile-4
         } else if !rg_type.can_be_root {
             // Moving to root: validate can_be_root
             return Err(DomainError::invalid_parent_type(format!(

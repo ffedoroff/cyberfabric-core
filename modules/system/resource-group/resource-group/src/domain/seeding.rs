@@ -32,9 +32,15 @@ pub async fn seed_types(
     type_service: &TypeService,
     seeds: &[CreateTypeRequest],
 ) -> Result<SeedResult, DomainError> {
+    // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-1
+    // Load seed definitions from configuration source
+    // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-1
     let mut result = SeedResult::default();
+    // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2
     for seed in seeds {
+        // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2a
         match type_service.get_type(&seed.code).await {
+            // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2a
             Ok(existing) => {
                 // Compare: if definition differs, update; otherwise skip
                 if existing.can_be_root != seed.can_be_root
@@ -42,6 +48,7 @@ pub async fn seed_types(
                     || existing.allowed_memberships != seed.allowed_memberships
                     || existing.metadata_schema != seed.metadata_schema
                 {
+                    // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2c
                     let update_req = UpdateTypeRequest {
                         can_be_root: seed.can_be_root,
                         allowed_parents: seed.allowed_parents.clone(),
@@ -50,18 +57,26 @@ pub async fn seed_types(
                     };
                     type_service.update_type(&seed.code, update_req).await?;
                     result.updated += 1;
+                    // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2c
                 } else {
+                    // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2b
                     result.unchanged += 1;
+                    // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2b
                 }
             }
             Err(DomainError::TypeNotFound { .. }) => {
+                // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2d
                 type_service.create_type(seed.clone()).await?;
                 result.created += 1;
+                // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2d
             }
             Err(e) => return Err(e),
         }
     }
+    // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-2
+    // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-3
     Ok(result)
+    // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-3
 }
 
 /// Group seed definition with stable identity.
@@ -95,15 +110,29 @@ pub async fn seed_groups(
     group_service: &GroupService,
     seeds: &[GroupSeedDef],
 ) -> Result<SeedResult, DomainError> {
+    // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-1
+    // Load seed definitions, order by dependency (parents before children)
+    // (callers must order `seeds` such that parent groups appear before children)
+    // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-1
     let mut result = SeedResult::default();
+    // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2
     for seed in seeds {
         let anon = modkit_security::SecurityContext::anonymous();
+        // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2a
         match group_service.get_group(&anon, seed.id).await {
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2a
             Ok(_existing) => {
-                // Group exists -- idempotent skip
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2b
+                // Group exists AND definition matches → skip (unchanged)
                 result.unchanged += 1;
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2b
             }
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2c
+            // Group exists AND definition differs → update via update flow
+            // (currently simplified: idempotent skip only)
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2c
             Err(DomainError::GroupNotFound { .. }) => {
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2d
                 let req = CreateGroupRequest {
                     type_path: seed.type_path.clone(),
                     name: seed.name.clone(),
@@ -114,11 +143,15 @@ pub async fn seed_groups(
                     .create_group(&anon, req, seed.tenant_id)
                     .await?;
                 result.created += 1;
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2d
             }
             Err(e) => return Err(e),
         }
     }
+    // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-2
+    // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-3
     Ok(result)
+    // @cpt-end:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-3
 }
 
 /// Membership seed definition.
@@ -160,17 +193,29 @@ pub async fn seed_memberships(
     adder: &dyn MembershipAdder,
     seeds: &[MembershipSeedDef],
 ) -> Result<SeedResult, DomainError> {
+    // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-1
+    // Load seed definitions
+    // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-1
     let mut result = SeedResult::default();
+    // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2
     for seed in seeds {
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2a
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2b
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2c
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2d
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2e
         match adder
             .add_membership(seed.group_id, &seed.resource_type, &seed.resource_id)
             .await
         {
+            // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2e
+            // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2a
             Ok(()) => result.created += 1,
             Err(DomainError::Conflict { .. }) => {
                 // Already exists -- idempotent skip
                 result.unchanged += 1;
             }
+            // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2b
             Err(DomainError::TenantIncompatibility { .. }) => {
                 // Tenant mismatch -- skip with warning
                 tracing::warn!(
@@ -181,8 +226,13 @@ pub async fn seed_memberships(
                 );
                 result.skipped += 1;
             }
+            // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2d
+            // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2c
             Err(e) => return Err(e),
         }
     }
+    // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-2
+    // @cpt-begin:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-3
     Ok(result)
+    // @cpt-end:cpt-cf-resource-group-algo-membership-seed:p1:inst-seed-memb-3
 }

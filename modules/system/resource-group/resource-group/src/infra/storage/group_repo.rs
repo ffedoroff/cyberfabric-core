@@ -688,7 +688,8 @@ impl GroupRepository {
         group_id: Uuid,
         new_parent_id: Option<Uuid>,
     ) -> Result<(), DomainError> {
-        // Get all descendants of the moved group (including self via depth=0)
+        // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-1
+        // Collect subtree: SELECT descendant_id FROM resource_group_closure WHERE ancestor_id = group_id
         let scope = system_scope();
         let subtree_rows = ClosureEntity::find()
             .filter(closure_entity::Column::AncestorId.eq(group_id))
@@ -703,12 +704,13 @@ impl GroupRepository {
             .iter()
             .map(|r| (r.descendant_id, r.depth))
             .collect();
+        // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-1
 
-        // Batch-delete old ancestor closure rows for all subtree members.
-        // Delete rows where descendant is in subtree AND ancestor is NOT in subtree.
+        // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-2
+        // Delete affected paths: DELETE FROM resource_group_closure
+        // WHERE descendant_id IN (subtree) AND ancestor_id NOT IN (subtree)
         let subtree_set: std::collections::HashSet<Uuid> = subtree_ids.iter().copied().collect();
 
-        // Single query: get all external ancestor rows for subtree nodes
         let all_desc_rows = ClosureEntity::find()
             .filter(closure_entity::Column::DescendantId.is_in(subtree_ids.clone()))
             .secure()
@@ -745,8 +747,10 @@ impl GroupRepository {
                 .await
                 .map_err(|e| DomainError::database(e.to_string()))?;
         }
+        // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-2
 
-        // If new_parent_id is Some, batch-insert new ancestor paths
+        // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-3
+        // Compute new ancestor paths from new parent
         if let Some(parent_id) = new_parent_id {
             let parent_ancestors = ClosureEntity::find()
                 .filter(closure_entity::Column::DescendantId.eq(parent_id))
@@ -755,11 +759,14 @@ impl GroupRepository {
                 .all(db)
                 .await
                 .map_err(|e| DomainError::database(e.to_string()))?;
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-3
 
-            // Build all new closure rows in memory, then batch-insert
+            // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-4
             let mut new_rows: Vec<closure_entity::ActiveModel> = Vec::new();
             for ancestor_row in &parent_ancestors {
+                // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-4a
                 for &desc_id in &subtree_ids {
+                    // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-4a1
                     let internal_depth = subtree_internal.get(&desc_id).copied().unwrap_or(0);
                     let new_depth = ancestor_row.depth + 1 + internal_depth;
                     new_rows.push(closure_entity::ActiveModel {
@@ -767,18 +774,23 @@ impl GroupRepository {
                         descendant_id: Set(desc_id),
                         depth: Set(new_depth),
                     });
+                    // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-4a1
                 }
+                // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-4a
             }
 
-            // Insert closure rows (one INSERT per row via secure_insert)
             for row in new_rows {
                 modkit_db::secure::secure_insert::<ClosureEntity>(row, &scope, db)
                     .await
                     .map_err(|e| DomainError::database(e.to_string()))?;
             }
+            // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-4
         }
 
+        // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-5
+        // RETURN: closure rows updated within transaction — commit handled by caller
         Ok(())
+        // @cpt-end:cpt-cf-resource-group-algo-entity-hier-closure-rebuild:p1:inst-closure-rebuild-5
     }
 
     /// Check if a group has any memberships.

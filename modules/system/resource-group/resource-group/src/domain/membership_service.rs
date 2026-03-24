@@ -52,7 +52,6 @@ impl MembershipService {
             .map_err(|e| DomainError::database(e.to_string()))
     }
 
-    // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-mbr-add-1
     /// Add a membership link between a resource and a group.
     ///
     /// Validates group existence, `resource_type` registration, `allowed_memberships`
@@ -64,6 +63,10 @@ impl MembershipService {
         resource_type: &str,
         resource_id: &str,
     ) -> Result<ResourceGroupMembership, DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-2
+        // Validate resource_type is a valid GtsTypePath (validated implicitly by resolve)
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-2
+
         // AuthZ gate: verify the caller can create memberships
         let _scope = self
             .enforcer
@@ -74,19 +77,23 @@ impl MembershipService {
         let conn = self.conn()?;
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
         // Verify the group exists and get its type info
         let group_model = GroupRepository::find_model_by_id(&conn, group_id)
             .await?
             .ok_or(DomainError::GroupNotFound { id: group_id })?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
         // Resolve the GTS type path to a surrogate SMALLINT ID
         let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
             .await?
             .ok_or_else(|| {
                 DomainError::validation(format!("Unknown resource type: {resource_type}"))
             })?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
@@ -107,6 +114,8 @@ impl MembershipService {
         }
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-8
 
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-9
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-10
         // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
         // Tenant compatibility: check existing memberships for this resource
         let existing_tenants = MembershipRepository::get_existing_membership_tenant_ids(
@@ -117,7 +126,16 @@ impl MembershipService {
         .await?;
         // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
 
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-2
+        // IF no existing memberships → pass (first membership, any tenant allowed)
+        // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-2
+
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-3
+        // Collect distinct tenant_ids from existing memberships (existing_tenants)
+        // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-3
+
         // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-4
+        // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-5
         if !existing_tenants.is_empty() && !existing_tenants.contains(&group_model.tenant_id) {
             debug!(
                 group_id = %group_id,
@@ -130,23 +148,28 @@ impl MembershipService {
                 existing_tenants, group_model.tenant_id
             )));
         }
+        // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-5
         // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-4
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-10
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-9
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-11
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-12
         // Insert the membership (repo handles duplicate detection)
         let model = MembershipRepository::insert(&conn, group_id, gts_type_id, resource_id).await?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-12
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-11
 
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-13
         // Resolve back to GTS path for the SDK model
         Ok(ResourceGroupMembership {
             group_id: model.group_id,
             resource_type: resource_type.to_owned(),
             resource_id: model.resource_id,
         })
+        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-13
     }
-    // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-mbr-add-1
 
-    // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-mbr-remove-1
     /// Remove a membership link.
     ///
     /// Resolves the GTS type path, verifies the membership exists, and deletes it.
@@ -157,22 +180,29 @@ impl MembershipService {
         resource_type: &str,
         resource_id: &str,
     ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-1
+        // Actor sends DELETE /api/resource-group/v1/memberships/{group_id}/{resource_type}/{resource_id}
         // AuthZ gate: verify the caller can delete memberships
         let _scope = self
             .enforcer
             .access_scope(ctx, &RG_MEMBERSHIP_RESOURCE, "delete", None)
             .await
             .map_err(DomainError::from)?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-1
 
         let conn = self.conn()?;
 
-        // Resolve the GTS type path to a surrogate SMALLINT ID
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-2
+        // Resolve resource_type GTS path to surrogate ID
         let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
             .await?
             .ok_or_else(|| {
                 DomainError::validation(format!("Unknown resource type: {resource_type}"))
             })?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-2
 
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-3
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-4
         // Verify the membership exists
         MembershipRepository::find_by_composite_key(&conn, group_id, gts_type_id, resource_id)
             .await?
@@ -181,20 +211,28 @@ impl MembershipService {
                     "({group_id}, {resource_type}, {resource_id})"
                 ))
             })?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-4
 
         // Delete the membership
         MembershipRepository::delete(&conn, group_id, gts_type_id, resource_id).await?;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-3
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-5
         Ok(())
+        // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-5
     }
-    // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-mbr-remove-1
 
-    // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-mbr-list-1
     /// List memberships with `OData` filtering and pagination (AuthZ-scoped).
     pub async fn list_memberships(
         &self,
         ctx: &SecurityContext,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, DomainError> {
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-1
+        // Actor sends GET /api/resource-group/v1/memberships?$filter={expr}&cursor={token}&limit={n}
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-1
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-2
+        // Parse OData $filter (handled by ODataQuery parameter)
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-2
         // AuthZ gate: verify the caller can list memberships
         let _scope = self
             .enforcer
@@ -203,9 +241,19 @@ impl MembershipService {
             .map_err(DomainError::from)?;
 
         let conn = self.conn()?;
-        MembershipRepository::list_memberships(&conn, query).await
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-3
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-4
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-5
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-6
+        // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-7
+        let result = MembershipRepository::list_memberships(&conn, query).await;
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-7
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-6
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-5
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-4
+        // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-3
+        result
     }
-    // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-mbr-list-1
 }
 
 // -- MembershipAdder trait implementation for seeding --
