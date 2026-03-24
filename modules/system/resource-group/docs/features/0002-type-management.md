@@ -169,7 +169,7 @@ Types define the structural rules for the resource group hierarchy — which par
 6. [x] - `p1` - **FOR EACH** membership_path in allowed_memberships - `inst-val-input-6`
    1. [x] - `p1` - Validate membership_path is a valid GtsTypePath (no RG prefix requirement) - `inst-val-input-6a`
    2. [x] - `p1` - Verify membership_path exists in gts_type table - `inst-val-input-6b`
-7. [x] - `p1` - **IF** metadata_schema provided, validate it is valid JSON Schema - `inst-val-input-7`
+7. [ ] - `p1` - **IF** metadata_schema provided, validate it is a valid GTS metadata schema via `TypesRegistryClient` / `gts` crate (v0.8.4, already in workspace). The `gts` crate validates schema structure, `x-gts-traits-schema`/`x-gts-traits` compliance, and JSON Schema semantics. - `inst-val-input-7` — **GAP**: code stores metadata_schema as-is without validation
 8. [x] - `p1` - **RETURN** validated type definition - `inst-val-input-8`
 
 ### Hierarchy Safety Check for Type Update
@@ -296,3 +296,4 @@ The system **MUST** provide an idempotent type seeding mechanism for deployment 
 - [x] Type seeding creates missing types, updates changed types, skips unchanged types (idempotent)
 - [x] List types endpoint supports OData `$filter` on `code` field with `eq`, `ne`, `in` operators
 - [x] All REST responses use GTS type paths — no SMALLINT surrogate IDs exposed
+- [ ] Creating type with invalid metadata_schema (not valid JSON Schema) returns validation error (400) — **GAP**: currently stored as-is

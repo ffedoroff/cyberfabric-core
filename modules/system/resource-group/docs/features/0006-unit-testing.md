@@ -31,20 +31,108 @@
 
 <!-- /toc -->
 
+---
+
+## TL;DR
+
+~140 tests. Fast (< 5s total). Zero sleeps. Every test atomic.
+
+Unit tests guard **deterministic domain logic** — the same logic that runs identically regardless of whether it's called via HTTP or directly in Rust. If a test needs a real PostgreSQL or a real HTTP connection, it belongs in Feature 0007 (E2E), not here.
+
+---
+
+## Philosophy
+
+### What Is a Unit Test in This Project
+
+A unit test calls a Rust function directly — a service method, a value object constructor, an error conversion — and verifies the result. It uses SQLite `:memory:` for persistence (same migration scripts, ~1ms per DB), mocked AuthZ (`AllowAllAuthZ`), and no network I/O.
+
+This is the **primary line of defense**. Every domain invariant, every validation rule, every error path is covered here. E2E tests (Feature 0007) exist only to verify integration seams that unit tests cannot see.
+
+### Three Questions Before Adding a Test
+
+Every test in this plan has been validated against three questions:
+
+1. **"Does this test verify deterministic domain logic?"**
+   If yes — it belongs here. Type validation, hierarchy invariants, metadata field constraints, closure table correctness, error mapping — all deterministic, all testable without HTTP.
+
+2. **"Is this test atomic and fast?"**
+   One `#[test]` = one scenario. No `sleep()`, no `timeout()`, no retry loops. Each test creates its own SQLite DB and service instances. Tests run in parallel (`cargo test -j N`). Target: entire suite < 5 seconds.
+
+3. **"Does removing this test reduce confidence in domain correctness?"**
+   If not — the test is redundant. Every test must guard a specific behavior that, if broken, would allow data corruption, invariant violation, or silent failure.
+
+### What We Test Here
+
+| Layer | What | How |
+|-------|------|-----|
+| **Domain services** | Type CRUD, group lifecycle, hierarchy, membership, seeding | `#[tokio::test]` with SQLite `:memory:` + mocked AuthZ |
+| **Domain validation** | GTS type path format, name length, placement invariant, metadata against schema | `#[test]` pure logic, no DB |
+| **Value objects** | `GtsTypePath` parsing, normalization, serde round-trip | `#[cfg(test)]` in-source |
+| **Error chains** | `DomainError` → `ResourceGroupError` → `Problem` (RFC 9457), `EnforcerError` → `DomainError` | `#[test]` pure logic |
+| **DTO conversions** | `From` impls, serde attributes (`rename`, `skip_serializing_if`, `default`, `camelCase`) | `#[cfg(test)]` in-source |
+| **OData fields** | `FilterField` name/kind mapping, OData mapper field→column | `#[cfg(test)]` in-source |
+| **Closure table** | Row correctness after create/move/delete — verified via direct DB queries | `#[tokio::test]` with DB assert helpers |
+| **Metadata validation** | Group `metadata` validated against type's `metadata_schema` (ADR-001): field types, maxLength, `additionalProperties: false` | `#[tokio::test]` service-level |
+| **SMALLINT non-exposure** | API responses contain GTS path strings, never SMALLINT surrogate IDs | REST-level `Router::oneshot` |
+
+### What We Do NOT Test Here
+
+- HTTP routing, middleware wiring, header serialization → Feature 0007 (E2E)
+- PostgreSQL-specific behavior (FK RESTRICT, SERIALIZABLE isolation, `gts_type_path` DOMAIN) → Feature 0007
+- Real AuthN/AuthZ pipeline with tokens → Feature 0007
+- MTLS certificate verification → Feature 0007
+- Cursor codec encode/decode over HTTP → Feature 0007
+- Performance, load, concurrency under contention → out of scope
+
+All of the above requires a running server with real PostgreSQL. Unit tests use SQLite and mock AuthZ — they cannot catch these bugs. Feature 0007 (10 E2E tests) covers these integration seams.
+
+### Relationship to Feature 0007 (E2E)
+
+Feature 0006 and 0007 form a **complementary pair** with zero overlap:
+
+| Concern | 0006 (Unit) | 0007 (E2E) |
+|---------|-------------|------------|
+| Domain invariants | **Yes** (primary) | No |
+| Metadata field validation | **Yes** (service-level) | No |
+| Closure table correctness | **Yes** (SQLite) | Yes (PostgreSQL dialect) |
+| Error response format | DomainError→Problem mapping | HTTP headers + Content-Type |
+| Tenant isolation | AccessScope construction + scoped queries | Real tokens + real WHERE |
+| JSON wire format | DTO serde attrs in-source | Full HTTP roundtrip |
+| OData $filter | FilterField name/kind | Full parse→SQL→result chain |
+
+If a bug is catchable by calling a Rust function directly, it lives in 0006. If it requires HTTP + PostgreSQL, it lives in 0007.
+
+### Reliability Principles
+
+**Atomic** — one `#[test]` = one behavior. No compound "test everything" functions.
+
+**Fast** — no `sleep`, no `timeout`, no `tokio::time::*`, no polling. SQLite `:memory:` is ~1ms. Target: full suite < 5s.
+
+**Independent** — no shared state. Each test creates its own DB. `cargo test -j N` runs in parallel.
+
+**Synchronous where possible** — pure logic uses `#[test]`, not `#[tokio::test]`. Async only when DB is involved.
+
+**Direct DB assertions** — do not rely solely on service-layer reads (they go through AccessScope). Use `sea_orm::Entity::find()` directly to verify closure table rows, junction tables, entity state.
+
+**No new crate dependencies for testing** — follow project conventions. `assert!(matches!(err, Variant { .. }), "msg: {err:?}")` not `assert_matches!`. Manual `vec![]` + loop for table-driven tests, not `rstest`. Plain `async fn` helpers, not fixtures.
+
+**No retry testing** — the SERIALIZABLE retry loop is an implementation detail. Tests do not simulate contention.
+
+---
+
 ## 1. Overview
 
-This feature covers the unit and integration test plan for the `resource-group` module. The plan is based on a thorough gap analysis between the existing test suite (5 test files in `tests/` + 1 in-source `#[cfg(test)]` block in `auth.rs`, ~2,450 lines total) and the acceptance criteria defined in features 0001-0005.
+This feature covers the unit and integration test plan for the `resource-group` module. The plan is based on a thorough gap analysis between the existing test suite (5 test files in `tests/` + 1 in-source `#[cfg(test)]` block in `auth.rs`, ~2,450 lines total) and the acceptance criteria defined in features 0001-0005 and ADR-001 (GTS Type System).
 
-The analysis also incorporates testing patterns observed in other project modules (`nodes-registry`, `types-registry`, `api-gateway`) which consistently test:
-- In-source `#[cfg(test)]` blocks for pure logic (value objects, pattern matching, field mapping)
-- DTO conversion round-trips and serde attribute verification
-- OData filter field name/kind correctness
-- Seeding idempotency (create/update/skip)
-- Error conversion chains (external error -> DomainError -> SDK error -> Problem)
+The analysis incorporates:
+- Acceptance criteria from features 0001-0005 and ADR-001
+- Testing patterns from other project modules (`nodes-registry`, `types-registry`, `api-gateway`)
+- ADR-001 metadata validation requirements (`additionalProperties: false`, field types, maxLength constraints)
 
-**Scope**: Domain service tests with real in-memory SQLite database, in-source unit tests for pure logic, DTO/serde tests.
+**Scope**: Domain service tests with SQLite in-memory, in-source `#[cfg(test)]` for pure logic, metadata validation against `metadata_schema`.
 
-**Out of scope**: E2E tests against live PostgreSQL, load/performance tests, MTLS/network-level auth tests.
+**Out of scope**: E2E tests (Feature 0007), PostgreSQL-specific tests, MTLS, performance.
 
 ## 2. Gap Analysis: Current Coverage
 
@@ -1064,6 +1152,8 @@ Per ADR-001, each chained RG type defines a `metadata_schema` with `additionalPr
 GTS-level validation (33 tests in `rg_gts_type_system_tests.rs`) validates at schema registration time. These unit tests verify the **runtime** validation path: when a caller creates/updates a group, RG checks the `metadata` payload against the stored `metadata_schema` for the group's type.
 
 > **Note**: As of current implementation, this validation is **missing** in code — `group_service.rs` stores metadata as-is without validation. These tests will initially fail and serve as acceptance criteria for implementing the validation.
+>
+> **Implementation**: Use `TypesRegistryClient` (types-registry-sdk, already used by `credstore` module) + `gts` crate (v0.8.4, already in workspace). The GTS type system validates instance data (including `metadata` sub-object) against the chained RG type schema registered in types-registry. RG module should resolve the group's GTS type via `TypesRegistryClient`, then validate the incoming metadata against the type's inline `metadata` schema (which includes `additionalProperties: false`, field types, `maxLength`). This follows the same pattern as `credstore` module which uses `TypesRegistryClient` from ClientHub for GTS-level validation. Do NOT use raw `jsonschema` crate directly — validation must go through the GTS layer to respect `x-gts-traits`, `allOf` composition, and the metadata sub-object schema.
 
 ##### Tenant metadata (`barrier: boolean`, `custom_domain: hostname`)
 
