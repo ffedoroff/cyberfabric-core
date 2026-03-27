@@ -132,6 +132,9 @@ impl Module for MiniChatModule {
         cfg.cleanup_worker
             .validate()
             .map_err(|e| anyhow::anyhow!("cleanup_worker config: {e}"))?;
+        cfg.thumbnail
+            .validate()
+            .map_err(|e| anyhow::anyhow!("thumbnail config: {e}"))?;
 
         let vendor = cfg.vendor.trim().to_owned();
         if vendor.is_empty() {
@@ -403,6 +406,7 @@ impl Module for MiniChatModule {
             file_storage,
             vector_store_prov,
             cfg.rag,
+            cfg.thumbnail,
             metrics,
         ));
 
