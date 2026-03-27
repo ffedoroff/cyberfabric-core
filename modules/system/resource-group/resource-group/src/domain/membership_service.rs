@@ -246,6 +246,7 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-5
         // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-6
         // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-7
+        #[allow(clippy::let_and_return)]
         let result = MembershipRepository::list_memberships(&conn, query).await;
         // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-7
         // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-6

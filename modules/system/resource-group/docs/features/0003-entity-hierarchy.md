@@ -383,7 +383,7 @@ The system **MUST** provide an idempotent group seeding mechanism for deployment
 - [x] Reads return full stored data even when profile was tightened (no truncation)
 - [x] Concurrent hierarchy mutations use SERIALIZABLE isolation with bounded retry
 - [x] Group seeding creates hierarchy with correct parent-child links and closure rows (idempotent)
-- [ ] Creating group with metadata that violates type's metadata_schema returns Validation error (400) — field type mismatch, maxLength exceeded, unknown field (additionalProperties:false)
-- [ ] Creating group with valid metadata matching type's metadata_schema succeeds
-- [ ] Updating group metadata validates against type's metadata_schema
-- [ ] Creating group when type has no metadata_schema accepts any metadata (no validation)
+- [x] Creating group with metadata that violates type's metadata_schema returns Validation error (400) — field type mismatch, maxLength exceeded, unknown field (additionalProperties:false)
+- [x] Creating group with valid metadata matching type's metadata_schema succeeds
+- [x] Updating group metadata validates against type's metadata_schema
+- [x] Creating group when type has no metadata_schema accepts any metadata (no validation)

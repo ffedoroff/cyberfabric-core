@@ -1,5 +1,5 @@
 // @cpt-dod:cpt-cf-resource-group-dod-e2e-test-suite:p1
-#![allow(dead_code, clippy::expect_used)]
+#![allow(dead_code, clippy::expect_used, clippy::doc_markdown)]
 //! Shared test helpers for resource-group integration tests.
 //!
 //! Provides database setup, service construction, security context helpers,

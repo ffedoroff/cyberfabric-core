@@ -1,5 +1,5 @@
 // @cpt-dod:cpt-cf-resource-group-dod-testing-membership:p1
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::doc_markdown)]
 //! Membership service integration tests (Phase 4).
 //!
 //! Tests the MembershipService domain logic: add/remove lifecycle,
@@ -349,12 +349,8 @@ async fn membership_multiple_resource_types_same_group() {
         .await
         .expect("list memberships");
 
-    let group_members: Vec<_> = page
-        .items
-        .iter()
-        .filter(|m| m.group_id == group.id)
-        .collect();
-    assert_eq!(group_members.len(), 2, "should have 2 memberships");
+    let group_member_count = page.items.iter().filter(|m| m.group_id == group.id).count();
+    assert_eq!(group_member_count, 2, "should have 2 memberships");
 }
 
 // TC-MBR-10: First membership always allowed (tenant)

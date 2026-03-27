@@ -70,6 +70,291 @@ fn validate_type_code_rejects_prefix_only() {
     assert!(result.is_ok());
 }
 
+// ── validate_metadata_schema ────────────────────────────────────────────
+
+#[test]
+fn validate_metadata_schema_accepts_valid_object_schema() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "count": { "type": "integer" }
+        },
+        "required": ["name"]
+    });
+    assert!(validation::validate_metadata_schema(&schema).is_ok());
+}
+
+#[test]
+fn validate_metadata_schema_accepts_boolean_true_schema() {
+    let schema = serde_json::json!(true);
+    assert!(validation::validate_metadata_schema(&schema).is_ok());
+}
+
+#[test]
+fn validate_metadata_schema_rejects_invalid_schema() {
+    let schema = serde_json::json!({
+        "type": "not-a-real-type"
+    });
+    let result = validation::validate_metadata_schema(&schema);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::Validation { .. }
+    ));
+}
+
+// ── validate_metadata_against_schema ────────────────────────────────────
+
+#[test]
+fn validate_metadata_against_schema_passes_when_no_schema() {
+    let metadata = serde_json::json!({"anything": true});
+    assert!(validation::validate_metadata_against_schema(Some(&metadata), None).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_passes_when_no_metadata() {
+    let schema = serde_json::json!({"type": "object"});
+    assert!(validation::validate_metadata_against_schema(None, Some(&schema)).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_passes_when_both_none() {
+    assert!(validation::validate_metadata_against_schema(None, None).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_passes_valid_metadata() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "maxLength": 50 }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+    });
+    let metadata = serde_json::json!({"name": "hello"});
+    assert!(validation::validate_metadata_against_schema(Some(&metadata), Some(&schema)).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_rejects_type_mismatch() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "count": { "type": "integer" }
+        }
+    });
+    let metadata = serde_json::json!({"count": "not-an-integer"});
+    let result = validation::validate_metadata_against_schema(Some(&metadata), Some(&schema));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, DomainError::Validation { .. }));
+    assert!(err.to_string().contains("does not match type schema"));
+}
+
+#[test]
+fn validate_metadata_against_schema_rejects_missing_required_field() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" }
+        },
+        "required": ["name"]
+    });
+    let metadata = serde_json::json!({});
+    let result = validation::validate_metadata_against_schema(Some(&metadata), Some(&schema));
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_metadata_against_schema_rejects_additional_properties() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" }
+        },
+        "additionalProperties": false
+    });
+    let metadata = serde_json::json!({"name": "ok", "unknown": 42});
+    let result = validation::validate_metadata_against_schema(Some(&metadata), Some(&schema));
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_metadata_against_schema_rejects_max_length_exceeded() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "maxLength": 5 }
+        }
+    });
+    let metadata = serde_json::json!({"name": "too-long-string"});
+    let result = validation::validate_metadata_against_schema(Some(&metadata), Some(&schema));
+    assert!(result.is_err());
+}
+
+// ── validate_metadata_schema: additional edge cases ─────────────────────
+
+#[test]
+fn validate_metadata_schema_accepts_empty_object_schema() {
+    let schema = serde_json::json!({});
+    assert!(validation::validate_metadata_schema(&schema).is_ok());
+}
+
+#[test]
+fn validate_metadata_schema_accepts_boolean_false_schema() {
+    let schema = serde_json::json!(false);
+    assert!(validation::validate_metadata_schema(&schema).is_ok());
+}
+
+#[test]
+fn validate_metadata_schema_rejects_null() {
+    let schema = serde_json::json!(null);
+    assert!(validation::validate_metadata_schema(&schema).is_err());
+}
+
+#[test]
+fn validate_metadata_schema_rejects_number() {
+    let schema = serde_json::json!(42);
+    assert!(validation::validate_metadata_schema(&schema).is_err());
+}
+
+#[test]
+fn validate_metadata_schema_rejects_string() {
+    let schema = serde_json::json!("not a schema");
+    assert!(validation::validate_metadata_schema(&schema).is_err());
+}
+
+#[test]
+fn validate_metadata_schema_rejects_array() {
+    let schema = serde_json::json!([1, 2, 3]);
+    assert!(validation::validate_metadata_schema(&schema).is_err());
+}
+
+#[test]
+fn validate_metadata_schema_accepts_nested_properties() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "address": {
+                "type": "object",
+                "properties": {
+                    "city": { "type": "string" },
+                    "zip": { "type": "string", "pattern": "^[0-9]{5}$" }
+                },
+                "required": ["city"]
+            }
+        }
+    });
+    assert!(validation::validate_metadata_schema(&schema).is_ok());
+}
+
+#[test]
+fn validate_metadata_schema_accepts_combiners() {
+    let schema = serde_json::json!({
+        "anyOf": [
+            { "type": "string" },
+            { "type": "integer" }
+        ]
+    });
+    assert!(validation::validate_metadata_schema(&schema).is_ok());
+}
+
+// ── validate_metadata_against_schema: additional edge cases ─────────────
+
+#[test]
+fn validate_metadata_against_schema_false_schema_rejects_everything() {
+    let schema = serde_json::json!(false);
+    let metadata = serde_json::json!({});
+    let result = validation::validate_metadata_against_schema(Some(&metadata), Some(&schema));
+    assert!(result.is_err(), "false schema should reject all metadata");
+}
+
+#[test]
+fn validate_metadata_against_schema_true_schema_accepts_everything() {
+    let schema = serde_json::json!(true);
+    let metadata = serde_json::json!({"any": "thing", "number": 42, "nested": [1, 2]});
+    assert!(validation::validate_metadata_against_schema(Some(&metadata), Some(&schema)).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_empty_schema_accepts_everything() {
+    let schema = serde_json::json!({});
+    let metadata = serde_json::json!({"any": "thing"});
+    assert!(validation::validate_metadata_against_schema(Some(&metadata), Some(&schema)).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_nested_object_fails() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "address": {
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"]
+            }
+        }
+    });
+    let bad = serde_json::json!({"address": {}});
+    assert!(validation::validate_metadata_against_schema(Some(&bad), Some(&schema)).is_err());
+    let good = serde_json::json!({"address": {"city": "Berlin"}});
+    assert!(validation::validate_metadata_against_schema(Some(&good), Some(&schema)).is_ok());
+}
+
+#[test]
+fn validate_metadata_against_schema_multiple_errors() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "age": { "type": "integer" }
+        },
+        "required": ["name", "age"]
+    });
+    let metadata = serde_json::json!({});
+    let result = validation::validate_metadata_against_schema(Some(&metadata), Some(&schema));
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_metadata_against_schema_enum_constraint() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": { "type": "string", "enum": ["active", "inactive"] }
+        }
+    });
+    let good = serde_json::json!({"status": "active"});
+    assert!(validation::validate_metadata_against_schema(Some(&good), Some(&schema)).is_ok());
+    let bad = serde_json::json!({"status": "unknown"});
+    assert!(validation::validate_metadata_against_schema(Some(&bad), Some(&schema)).is_err());
+}
+
+#[test]
+fn validate_metadata_against_schema_pattern_constraint() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "code": { "type": "string", "pattern": "^[A-Z]{3}$" }
+        }
+    });
+    let good = serde_json::json!({"code": "ABC"});
+    assert!(validation::validate_metadata_against_schema(Some(&good), Some(&schema)).is_ok());
+    let bad = serde_json::json!({"code": "abc123"});
+    assert!(validation::validate_metadata_against_schema(Some(&bad), Some(&schema)).is_err());
+}
+
+#[test]
+fn validate_metadata_against_schema_wrong_root_type() {
+    let schema = serde_json::json!({"type": "object"});
+    let arr = serde_json::json!([1, 2, 3]);
+    assert!(validation::validate_metadata_against_schema(Some(&arr), Some(&schema)).is_err());
+    let str_val = serde_json::json!("just a string");
+    assert!(validation::validate_metadata_against_schema(Some(&str_val), Some(&schema)).is_err());
+}
+
 // ── DomainError construction ────────────────────────────────────────────
 
 #[test]

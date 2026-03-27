@@ -1,5 +1,5 @@
 // @cpt-dod:cpt-cf-resource-group-dod-testing-rest-api:p2
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::doc_markdown)]
 //! API-level tests using `Router::oneshot` pattern.
 //!
 //! Verifies HTTP-level behavior: status codes, response shapes,
@@ -1295,7 +1295,7 @@ async fn input_membership_empty_resource_type() {
     // Empty resource_type in the URL path -- axum routing may not match
     let req = json_request(
         "POST",
-        &format!("/resource-group/v1/memberships/{}//res-001", fake_id),
+        &format!("/resource-group/v1/memberships/{fake_id}//res-001"),
         None,
         tenant_id,
     );

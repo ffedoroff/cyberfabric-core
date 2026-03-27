@@ -1,5 +1,5 @@
 // @cpt-dod:cpt-cf-resource-group-dod-testing-seeding:p1
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::doc_markdown)]
 //! Seeding integration tests (Phase 4).
 //!
 //! Tests idempotent seed_types, seed_groups, seed_memberships functions.

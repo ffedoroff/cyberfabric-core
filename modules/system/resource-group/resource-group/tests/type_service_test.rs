@@ -734,7 +734,7 @@ async fn meta_non_object_array_roundtrip() {
     let code = type_code("metaarr");
     let schema = json!(["string", "number"]);
 
-    let rg_type = type_svc
+    let result = type_svc
         .create_type(CreateTypeRequest {
             code: code.clone(),
             can_be_root: true,
@@ -742,33 +742,16 @@ async fn meta_non_object_array_roundtrip() {
             allowed_memberships: vec![],
             metadata_schema: Some(schema.clone()),
         })
-        .await
-        .expect("create type");
+        .await;
 
-    // Non-object schemas are wrapped in __user_schema which is stripped on read.
-    // The round-trip loses the array value.
-    // Document actual behavior: metadata_schema becomes None after round-trip.
-    assert_eq!(
-        rg_type.metadata_schema, None,
-        "Non-object array schema is lost after round-trip (wrapped in __user_schema, then stripped)"
-    );
-
-    // Verify DB storage: __user_schema is present
-    let conn = db.conn().expect("get conn");
-    let scope = system_scope();
-
-    let model = GtsTypeEntity::find()
-        .filter(gts_type::Column::SchemaId.eq(&code))
-        .secure()
-        .scope_with(&scope)
-        .one(&conn)
-        .await
-        .expect("query")
-        .expect("exists");
-    let stored = model.metadata_schema.expect("stored");
+    // Array is not valid JSON Schema (must be object or boolean) -> rejected
+    assert!(result.is_err(), "Array schema should be rejected");
     assert!(
-        stored.get("__user_schema").is_some(),
-        "Non-object wrapped in __user_schema in DB"
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("not a valid JSON Schema"),
+        "Error should mention invalid JSON Schema"
     );
 }
 
@@ -782,7 +765,7 @@ async fn meta_non_object_string_roundtrip() {
     let code = type_code("metastr");
     let schema = json!("just a string");
 
-    let rg_type = type_svc
+    let result = type_svc
         .create_type(CreateTypeRequest {
             code: code.clone(),
             can_be_root: true,
@@ -790,13 +773,16 @@ async fn meta_non_object_string_roundtrip() {
             allowed_memberships: vec![],
             metadata_schema: Some(schema),
         })
-        .await
-        .expect("create type");
+        .await;
 
-    // Non-object string also wrapped in __user_schema -> stripped -> None
-    assert_eq!(
-        rg_type.metadata_schema, None,
-        "Non-object string schema is lost after round-trip"
+    // String is not valid JSON Schema (must be object or boolean) -> rejected
+    assert!(result.is_err(), "String schema should be rejected");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("not a valid JSON Schema"),
+        "Error should mention invalid JSON Schema"
     );
 }
 
@@ -809,7 +795,7 @@ async fn meta_non_object_number_roundtrip() {
     let code = type_code("metanum");
     let schema = json!(42);
 
-    let rg_type = type_svc
+    let result = type_svc
         .create_type(CreateTypeRequest {
             code: code.clone(),
             can_be_root: true,
@@ -817,13 +803,16 @@ async fn meta_non_object_number_roundtrip() {
             allowed_memberships: vec![],
             metadata_schema: Some(schema),
         })
-        .await
-        .expect("create type");
+        .await;
 
-    // Same wrap/strip behavior for numbers
-    assert_eq!(
-        rg_type.metadata_schema, None,
-        "Non-object number schema is lost after round-trip"
+    // Number is not valid JSON Schema (must be object or boolean) -> rejected
+    assert!(result.is_err(), "Number schema should be rejected");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("not a valid JSON Schema"),
+        "Error should mention invalid JSON Schema"
     );
 }
 

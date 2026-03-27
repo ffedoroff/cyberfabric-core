@@ -32,3 +32,48 @@ pub fn validate_type_code(code: &str) -> Result<(), DomainError> {
     // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-3
     Ok(())
 }
+
+/// Validate that a `metadata_schema` value is a valid JSON Schema.
+///
+/// Attempts to compile the schema via `jsonschema::validator_for`. If the value
+/// cannot be interpreted as a JSON Schema, returns a [`DomainError::validation`].
+// @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-7
+pub fn validate_metadata_schema(schema: &serde_json::Value) -> Result<(), DomainError> {
+    jsonschema::validator_for(schema).map_err(|e| {
+        DomainError::validation(format!("metadata_schema is not a valid JSON Schema: {e}"))
+    })?;
+    Ok(())
+}
+// @cpt-end:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-7
+
+/// Validate a metadata value against a compiled JSON Schema.
+///
+/// Returns `Ok(())` when:
+/// - `schema` is `None` (no schema = no validation, any metadata accepted)
+/// - `metadata` is `None` (nothing to validate)
+/// - `metadata` validates against the schema
+///
+/// Returns `Err` when metadata violates the schema constraints.
+pub fn validate_metadata_against_schema(
+    metadata: Option<&serde_json::Value>,
+    schema: Option<&serde_json::Value>,
+) -> Result<(), DomainError> {
+    let (Some(metadata), Some(schema)) = (metadata, schema) else {
+        return Ok(());
+    };
+
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|e| DomainError::validation(format!("Type metadata_schema is invalid: {e}")))?;
+
+    let errors: Vec<String> = validator
+        .iter_errors(metadata)
+        .map(|e| e.to_string())
+        .collect();
+    if !errors.is_empty() {
+        return Err(DomainError::validation(format!(
+            "Metadata does not match type schema: {}",
+            errors.join("; ")
+        )));
+    }
+    Ok(())
+}

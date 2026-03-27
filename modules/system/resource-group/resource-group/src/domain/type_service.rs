@@ -47,6 +47,12 @@ impl TypeService {
         Self::validate_placement_invariant(req.can_be_root, &req.allowed_parents)?;
         // @cpt-end:cpt-cf-resource-group-flow-type-mgmt-create-type:p1:inst-create-type-3
 
+        // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-7
+        if let Some(ref schema) = req.metadata_schema {
+            validation::validate_metadata_schema(schema)?;
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-7
+
         let conn = self.db.conn()?;
 
         // @cpt-begin:cpt-cf-resource-group-flow-type-mgmt-create-type:p1:inst-create-type-6
@@ -191,6 +197,12 @@ impl TypeService {
             TypeRepository::resolve_ids(&conn, &req.allowed_memberships).await?
         };
         // @cpt-end:cpt-cf-resource-group-flow-type-mgmt-update-type:p1:inst-update-type-5
+
+        // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-7
+        if let Some(ref schema) = req.metadata_schema {
+            validation::validate_metadata_schema(schema)?;
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-type-mgmt-validate-type-input:p1:inst-val-input-7
 
         // Resolve our own ID
         let type_id = TypeRepository::resolve_id(&conn, code)

@@ -464,7 +464,10 @@ impl GroupService {
             // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-4
 
             // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5b
-            // IF metadata provided AND type has metadata_schema -> validate (simplified)
+            validation::validate_metadata_against_schema(
+                req.metadata.as_ref(),
+                rg_type.metadata_schema.as_ref(),
+            )?;
             // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5b
 
             // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-6
@@ -622,7 +625,10 @@ impl GroupService {
         // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4
 
         // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4e
-        // IF metadata provided AND type has metadata_schema -> validate (simplified)
+        validation::validate_metadata_against_schema(
+            req.metadata.as_ref(),
+            rg_type.metadata_schema.as_ref(),
+        )?;
         // @cpt-end:cpt-cf-resource-group-flow-entity-hier-update-group:p1:inst-update-group-4e
 
         if parent_changed {
@@ -731,6 +737,7 @@ impl GroupService {
             // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5c
             // @cpt-begin:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5d
             // Force delete: cascade entire subtree + memberships + closure
+            #[allow(clippy::let_and_return)]
             let result = Self::force_delete_subtree(tx, group_id).await;
             // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5d
             // @cpt-end:cpt-cf-resource-group-flow-entity-hier-delete-group:p1:inst-delete-group-5c

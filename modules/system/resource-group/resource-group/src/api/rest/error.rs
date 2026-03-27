@@ -13,6 +13,7 @@ impl From<DomainError> for Problem {
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-1
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-3
+        #[allow(clippy::let_and_return)]
         let problem = match &e {
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2a
             DomainError::Validation { message } => {
