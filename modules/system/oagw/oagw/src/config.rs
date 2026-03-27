@@ -22,6 +22,21 @@ pub struct OagwConfig {
     /// Default: 10 000.
     #[serde(default = "default_token_cache_capacity")]
     pub token_cache_capacity: usize,
+    /// Idle timeout in seconds for WebSocket streaming connections.
+    /// A connection with no data in either direction for this duration
+    /// will be torn down. Must be > 0. Default: 300 (5 minutes).
+    #[serde(default = "default_websocket_idle_timeout_secs")]
+    pub websocket_idle_timeout_secs: u64,
+    /// Timeout in seconds for the WebSocket Close frame handshake.
+    /// After sending or forwarding a Close frame, the gateway waits this long
+    /// for the Close response before force-closing. Must be > 0. Default: 5.
+    #[serde(default = "default_websocket_close_timeout_secs")]
+    pub websocket_close_timeout_secs: u64,
+    /// Optional maximum WebSocket frame payload size in bytes.
+    /// Frames exceeding this limit trigger Close frame 1009 (Message Too Big).
+    /// Default: None (pass-through, no limit enforced).
+    #[serde(default)]
+    pub websocket_max_frame_size_bytes: Option<usize>,
 }
 
 impl Default for OagwConfig {
@@ -32,6 +47,9 @@ impl Default for OagwConfig {
             allow_http_upstream: false,
             token_cache_ttl_secs: default_token_cache_ttl_secs(),
             token_cache_capacity: default_token_cache_capacity(),
+            websocket_idle_timeout_secs: default_websocket_idle_timeout_secs(),
+            websocket_close_timeout_secs: default_websocket_close_timeout_secs(),
+            websocket_max_frame_size_bytes: None,
         }
     }
 }
@@ -52,18 +70,46 @@ fn default_token_cache_capacity() -> usize {
     10_000
 }
 
+fn default_websocket_idle_timeout_secs() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_websocket_close_timeout_secs() -> u64 {
+    5
+}
+
+impl OagwConfig {
+    /// Validate configuration values. Returns an error for values that
+    /// would cause broken runtime behaviour.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.websocket_idle_timeout_secs == 0 {
+            return Err("websocket_idle_timeout_secs must be > 0".to_owned());
+        }
+        if self.websocket_close_timeout_secs == 0 {
+            return Err("websocket_close_timeout_secs must be > 0".to_owned());
+        }
+        Ok(())
+    }
+}
+
 /// Read-only runtime configuration exposed to handlers via `AppState`.
 ///
 /// Derived from [`OagwConfig`] at init time.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub max_body_size_bytes: usize,
+    pub websocket_idle_timeout_secs: u64,
+    pub websocket_close_timeout_secs: u64,
+    pub websocket_max_frame_size_bytes: Option<usize>,
 }
 
 impl From<&OagwConfig> for RuntimeConfig {
     fn from(cfg: &OagwConfig) -> Self {
         Self {
             max_body_size_bytes: cfg.max_body_size_bytes,
+            websocket_idle_timeout_secs: cfg.websocket_idle_timeout_secs,
+            websocket_close_timeout_secs: cfg.websocket_close_timeout_secs,
+            websocket_max_frame_size_bytes: cfg.websocket_max_frame_size_bytes,
         }
     }
 }
@@ -101,6 +147,18 @@ impl fmt::Debug for OagwConfig {
             .field("allow_http_upstream", &self.allow_http_upstream)
             .field("token_cache_ttl_secs", &self.token_cache_ttl_secs)
             .field("token_cache_capacity", &self.token_cache_capacity)
+            .field(
+                "websocket_idle_timeout_secs",
+                &self.websocket_idle_timeout_secs,
+            )
+            .field(
+                "websocket_close_timeout_secs",
+                &self.websocket_close_timeout_secs,
+            )
+            .field(
+                "websocket_max_frame_size_bytes",
+                &self.websocket_max_frame_size_bytes,
+            )
             .finish()
     }
 }
@@ -127,5 +185,29 @@ mod tests {
     fn token_cache_capacity_defaults_to_10000() {
         let config = OagwConfig::default();
         assert_eq!(config.token_cache_capacity, 10_000);
+    }
+
+    #[test]
+    fn validate_rejects_zero_idle_timeout() {
+        let config = OagwConfig {
+            websocket_idle_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_close_timeout() {
+        let config = OagwConfig {
+            websocket_close_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_nonzero_timeouts() {
+        let config = OagwConfig::default();
+        assert!(config.validate().is_ok());
     }
 }

@@ -36,17 +36,7 @@ pub(crate) const H_ENDPOINT_SCHEME: &str = "x-oagw-internal-endpoint-scheme";
 pub(crate) const H_INSTANCE_URI: &str = "x-oagw-internal-instance-uri";
 pub(crate) const H_RESOLVED_ADDR: &str = "x-oagw-internal-resolved-addr";
 
-/// Hop-by-hop headers that must not be forwarded in responses (mirrors headers.rs).
-const HOP_BY_HOP: &[&str] = &[
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-];
+use super::HOP_BY_HOP_HEADERS;
 
 // ---------------------------------------------------------------------------
 // PingoraProxy — ProxyHttp implementation (D3)
@@ -474,6 +464,13 @@ impl ProxyHttp for PingoraProxy {
             "upstream response received"
         );
 
+        // For 101 Switching Protocols, preserve Upgrade and Connection headers
+        // but strip Connection-nominated hop-by-hop headers and x-oagw-* internals.
+        if status == http::StatusCode::SWITCHING_PROTOCOLS {
+            super::headers::sanitize_response_headers_for_upgrade(&mut upstream_response.headers);
+            return Ok(());
+        }
+
         // Strip Connection-nominated headers.
         if let Some(conn_value) = upstream_response
             .headers
@@ -490,7 +487,7 @@ impl ProxyHttp for PingoraProxy {
         }
 
         // Strip static hop-by-hop headers.
-        for name in HOP_BY_HOP {
+        for name in HOP_BY_HOP_HEADERS {
             upstream_response.remove_header(*name);
         }
 

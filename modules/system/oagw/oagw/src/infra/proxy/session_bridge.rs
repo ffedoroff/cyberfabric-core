@@ -100,9 +100,104 @@ pub(crate) fn serialize_request_wire(
     buf
 }
 
+/// Serialize an HTTP/1.1 upgrade request (WebSocket handshake) to wire format.
+///
+/// Differs from [`serialize_request_wire`]:
+/// - Emits `Connection: Upgrade` (not `Connection: close`)
+/// - No `Content-Length` or `Transfer-Encoding` (upgrade requests have no body)
+/// - Preserves the `Upgrade` header from input
+pub(crate) fn serialize_upgrade_request_wire(
+    method: &Method,
+    url: &str,
+    headers: &HeaderMap,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(512);
+    let pq_raw = url_path_and_query(url);
+    // Defense-in-depth: strip CR/LF to prevent header injection.
+    let pq_clean;
+    let pq = if pq_raw.contains('\r') || pq_raw.contains('\n') {
+        warn!("CRLF in request URI stripped (possible injection attempt)");
+        pq_clean = pq_raw.replace(['\r', '\n'], "");
+        pq_clean.as_str()
+    } else {
+        pq_raw
+    };
+    let _ = write!(buf, "{} {} HTTP/1.1\r\n", method, pq);
+    for (name, value) in headers {
+        // Skip framing headers — we emit our own Connection below.
+        if name == http::header::CONNECTION
+            || name == http::header::CONTENT_LENGTH
+            || name == http::header::TRANSFER_ENCODING
+        {
+            continue;
+        }
+        buf.extend_from_slice(name.as_str().as_bytes());
+        buf.extend_from_slice(b": ");
+        buf.extend_from_slice(value.as_bytes());
+        buf.extend_from_slice(b"\r\n");
+    }
+    buf.extend_from_slice(b"Connection: Upgrade\r\n");
+    buf.extend_from_slice(b"\r\n");
+    buf
+}
+
 // ---------------------------------------------------------------------------
 // Response parsing
 // ---------------------------------------------------------------------------
+
+/// Parse only the HTTP/1.1 response status line and headers from the IO,
+/// returning the parsed result and any leftover bytes read past the header
+/// boundary.
+///
+/// Unlike [`parse_response_stream`], this does **not** consume the IO into
+/// a body stream — the caller retains the IO for bidirectional WebSocket
+/// forwarding via `tokio::io::copy_bidirectional`.
+pub(crate) async fn parse_upgrade_response(
+    io: &mut (impl AsyncRead + Unpin + Send),
+) -> anyhow::Result<(StatusCode, HeaderMap, Bytes)> {
+    let mut buf = BytesMut::with_capacity(4096);
+    let (status, headers, body_offset) = loop {
+        let mut tmp = [0u8; 4096];
+        let n = io
+            .read(&mut tmp)
+            .await
+            .context("failed to read response from proxy")?;
+        if n == 0 {
+            anyhow::bail!("proxy closed connection before sending response headers");
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > MAX_HEADER_BYTES {
+            anyhow::bail!(
+                "response headers too large ({} bytes exceeds {} byte limit)",
+                buf.len(),
+                MAX_HEADER_BYTES
+            );
+        }
+
+        let mut parsed_headers = [httparse::EMPTY_HEADER; 128];
+        let mut resp = httparse::Response::new(&mut parsed_headers);
+        match resp.parse(&buf)? {
+            httparse::Status::Complete(offset) => {
+                let status = StatusCode::from_u16(resp.code.unwrap_or(502))?;
+                let mut headers = HeaderMap::new();
+                for h in resp.headers.iter() {
+                    if let (Ok(name), Ok(value)) = (
+                        HeaderName::from_bytes(h.name.as_bytes()),
+                        HeaderValue::from_bytes(h.value),
+                    ) {
+                        headers.append(name, value);
+                    }
+                }
+                break (status, headers, offset);
+            }
+            httparse::Status::Partial => continue,
+        }
+    };
+
+    let _ = buf.split_to(body_offset);
+    let remaining = buf.freeze();
+    Ok((status, headers, remaining))
+}
 
 /// Read an HTTP/1.1 response from the client side of a DuplexStream.
 ///
@@ -195,8 +290,30 @@ fn is_chunked_encoding(headers: &HeaderMap) -> bool {
 // Body stream builders
 // ---------------------------------------------------------------------------
 
+/// Select the appropriate body stream based on response headers.
+///
+/// - **Transfer-Encoding: chunked** → decoded chunks
+/// - **Content-Length** → exactly N bytes
+/// - **Otherwise** → read until EOF
+pub(crate) fn response_body_stream<R: AsyncRead + Unpin + Send + 'static>(
+    headers: &HeaderMap,
+    initial: Bytes,
+    io: R,
+) -> BodyStream {
+    if is_chunked_encoding(headers) {
+        chunked_body_stream(initial, io)
+    } else if let Some(len) = content_length_value(headers) {
+        content_length_body_stream(initial, io, len)
+    } else {
+        raw_body_stream(initial, io)
+    }
+}
+
 /// Read raw bytes until EOF (used for 101 Upgrade and connection-close).
-fn raw_body_stream<R: AsyncRead + Unpin + Send + 'static>(initial: Bytes, io: R) -> BodyStream {
+pub(crate) fn raw_body_stream<R: AsyncRead + Unpin + Send + 'static>(
+    initial: Bytes,
+    io: R,
+) -> BodyStream {
     struct State<R> {
         io: R,
         initial: Option<Bytes>,
@@ -787,5 +904,148 @@ mod tests {
         let chunks: Vec<Bytes> = body_stream.map(|r| r.unwrap()).collect().await;
         let all: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
         assert_eq!(all, body.as_slice());
+    }
+
+    // -- serialize_upgrade_request_wire tests --
+
+    #[test]
+    fn upgrade_wire_emits_connection_upgrade() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("example.com"));
+        headers.insert("upgrade", HeaderValue::from_static("websocket"));
+        headers.insert(
+            "sec-websocket-key",
+            HeaderValue::from_static("dGhlIHNhbXBsZSBub25jZQ=="),
+        );
+        headers.insert("sec-websocket-version", HeaderValue::from_static("13"));
+
+        let wire = serialize_upgrade_request_wire(&Method::GET, "wss://example.com/ws", &headers);
+        let text = String::from_utf8_lossy(&wire);
+
+        assert!(text.starts_with("GET /ws HTTP/1.1\r\n"));
+        assert!(text.contains("upgrade: websocket\r\n"));
+        assert!(text.contains("Connection: Upgrade\r\n"));
+        assert!(text.contains("sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n"));
+        assert!(!text.contains("Content-Length"));
+        assert!(!text.contains("Transfer-Encoding"));
+        assert!(text.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn upgrade_wire_strips_inbound_connection_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("upgrade", HeaderValue::from_static("websocket"));
+        headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("keep-alive"),
+        );
+
+        let wire = serialize_upgrade_request_wire(&Method::GET, "wss://example.com/ws", &headers);
+        let text = String::from_utf8_lossy(&wire);
+
+        assert_eq!(
+            text.matches("Connection:").count(),
+            1,
+            "duplicate Connection"
+        );
+        assert!(text.contains("Connection: Upgrade\r\n"));
+    }
+
+    #[test]
+    fn upgrade_wire_no_body() {
+        let wire =
+            serialize_upgrade_request_wire(&Method::GET, "wss://example.com/ws", &HeaderMap::new());
+        let text = String::from_utf8_lossy(&wire);
+        assert!(text.ends_with("\r\n\r\n"));
+        let parts: Vec<&str> = text.splitn(2, "\r\n\r\n").collect();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[1].is_empty());
+    }
+
+    #[test]
+    fn upgrade_wire_crlf_injection_defense() {
+        let wire = serialize_upgrade_request_wire(
+            &Method::GET,
+            "wss://victim.com/path\r\nEvil: pwned\r\n",
+            &HeaderMap::new(),
+        );
+        let text = String::from_utf8_lossy(&wire);
+        assert!(
+            !text.contains("Evil: pwned\r\n"),
+            "CRLF injection produced a separate header"
+        );
+    }
+
+    // -- parse_upgrade_response tests --
+
+    #[tokio::test]
+    async fn parse_upgrade_101() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            writer
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\n\
+                      Upgrade: websocket\r\n\
+                      Connection: Upgrade\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            // Don't close — simulates a live WebSocket connection
+        });
+
+        let (status, headers, leftover) = parse_upgrade_response(&mut reader).await.unwrap();
+        assert_eq!(status, StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(headers.get("upgrade").unwrap(), "websocket");
+        assert!(leftover.is_empty());
+        // reader is still usable (not consumed)
+        drop(reader);
+    }
+
+    #[tokio::test]
+    async fn parse_upgrade_101_with_leftover() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            // Headers + some WebSocket frame data in the same write
+            writer
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\n\
+                      Upgrade: websocket\r\n\
+                      Connection: Upgrade\r\n\r\n\
+                      ws-frame-data",
+                )
+                .await
+                .unwrap();
+        });
+
+        let (status, _headers, leftover) = parse_upgrade_response(&mut reader).await.unwrap();
+        assert_eq!(status, StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(leftover.as_ref(), b"ws-frame-data");
+    }
+
+    #[tokio::test]
+    async fn parse_upgrade_non_101() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            writer
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            shut(&mut writer).await;
+        });
+
+        let (status, _headers, leftover) = parse_upgrade_response(&mut reader).await.unwrap();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(leftover.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parse_upgrade_eof_before_headers() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            shut(&mut writer).await;
+        });
+
+        let result = parse_upgrade_response(&mut reader).await;
+        assert!(result.is_err());
     }
 }

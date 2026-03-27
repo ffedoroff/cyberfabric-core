@@ -1792,6 +1792,7 @@ dependencies = [
  "hyper-util",
  "inventory",
  "mime",
+ "parking_lot",
  "pingora-core",
  "pingora-http",
  "pingora-load-balancing",
