@@ -1,6 +1,6 @@
 use crate::api::rest::dto::{
-    CreateGroupDto, CreateTypeDto, GroupDto, GroupWithDepthDto, MembershipDto, TypeDto,
-    UpdateGroupDto, UpdateTypeDto,
+    CreateGroupDto, CreateTypeDto, GroupDto, GroupWithDepthDto, MembershipDto, PatchGroupDto,
+    TypeDto, UpdateGroupDto, UpdateTypeDto,
 };
 
 use modkit_security::SecurityContext;
@@ -15,6 +15,7 @@ pub(crate) use groups::delete_group;
 pub(crate) use groups::get_group;
 pub(crate) use groups::list_group_hierarchy;
 pub(crate) use groups::list_groups;
+pub(crate) use groups::patch_group;
 pub(crate) use groups::update_group;
 pub(crate) use memberships::add_membership;
 pub(crate) use memberships::list_memberships;

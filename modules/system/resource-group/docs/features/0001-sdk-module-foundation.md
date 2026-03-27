@@ -176,6 +176,8 @@ Each variant **MUST** carry structured context (field details for Validation, en
 
 The system **MUST** define SeaORM entity models and DB migration scripts for all 6 RG tables.
 
+Each persistence adapter (type, group, closure, membership) **MUST** be defined as a trait first (e.g., `TypeRepositoryTrait`, `GroupRepositoryTrait`, `ClosureRepositoryTrait`, `MembershipRepositoryTrait`) and injected into domain services as `Arc<dyn Trait>`. This enables unit testing with in-memory trait implementations (`InMemoryTypeRepository`, etc.) without a database, and ensures a clean contract boundary between domain and infrastructure layers.
+
 **Required tables** (per DESIGN 3.7):
 - `gts_type` — SMALLINT PK (identity), `schema_id` (unique TEXT), `metadata_schema` (JSONB nullable), timestamps
 - `gts_type_allowed_parent` — composite PK `(type_id, parent_type_id)` with CASCADE FK

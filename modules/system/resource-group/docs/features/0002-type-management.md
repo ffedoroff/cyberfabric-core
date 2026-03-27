@@ -201,7 +201,7 @@ Types define the structural rules for the resource group hierarchy — which par
 
 **Steps**:
 1. [x] - `p1` - Load seed definitions from configuration source - `inst-seed-1`
-2. [x] - `p1` - **FOR EACH** seed_def in seed definitions - `inst-seed-2`
+2. [x] - `p1` - **FOR EACH** seed_def in seed definitions (types are independent — SHOULD be executed in parallel via `JoinSet` for throughput) - `inst-seed-2`
    1. [x] - `p1` - DB: SELECT FROM gts_type WHERE schema_id = {seed_def.schema_id} - `inst-seed-2a`
    2. [x] - `p1` - **IF** type exists AND definition matches → skip (unchanged) - `inst-seed-2b`
    3. [x] - `p1` - **IF** type exists AND definition differs → update type via update flow - `inst-seed-2c`
@@ -292,7 +292,7 @@ The system **MUST** provide an idempotent type seeding mechanism for deployment 
 - [x] Updating type to set `can_be_root=false` when root groups exist returns `AllowedParentsViolation` (409)
 - [x] Updating type to add new allowed_parent succeeds when no existing groups violate new rules
 - [x] Deleting unused type succeeds (204) and removes junction table entries via CASCADE
-- [x] Deleting type with existing groups returns `ConflictActiveReferences` (409)
+- [x] Deleting type with existing groups returns `ConflictActiveReferences` (409) with response body including entity count so the caller can display what prevents deletion
 - [x] Type seeding creates missing types, updates changed types, skips unchanged types (idempotent)
 - [x] List types endpoint supports OData `$filter` on `code` field with `eq`, `ne`, `in` operators
 - [x] All REST responses use GTS type paths — no SMALLINT surrogate IDs exposed

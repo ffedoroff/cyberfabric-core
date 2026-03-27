@@ -10,8 +10,11 @@ use tracing::field::Empty;
 use modkit::api::odata::OData;
 use modkit::api::prelude::*;
 
-use super::{CreateGroupDto, GroupDto, GroupWithDepthDto, SecurityContext, UpdateGroupDto, info};
-use crate::domain::group_service::GroupService;
+use super::{
+    CreateGroupDto, GroupDto, GroupWithDepthDto, PatchGroupDto, SecurityContext, UpdateGroupDto,
+    info,
+};
+use crate::module::ConcreteGroupService;
 
 /// Query parameters for delete endpoint.
 #[derive(Debug, serde::Deserialize)]
@@ -27,7 +30,7 @@ pub struct DeleteGroupQuery {
 )]
 pub async fn list_groups(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<GroupService>>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<GroupDto>>> {
     info!("Listing resource groups");
@@ -49,7 +52,7 @@ pub async fn list_groups(
 pub async fn create_group(
     uri: Uri,
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<GroupService>>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
     Json(req_body): Json<CreateGroupDto>,
 ) -> ApiResult<impl IntoResponse> {
     info!(
@@ -77,7 +80,7 @@ pub async fn create_group(
 )]
 pub async fn get_group(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<GroupService>>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
     Path(group_id): Path<uuid::Uuid>,
 ) -> ApiResult<Json<GroupDto>> {
     info!(
@@ -99,7 +102,7 @@ pub async fn get_group(
 )]
 pub async fn update_group(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<GroupService>>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
     Path(group_id): Path<uuid::Uuid>,
     Json(req_body): Json<UpdateGroupDto>,
 ) -> ApiResult<Json<GroupDto>> {
@@ -109,6 +112,29 @@ pub async fn update_group(
     );
 
     let group = svc.update_group(&ctx, group_id, req_body.into()).await?;
+    Ok(Json(GroupDto::from(group)))
+}
+
+/// Patch a resource group (partial update via PATCH).
+#[tracing::instrument(
+    skip(svc, req_body, ctx),
+    fields(
+        group.id = %group_id,
+        request_id = Empty,
+    )
+)]
+pub async fn patch_group(
+    Extension(ctx): Extension<SecurityContext>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
+    Path(group_id): Path<uuid::Uuid>,
+    Json(req_body): Json<PatchGroupDto>,
+) -> ApiResult<Json<GroupDto>> {
+    info!(
+        group_id = %group_id,
+        "Patching resource group"
+    );
+
+    let group = svc.patch_group(&ctx, group_id, req_body.into()).await?;
     Ok(Json(GroupDto::from(group)))
 }
 
@@ -122,7 +148,7 @@ pub async fn update_group(
 )]
 pub async fn delete_group(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<GroupService>>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
     Path(group_id): Path<uuid::Uuid>,
     Query(params): Query<DeleteGroupQuery>,
 ) -> ApiResult<impl IntoResponse> {
@@ -147,7 +173,7 @@ pub async fn delete_group(
 )]
 pub async fn list_group_hierarchy(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<GroupService>>,
+    Extension(svc): Extension<Arc<ConcreteGroupService>>,
     Path(group_id): Path<uuid::Uuid>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<GroupWithDepthDto>>> {

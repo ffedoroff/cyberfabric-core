@@ -12,7 +12,7 @@ use modkit::api::odata::OData;
 use modkit::api::prelude::*;
 
 use super::{MembershipDto, SecurityContext, info};
-use crate::domain::membership_service::MembershipService;
+use crate::module::ConcreteMembershipService;
 
 /// Path parameters for membership add/remove endpoints.
 #[derive(Debug, serde::Deserialize)]
@@ -29,7 +29,7 @@ pub struct MembershipPathParams {
 )]
 pub async fn list_memberships(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<MembershipService>>,
+    Extension(svc): Extension<Arc<ConcreteMembershipService>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<MembershipDto>>> {
     info!("Listing memberships");
@@ -53,7 +53,7 @@ pub async fn list_memberships(
 // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-1
 pub async fn add_membership(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<MembershipService>>,
+    Extension(svc): Extension<Arc<ConcreteMembershipService>>,
     Path(params): Path<MembershipPathParams>,
 ) -> ApiResult<impl IntoResponse> {
     info!(
@@ -89,7 +89,7 @@ pub async fn add_membership(
 )]
 pub async fn remove_membership(
     Extension(ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<MembershipService>>,
+    Extension(svc): Extension<Arc<ConcreteMembershipService>>,
     Path(params): Path<MembershipPathParams>,
 ) -> ApiResult<impl IntoResponse> {
     info!(

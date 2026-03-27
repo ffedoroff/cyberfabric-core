@@ -10,6 +10,8 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use serde_json::json;
 use uuid::Uuid;
 
@@ -22,6 +24,8 @@ use cf_resource_group::infra::storage::entity::resource_group::{
 use cf_resource_group::infra::storage::entity::resource_group_membership::{
     self as membership_entity, Entity as MembershipEntity,
 };
+use cf_resource_group::infra::storage::group_repo::GroupRepository;
+use cf_resource_group::infra::storage::type_repo::TypeRepository;
 use modkit_db::secure::{SecureEntityExt, secure_insert};
 use modkit_odata::ODataQuery;
 use modkit_security::AccessScope;
@@ -32,8 +36,14 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 fn make_group_service_with_profile(
     db: std::sync::Arc<modkit_db::DBProvider<modkit_db::DbError>>,
     profile: QueryProfile,
-) -> GroupService {
-    GroupService::new(db, profile, common::make_enforcer())
+) -> GroupService<GroupRepository, TypeRepository> {
+    GroupService::new(
+        db,
+        profile,
+        common::make_enforcer(),
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+    )
 }
 
 // =========================================================================
@@ -45,7 +55,7 @@ fn make_group_service_with_profile(
 #[tokio::test]
 async fn group_create_child_with_closure() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -87,7 +97,7 @@ async fn group_create_child_with_closure() {
 #[tokio::test]
 async fn group_three_level_hierarchy_closure() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -141,7 +151,7 @@ async fn group_three_level_hierarchy_closure() {
 #[tokio::test]
 async fn group_create_incompatible_parent_type() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -179,7 +189,7 @@ async fn group_create_incompatible_parent_type() {
 #[tokio::test]
 async fn group_create_root_when_cannot_be_root() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -239,7 +249,7 @@ async fn group_create_nonexistent_type() {
 #[tokio::test]
 async fn group_create_cross_tenant_parent() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
 
     let tenant_a = Uuid::now_v7();
@@ -279,7 +289,7 @@ async fn group_create_cross_tenant_parent() {
 #[tokio::test]
 async fn group_create_with_metadata() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -321,7 +331,7 @@ async fn group_create_with_metadata() {
 #[tokio::test]
 async fn group_multiple_roots_same_type() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -351,7 +361,7 @@ async fn group_multiple_roots_same_type() {
 #[tokio::test]
 async fn group_move_closure_rebuild() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -430,7 +440,7 @@ async fn group_move_closure_rebuild() {
 #[tokio::test]
 async fn group_move_under_descendant_cycle() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -466,7 +476,7 @@ async fn group_move_under_descendant_cycle() {
 #[tokio::test]
 async fn group_move_self_parent_cycle() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -490,7 +500,7 @@ async fn group_move_self_parent_cycle() {
 #[tokio::test]
 async fn group_move_incompatible_parent_type() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -531,7 +541,7 @@ async fn group_move_incompatible_parent_type() {
 #[tokio::test]
 async fn group_move_child_to_root() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -577,7 +587,7 @@ async fn group_move_child_to_root() {
 #[tokio::test]
 async fn group_move_to_root_cannot_be_root() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -626,7 +636,7 @@ async fn group_move_nonexistent() {
 #[tokio::test]
 async fn group_move_to_nonexistent_parent() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -650,7 +660,7 @@ async fn group_move_to_nonexistent_parent() {
 #[tokio::test]
 async fn group_move_max_width_exceeded() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let profile = QueryProfile {
         max_depth: None,
         max_width: Some(1),
@@ -710,7 +720,7 @@ async fn group_move_max_width_exceeded() {
 #[tokio::test]
 async fn group_update_name_and_metadata() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -760,7 +770,7 @@ async fn group_update_name_and_metadata() {
 #[tokio::test]
 async fn group_update_type_parent_incompatible() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -822,7 +832,7 @@ async fn group_update_type_parent_incompatible() {
 #[tokio::test]
 async fn group_update_type_children_incompatible() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -869,7 +879,7 @@ async fn group_update_type_children_incompatible() {
 #[tokio::test]
 async fn group_update_simultaneous_type_and_parent() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -944,7 +954,7 @@ async fn group_update_simultaneous_type_and_parent() {
 #[tokio::test]
 async fn group_update_root_to_nonroot_type() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -980,7 +990,7 @@ async fn group_update_root_to_nonroot_type() {
 #[tokio::test]
 async fn group_update_nonexistent_type() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1018,7 +1028,7 @@ async fn group_update_nonexistent_type() {
 #[tokio::test]
 async fn group_delete_leaf() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1068,7 +1078,7 @@ async fn group_delete_leaf() {
 #[tokio::test]
 async fn group_delete_with_children_no_force() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1104,7 +1114,7 @@ async fn group_delete_with_children_no_force() {
 #[tokio::test]
 async fn group_delete_with_memberships_no_force() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1142,7 +1152,7 @@ async fn group_delete_with_memberships_no_force() {
 #[tokio::test]
 async fn group_force_delete_subtree() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1241,7 +1251,7 @@ async fn group_delete_nonexistent() {
 #[tokio::test]
 async fn group_force_delete_leaf() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1277,7 +1287,7 @@ async fn group_force_delete_leaf() {
 #[tokio::test]
 async fn group_hierarchy_depth_traversal() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1353,7 +1363,7 @@ async fn group_hierarchy_nonexistent() {
 #[tokio::test]
 async fn group_create_max_depth_exceeded() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let profile = QueryProfile {
         max_depth: Some(1), // only root allowed (depth 0), child at depth 1 is >= max
         max_width: None,
@@ -1392,7 +1402,7 @@ async fn group_create_max_depth_exceeded() {
 #[tokio::test]
 async fn group_create_max_width_exceeded() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let profile = QueryProfile {
         max_depth: None,
         max_width: Some(1),
@@ -1443,7 +1453,7 @@ async fn group_create_max_width_exceeded() {
 #[tokio::test]
 async fn group_move_max_depth_exceeded() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     // max_depth=2: root(0), child(1) ok, but grandchild(2) would be >= max
     let profile = QueryProfile {
         max_depth: Some(2),
@@ -1534,7 +1544,7 @@ async fn group_move_max_depth_exceeded() {
 #[tokio::test]
 async fn group_create_depth_exact_boundary() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     // max_depth=2: root is at depth 0, child at depth 1 (parent_depth=0, 0+1=1 < 2 ok)
     // grandchild at depth 2 (parent_depth=1, 1+1=2 >= 2 -> violation)
     let profile = QueryProfile {
@@ -1587,7 +1597,7 @@ async fn group_create_depth_exact_boundary() {
 #[tokio::test]
 async fn group_create_width_exact_boundary() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let profile = QueryProfile {
         max_depth: None,
         max_width: Some(2),
@@ -1651,7 +1661,7 @@ async fn group_create_width_exact_boundary() {
 #[tokio::test]
 async fn group_create_name_empty() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1682,7 +1692,7 @@ async fn group_create_name_empty() {
 #[tokio::test]
 async fn group_create_name_too_long() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1719,7 +1729,7 @@ async fn group_create_name_too_long() {
 #[tokio::test]
 async fn group_metadata_barrier_stored() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1762,7 +1772,7 @@ async fn group_metadata_barrier_stored() {
 #[tokio::test]
 async fn group_metadata_rich_multiple_fields() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1797,7 +1807,7 @@ async fn group_metadata_rich_multiple_fields() {
 #[tokio::test]
 async fn group_metadata_update_replaces_entirely() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1857,7 +1867,7 @@ async fn group_metadata_update_replaces_entirely() {
 #[tokio::test]
 async fn group_metadata_none_to_some() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1903,7 +1913,7 @@ async fn group_metadata_none_to_some() {
 #[tokio::test]
 async fn group_metadata_some_to_none() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -1947,7 +1957,7 @@ async fn group_metadata_some_to_none() {
 #[tokio::test]
 async fn group_metadata_barrier_in_hierarchy() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -2012,7 +2022,7 @@ async fn group_metadata_barrier_in_hierarchy() {
 #[tokio::test]
 async fn group_metadata_in_hierarchy_response() {
     let db = common::test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -2078,7 +2088,7 @@ async fn group_metadata_in_hierarchy_response() {
 /// Helper: build the ADR-001 type ecosystem.
 /// Returns (tenant_type, dept_type, branch_type, user_type, course_type).
 async fn create_adr_types(
-    type_svc: &cf_resource_group::domain::type_service::TypeService,
+    type_svc: &cf_resource_group::domain::type_service::TypeService<TypeRepository>,
 ) -> (
     resource_group_sdk::ResourceGroupType,
     resource_group_sdk::ResourceGroupType,
@@ -2143,7 +2153,10 @@ async fn create_adr_types(
 #[tokio::test]
 async fn adr_full_hierarchy_reproduction() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let membership_svc = common::make_membership_service(db.clone());
     let tenant_id = Uuid::now_v7();
@@ -2216,7 +2229,10 @@ async fn adr_full_hierarchy_reproduction() {
 #[tokio::test]
 async fn adr_tenant_self_nesting() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -2234,7 +2250,10 @@ async fn adr_tenant_self_nesting() {
 #[tokio::test]
 async fn adr_department_cannot_be_root() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -2265,7 +2284,10 @@ async fn adr_department_cannot_be_root() {
 #[tokio::test]
 async fn adr_branch_only_under_department() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -2301,7 +2323,10 @@ async fn adr_branch_only_under_department() {
 #[tokio::test]
 async fn adr_branch_allows_users_and_courses() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let membership_svc = common::make_membership_service(db.clone());
     let tenant_id = Uuid::now_v7();
@@ -2332,7 +2357,10 @@ async fn adr_branch_allows_users_and_courses() {
 #[tokio::test]
 async fn adr_tenant_rejects_course_membership() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let membership_svc = common::make_membership_service(db.clone());
     let tenant_id = Uuid::now_v7();
@@ -2360,7 +2388,10 @@ async fn adr_tenant_rejects_course_membership() {
 #[tokio::test]
 async fn adr_same_user_in_multiple_groups() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let membership_svc = common::make_membership_service(db.clone());
     let tenant_id = Uuid::now_v7();
@@ -2390,7 +2421,10 @@ async fn adr_same_user_in_multiple_groups() {
 #[tokio::test]
 async fn adr_same_resource_different_types() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let membership_svc = common::make_membership_service(db.clone());
     let tenant_id = Uuid::now_v7();
@@ -2426,7 +2460,10 @@ async fn adr_same_resource_different_types() {
 #[tokio::test]
 async fn security_group_metadata_sql_injection() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);
@@ -2473,7 +2510,10 @@ async fn security_group_metadata_sql_injection() {
 #[tokio::test]
 async fn security_group_metadata_large_payload() {
     let db = common::test_db().await;
-    let type_svc = cf_resource_group::domain::type_service::TypeService::new(db.clone());
+    let type_svc = cf_resource_group::domain::type_service::TypeService::new(
+        db.clone(),
+        Arc::new(TypeRepository),
+    );
     let group_svc = common::make_group_service(db.clone());
     let tenant_id = Uuid::now_v7();
     let ctx = common::make_ctx(tenant_id);

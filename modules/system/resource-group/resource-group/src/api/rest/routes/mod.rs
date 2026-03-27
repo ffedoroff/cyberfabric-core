@@ -1,9 +1,7 @@
 //! REST API route definitions using `OperationBuilder`.
 
 use crate::api::rest::{dto, handlers};
-use crate::domain::group_service::GroupService;
-use crate::domain::membership_service::MembershipService;
-use crate::domain::type_service::TypeService;
+use crate::module::{ConcreteGroupService, ConcreteMembershipService, ConcreteTypeService};
 use axum::Router;
 use modkit::api::OpenApiRegistry;
 use std::sync::Arc;
@@ -17,9 +15,9 @@ mod types;
 pub fn register_routes(
     mut router: Router,
     openapi: &dyn OpenApiRegistry,
-    type_service: Arc<TypeService>,
-    group_service: Arc<GroupService>,
-    membership_service: Arc<MembershipService>,
+    type_service: Arc<ConcreteTypeService>,
+    group_service: Arc<ConcreteGroupService>,
+    membership_service: Arc<ConcreteMembershipService>,
 ) -> Router {
     router = types::register_type_routes(router, openapi);
     router = groups::register_group_routes(router, openapi);

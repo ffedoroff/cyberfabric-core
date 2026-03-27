@@ -293,6 +293,35 @@ pub struct UpdateGroupRequest {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Serde helper for `Option<Option<T>>` that distinguishes absent, null, and present values.
+#[allow(clippy::option_option, clippy::missing_errors_doc)]
+pub mod option_option {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Ok(Some(Option::<T>::deserialize(deserializer)?))
+    }
+}
+
+/// Request body for patching a resource group (partial update via PATCH).
+///
+/// Fields not present in the request body are left unchanged. Fields set to
+/// `null` clear the value. Fields with a value update it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::option_option)]
+pub struct PatchGroupRequest {
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "option_option::deserialize")]
+    pub parent_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "option_option::deserialize")]
+    pub metadata: Option<Option<serde_json::Value>>,
+}
+
 // -- Membership --
 
 /// A membership link between a resource and a group.

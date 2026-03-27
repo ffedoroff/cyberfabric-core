@@ -241,7 +241,10 @@ The analysis incorporates:
 | G12 | Group Move | Move under descendant -> CycleDetected | 0003-AC-7 |
 | G13 | Group Move | Self-parent -> CycleDetected | 0003-AC-8 |
 | G14 | Group Move | Move to incompatible parent type | 0003-AC-9 |
-| G15 | Group Update | Update name/metadata/type | 0003-AC-10 |
+| G15 | Group Update | Update name/metadata/type (PUT full replace) | 0003-AC-10 |
+| G15a | Group Patch | Partial update: omitted fields unchanged, explicit null clears field | cpt-cf-resource-group-fr-partial-update-group |
+| G15b | Group Patch | Partial update: only name provided, other fields remain | cpt-cf-resource-group-fr-partial-update-group |
+| G15c | Group Patch | Partial update: parent_id=null detaches from parent | cpt-cf-resource-group-fr-partial-update-group |
 | G16 | Group Update | Type change validates parent + children compatibility | 0003-AC-10 |
 | G17 | Group Delete | Leaf delete (happy path) | 0003-AC-11 |
 | G18 | Group Delete | Delete with children without force -> ConflictActiveReferences | 0003-AC-12 |
@@ -430,6 +433,16 @@ Test setup: SQLite in-memory + TypeService + GroupService with configurable Quer
 - **Setup**: Type P (root), Type C (allowed_parents=[P]), Type P2 (root). Create P group with C child. Change P group to type P2.
 - **Assert**: `DomainError::InvalidParentType` ("child group... does not allow... as parent type")
 
+#### TC-GRP-11a: Partial update (PATCH) - omitted fields unchanged [P1]
+- **Covers**: G15a, cpt-cf-resource-group-fr-partial-update-group
+- **Setup**: Create group with name, metadata, parent. PATCH with only `{"name": "new"}`.
+- **Assert**: Name updated; metadata, parent_id, type unchanged
+
+#### TC-GRP-11b: Partial update (PATCH) - explicit null clears field [P1]
+- **Covers**: G15c, cpt-cf-resource-group-fr-partial-update-group
+- **Setup**: Create group under parent. PATCH with `{"parent_id": null}`.
+- **Assert**: Group becomes root (parent_id cleared); name, metadata, type unchanged. Uses `Option<Option<T>>` deserialization to distinguish "not provided" from "set to null"
+
 #### TC-GRP-12: Delete leaf group (no children, no memberships) [P1]
 - **Covers**: G17, 0003-AC-11
 - **Setup**: Create group, delete without force
@@ -438,12 +451,12 @@ Test setup: SQLite in-memory + TypeService + GroupService with configurable Quer
 #### TC-GRP-13: Delete group with children without force [P1]
 - **Covers**: G18, 0003-AC-12
 - **Setup**: Create parent -> child. Delete parent without force.
-- **Assert**: `DomainError::ConflictActiveReferences` with "child group(s)"
+- **Assert**: `DomainError::ConflictActiveReferences` with "child group(s)"; error detail MUST include blocking entity count (children count) so the caller can display what prevents deletion
 
 #### TC-GRP-14: Delete group with memberships without force [P1]
 - **Covers**: G19, 0003-AC-12
 - **Setup**: Create group, add membership. Delete group without force.
-- **Assert**: `DomainError::ConflictActiveReferences` with "memberships"
+- **Assert**: `DomainError::ConflictActiveReferences` with "memberships"; error detail MUST include blocking membership count
 
 #### TC-GRP-15: Force delete subtree [P1]
 - **Covers**: G20, 0003-AC-13

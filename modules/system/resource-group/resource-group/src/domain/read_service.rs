@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::domain::group_service::GroupService;
 use crate::domain::membership_service::MembershipService;
+use crate::domain::repo::{GroupRepositoryTrait, MembershipRepositoryTrait, TypeRepositoryTrait};
 
 /// Adapter service exposing hierarchy reads via SDK traits.
 ///
@@ -28,17 +29,23 @@ use crate::domain::membership_service::MembershipService;
 /// can resolve `dyn ResourceGroupReadHierarchy` without depending on the
 /// module's internal domain types.
 #[allow(unknown_lints, de0309_must_have_domain_model)]
-pub struct RgReadService {
-    group_service: Arc<GroupService>,
-    membership_service: Arc<MembershipService>,
+pub struct RgReadService<
+    GR: GroupRepositoryTrait,
+    TR: TypeRepositoryTrait,
+    MR: MembershipRepositoryTrait,
+> {
+    group_service: Arc<GroupService<GR, TR>>,
+    membership_service: Arc<MembershipService<GR, TR, MR>>,
 }
 
-impl RgReadService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    RgReadService<GR, TR, MR>
+{
     /// Create a new `RgReadService`.
     #[must_use]
     pub fn new(
-        group_service: Arc<GroupService>,
-        membership_service: Arc<MembershipService>,
+        group_service: Arc<GroupService<GR, TR>>,
+        membership_service: Arc<MembershipService<GR, TR, MR>>,
     ) -> Self {
         Self {
             group_service,
@@ -54,7 +61,9 @@ impl RgReadService {
 // IF built-in provider configured (this is the built-in implementation)
 // @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-3
 #[async_trait]
-impl ResourceGroupReadHierarchy for RgReadService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    ResourceGroupReadHierarchy for RgReadService<GR, TR, MR>
+{
     async fn list_group_depth(
         &self,
         ctx: &SecurityContext,
@@ -78,7 +87,9 @@ impl ResourceGroupReadHierarchy for RgReadService {
 // @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4a
 // @cpt-end:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1:inst-plugin-4
 #[async_trait]
-impl ResourceGroupReadPluginClient for RgReadService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    ResourceGroupReadPluginClient for RgReadService<GR, TR, MR>
+{
     async fn list_memberships(
         &self,
         ctx: &SecurityContext,

@@ -383,7 +383,8 @@ The module **MUST** provide API operations for:
 
 - create entity
 - retrieve entity by ID
-- update mutable fields (`name`, `type`, `metadata`)
+- full update of mutable fields via PUT (`name`, `type`, `metadata`)
+- partial update via PATCH (see `cpt-cf-resource-group-fr-partial-update-group`) — omitted fields remain unchanged, explicit `null` clears nullable fields (`parent_id`, `metadata`)
 - move entity to new parent (subtree move)
 - delete entity
 
@@ -398,6 +399,14 @@ Entity fields (GTS-aligned naming):
   - `tenant_id` (required) — tenant scope
 
 In `ownership-graph` profile, entity also carries tenant scope metadata for tenant compatibility validation.
+
+#### Partial Update (PATCH)
+
+- [x] `p2` - **ID**: `cpt-cf-resource-group-fr-partial-update-group`
+
+**Actors**: `cpt-cf-resource-group-actor-instance-administrator`, `cpt-cf-resource-group-actor-tenant-administrator`, `cpt-cf-resource-group-actor-apps`
+
+The module **MUST** support `PATCH /groups/{group_id}` for partial updates where omitted fields remain unchanged and explicit `null` clears nullable fields (e.g., `parent_id`, `metadata`). This uses `Option<Option<T>>` deserialization to distinguish "not provided" from "set to null".
 
 #### Enforce Forest Invariants
 

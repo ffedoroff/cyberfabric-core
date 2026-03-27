@@ -87,9 +87,9 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-manage-types`                       | Type service with validated lifecycle API and uniqueness guarantees.                                                                  |
 | `cpt-cf-resource-group-fr-validate-type-code`                 | Type service enforces code format, length, and case-insensitive normalization before persistence.                                     |
 | `cpt-cf-resource-group-fr-reject-duplicate-type`              | Unique `schema_id` persistence constraint and deterministic conflict mapping prevent duplicate type creation.                         |
-| `cpt-cf-resource-group-fr-seed-types`                         | Any RG plugin MUST perform schema migration. Type data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). AuthZ config determines required types. |
-| `cpt-cf-resource-group-fr-seed-groups`                        | Group data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates parent-child links and type compatibility when performed. |
-| `cpt-cf-resource-group-fr-seed-memberships`                   | Membership data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates group existence and tenant compatibility when performed. |
+| `cpt-cf-resource-group-fr-seed-types`                         | Any RG plugin MUST perform schema migration. Type data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). AuthZ config determines required types. Types have no interdependencies and SHOULD be seeded in parallel (`JoinSet`) for throughput. |
+| `cpt-cf-resource-group-fr-seed-groups`                        | Group data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates parent-child links and type compatibility when performed. Groups MUST be seeded sequentially (parents before children) due to hierarchy dependencies. |
+| `cpt-cf-resource-group-fr-seed-memberships`                   | Membership data seeding is optional and deployment-specific (plugin data migration, manual DB admin, or RG API). Validates group existence and tenant compatibility when performed. Memberships have no interdependencies and SHOULD be seeded in parallel. |
 | `cpt-cf-resource-group-fr-validate-type-update-hierarchy`     | Type update validates removed `allowed_parents` and `can_be_root` changes against existing groups; rejects with `AllowedParentsViolation` when hierarchy would become inconsistent. |
 | `cpt-cf-resource-group-fr-delete-type-only-if-empty`          | Type deletion flow checks for existing entities and rejects delete when references remain.                                            |
 | `cpt-cf-resource-group-fr-manage-entities`                    | Entity service with create/get/update/move/delete operations.                                                                         |
@@ -109,6 +109,7 @@ For AuthZ-facing deployments aligned with current platform architecture, `owners
 | `cpt-cf-resource-group-fr-no-authz-and-sql-logic`             | Hard separation: RG returns data only; AuthZ/PEP own constraints/SQL.                                                                 |
 | `cpt-cf-resource-group-fr-deterministic-errors`               | Unified error mapper translates domain/infrastructure failures to stable public categories.                                           |
 | `cpt-cf-resource-group-fr-force-delete`                       | Delete orchestration supports optional `force` parameter for cascade deletion of subtree and memberships.                             |
+| `cpt-cf-resource-group-fr-partial-update-group`               | `PATCH /groups/{group_id}` supports partial update: omitted fields remain unchanged, explicit `null` clears nullable fields. Uses `Option<Option<T>>` deserialization to distinguish "not provided" from "set to null". |
 | `cpt-cf-resource-group-fr-dual-auth-modes`                    | RG Gateway supports JWT (all endpoints, AuthZ-evaluated) and MTLS (hierarchy-only, AuthZ-bypassed) authentication paths.             |
 
 
@@ -408,6 +409,11 @@ Responsibilities:
 - consistent canonical + closure updates
 - support canonical persistence strategy
 
+Each repository MUST be defined as a trait first (e.g., `TypeRepositoryTrait`, `GroupRepositoryTrait`, `MembershipRepositoryTrait`, `ClosureRepositoryTrait`) and injected into domain services as `Arc<dyn Trait>`. This enables:
+- unit testing via in-memory trait implementations (`InMemoryTypeRepository`, etc.) without database
+- swappable storage backends without touching domain layer
+- clear contract boundary between domain and infrastructure
+
 Boundaries:
 
 - no domain decisions
@@ -424,7 +430,7 @@ Boundaries:
 | `get_type` | `ResourceGroupType` | get type by code |
 | `list_types` | `Page<ResourceGroupType>` | list types with OData query |
 | `delete_type` | `()` | delete type |
-| `create_group` / `update_group` | `ResourceGroup` | group lifecycle |
+| `create_group` / `update_group` / `patch_group` | `ResourceGroup` | group lifecycle (update = full replace, patch = partial) |
 | `get_group` | `ResourceGroup` | get group by ID |
 | `list_groups` | `Page<ResourceGroup>` | list groups with OData query |
 | `delete_group` | `()` | delete group (optional `force`) |
@@ -476,7 +482,8 @@ Base path: `/api/resource-group/v1` (groups, memberships), `/api/types-registry/
 | GET | resource-group | `/groups` | `listGroups` | List groups with OData query |
 | POST | resource-group | `/groups` | `createGroup` | Create group (`tenant_id` derived from `SecurityContext` effective tenant scope) |
 | GET | resource-group | `/groups/{group_id}` | `getGroup` | Get group by ID |
-| PUT | resource-group | `/groups/{group_id}` | `updateGroup` | Update group (including parent move) |
+| PUT | resource-group | `/groups/{group_id}` | `updateGroup` | Full replace of group (including parent move) |
+| PATCH | resource-group | `/groups/{group_id}` | `patchGroup` | Partial update — omitted fields unchanged, explicit `null` clears field |
 | DELETE | resource-group | `/groups/{group_id}` | `deleteGroup` | Delete group (optional `?force=true`) |
 | GET | resource-group | `/groups/{group_id}/hierarchy` | `listGroupHierarchy` | Traverse hierarchy from reference group with relative depth |
 | GET | resource-group | `/memberships` | `listMemberships` | List memberships with OData query |
@@ -1168,7 +1175,7 @@ Ownership-graph tenant enforcement:
 | invalid parent type         | `InvalidParentType`        |
 | type update violates existing hierarchy | `AllowedParentsViolation` |
 | cycle attempt               | `CycleDetected`            |
-| active references on delete | `ConflictActiveReferences` |
+| active references on delete | `ConflictActiveReferences` (response body MUST include list of blocking entities — children and/or memberships — so the caller can display what prevents deletion) |
 | depth/width violation       | `LimitViolation`           |
 | tenant-incompatible parent/child/membership write | `TenantIncompatibility` |
 | infra timeout/unavailable   | `ServiceUnavailable`       |
@@ -1232,6 +1239,7 @@ RG relies on database-level performance rather than application-level caching:
 | `gts.x.core.rg.group.v1~` | `create` | `createGroup` | POST | `/groups` | JWT |
 | `gts.x.core.rg.group.v1~` | `read` | `getGroup` | GET | `/groups/{group_id}` | JWT |
 | `gts.x.core.rg.group.v1~` | `update` | `updateGroup` | PUT | `/groups/{group_id}` | JWT |
+| `gts.x.core.rg.group.v1~` | `update` | `patchGroup` | PATCH | `/groups/{group_id}` | JWT |
 | `gts.x.core.rg.group.v1~` | `delete` | `deleteGroup` | DELETE | `/groups/{group_id}` | JWT |
 | `gts.x.core.rg.group.v1~` | `read` | `listGroupHierarchy` | GET | `/groups/{group_id}/hierarchy` | JWT |
 | _(AuthZ bypassed)_ | — | `listGroupHierarchy` | GET | `/groups/{group_id}/hierarchy` | MTLS |
@@ -1271,7 +1279,7 @@ RG follows standard CyberFabric observability patterns:
 - **Metrics**: standard HTTP endpoint metrics (request count, latency histogram, error rate) exposed via platform metrics infrastructure. No RG-specific custom metrics in v1.
 - **Alerting**: follows platform alerting defaults for error rate and latency thresholds. No RG-specific alert rules in v1.
 - **Health checks**: RG delegates health check and readiness/liveness probe endpoints to the platform infrastructure layer (`modkit` runtime). The platform exposes standard health endpoints (e.g., `GET /health`, `GET /ready`) that include database connectivity checks. RG does not implement its own health check endpoint.
-- **Distributed tracing**: RG participates in platform distributed tracing via OpenTelemetry trace propagation injected by platform middleware. Request spans include `request_id`, `tenant_id`, and operation context. No RG-specific trace instrumentation beyond structured logging and `#[tracing::instrument]` on API handlers.
+- **Distributed tracing**: RG participates in platform distributed tracing via OpenTelemetry trace propagation injected by platform middleware. Request spans include `request_id`, `tenant_id`, and operation context. All API handlers MUST use `#[tracing::instrument]` and enrich spans with business context fields (e.g., `type_code`, `group_id`, `app_id`) via `tracing::Span::current().record()` to enable effective production debugging and request correlation.
 
 ### Architecture Evolution: RG as Persistent Storage for Types Registry
 
@@ -1294,6 +1302,7 @@ Rationale:
 | `resource_group_membership` partitioning (455M rows projected) | Table size >50 GB or query latency degradation | Medium |
 | Domain events for group/membership lifecycle | Consumer demand for real-time notifications or cache invalidation | Medium |
 | GTS validation for `resource_type` in membership operations | Cross-module type reuse creates governance need | Low |
+| Parallel seeding for types and memberships via `JoinSet` | Large seed configurations with many independent items | Low |
 
 ### Open Questions
 

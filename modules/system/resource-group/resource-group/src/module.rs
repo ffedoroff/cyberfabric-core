@@ -16,6 +16,15 @@ use crate::domain::membership_service::MembershipService;
 use crate::domain::read_service::RgReadService;
 use crate::domain::rg_service::RgService;
 use crate::domain::type_service::TypeService;
+use crate::infra::storage::group_repo::GroupRepository;
+use crate::infra::storage::membership_repo::MembershipRepository;
+use crate::infra::storage::type_repo::TypeRepository;
+
+pub type ConcreteTypeService = TypeService<TypeRepository>;
+pub type ConcreteGroupService = GroupService<GroupRepository, TypeRepository>;
+pub type ConcreteMembershipService =
+    MembershipService<GroupRepository, TypeRepository, MembershipRepository>;
+pub type ConcreteRgService = RgService<GroupRepository, TypeRepository, MembershipRepository>;
 
 // @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-module-scaffold:p1
 /// Main module struct for the resource-group module.
@@ -26,9 +35,9 @@ use crate::domain::type_service::TypeService;
 )]
 #[allow(clippy::struct_field_names)]
 pub struct ResourceGroup {
-    type_service: OnceLock<Arc<TypeService>>,
-    group_service: OnceLock<Arc<GroupService>>,
-    membership_service: OnceLock<Arc<MembershipService>>,
+    type_service: OnceLock<Arc<ConcreteTypeService>>,
+    group_service: OnceLock<Arc<ConcreteGroupService>>,
+    membership_service: OnceLock<Arc<ConcreteMembershipService>>,
 }
 
 impl Default for ResourceGroup {
@@ -54,8 +63,13 @@ impl Module for ResourceGroup {
             .map_err(|e| anyhow::anyhow!("failed to get AuthZ resolver: {e}"))?;
         let enforcer = PolicyEnforcer::new(authz);
 
+        // Create repo instances
+        let group_repo = Arc::new(GroupRepository);
+        let type_repo = Arc::new(TypeRepository);
+        let membership_repo = Arc::new(MembershipRepository);
+
         // Create TypeService
-        let type_service = Arc::new(TypeService::new(db.clone()));
+        let type_service = Arc::new(TypeService::new(db.clone(), type_repo.clone()));
 
         self.type_service
             .set(type_service)
@@ -63,14 +77,26 @@ impl Module for ResourceGroup {
 
         // Create GroupService with default query profile and PolicyEnforcer
         let profile = QueryProfile::default();
-        let group_service = Arc::new(GroupService::new(db.clone(), profile, enforcer.clone()));
+        let group_service = Arc::new(GroupService::new(
+            db.clone(),
+            profile,
+            enforcer.clone(),
+            group_repo.clone(),
+            type_repo.clone(),
+        ));
 
         self.group_service
             .set(group_service)
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
         // Create MembershipService with PolicyEnforcer for AuthZ enforcement
-        let membership_service = Arc::new(MembershipService::new(db, enforcer));
+        let membership_service = Arc::new(MembershipService::new(
+            db,
+            enforcer,
+            group_repo,
+            type_repo,
+            membership_repo,
+        ));
         self.membership_service
             .set(membership_service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;

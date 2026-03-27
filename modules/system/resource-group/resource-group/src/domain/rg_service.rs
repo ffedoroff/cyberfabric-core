@@ -11,31 +11,39 @@ use modkit_security::SecurityContext;
 use resource_group_sdk::ResourceGroupClient;
 use resource_group_sdk::error::ResourceGroupError;
 use resource_group_sdk::models::{
-    CreateGroupRequest, CreateTypeRequest, ResourceGroup, ResourceGroupMembership,
-    ResourceGroupType, ResourceGroupWithDepth, UpdateGroupRequest, UpdateTypeRequest,
+    CreateGroupRequest, CreateTypeRequest, PatchGroupRequest, ResourceGroup,
+    ResourceGroupMembership, ResourceGroupType, ResourceGroupWithDepth, UpdateGroupRequest,
+    UpdateTypeRequest,
 };
 use uuid::Uuid;
 
 use crate::domain::group_service::GroupService;
 use crate::domain::membership_service::MembershipService;
+use crate::domain::repo::{GroupRepositoryTrait, MembershipRepositoryTrait, TypeRepositoryTrait};
 use crate::domain::type_service::TypeService;
 
 /// Unified adapter registered with `ClientHub` as `dyn ResourceGroupClient`.
 #[allow(unknown_lints, de0309_must_have_domain_model)]
 #[allow(clippy::struct_field_names)]
-pub struct RgService {
-    type_service: Arc<TypeService>,
-    group_service: Arc<GroupService>,
-    membership_service: Arc<MembershipService>,
+pub struct RgService<
+    GR: GroupRepositoryTrait,
+    TR: TypeRepositoryTrait,
+    MR: MembershipRepositoryTrait,
+> {
+    type_service: Arc<TypeService<TR>>,
+    group_service: Arc<GroupService<GR, TR>>,
+    membership_service: Arc<MembershipService<GR, TR, MR>>,
 }
 
-impl RgService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    RgService<GR, TR, MR>
+{
     /// Create a new `RgService`.
     #[must_use]
     pub fn new(
-        type_service: Arc<TypeService>,
-        group_service: Arc<GroupService>,
-        membership_service: Arc<MembershipService>,
+        type_service: Arc<TypeService<TR>>,
+        group_service: Arc<GroupService<GR, TR>>,
+        membership_service: Arc<MembershipService<GR, TR, MR>>,
     ) -> Self {
         Self {
             type_service,
@@ -46,7 +54,9 @@ impl RgService {
 }
 
 #[async_trait]
-impl ResourceGroupClient for RgService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    ResourceGroupClient for RgService<GR, TR, MR>
+{
     // -- Type lifecycle --
 
     async fn create_type(
@@ -149,6 +159,18 @@ impl ResourceGroupClient for RgService {
     ) -> Result<ResourceGroup, ResourceGroupError> {
         self.group_service
             .update_group(ctx, id, request)
+            .await
+            .map_err(ResourceGroupError::from)
+    }
+
+    async fn patch_group(
+        &self,
+        ctx: &SecurityContext,
+        id: Uuid,
+        request: PatchGroupRequest,
+    ) -> Result<ResourceGroup, ResourceGroupError> {
+        self.group_service
+            .patch_group(ctx, id, request)
             .await
             .map_err(ResourceGroupError::from)
     }

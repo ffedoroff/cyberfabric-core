@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::group_service::GroupService;
+use crate::domain::repo::{GroupRepositoryTrait, TypeRepositoryTrait};
 use crate::domain::type_service::TypeService;
 
 /// Seed result tracking.
@@ -28,8 +29,8 @@ pub struct SeedResult {
 // @cpt-algo:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1
 // @cpt-dod:cpt-cf-resource-group-dod-type-mgmt-seeding:p1
 /// Idempotent type seeding: create if missing, update if differs, skip if unchanged.
-pub async fn seed_types(
-    type_service: &TypeService,
+pub async fn seed_types<TR: TypeRepositoryTrait>(
+    type_service: &TypeService<TR>,
     seeds: &[CreateTypeRequest],
 ) -> Result<SeedResult, DomainError> {
     // @cpt-begin:cpt-cf-resource-group-algo-type-mgmt-seed-types:p1:inst-seed-1
@@ -106,8 +107,8 @@ pub struct GroupSeedDef {
 /// skipped (idempotent), otherwise it is created through the normal service
 /// path which enforces type compatibility, tenant scope, and closure table
 /// maintenance.
-pub async fn seed_groups(
-    group_service: &GroupService,
+pub async fn seed_groups<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait>(
+    group_service: &GroupService<GR, TR>,
     seeds: &[GroupSeedDef],
 ) -> Result<SeedResult, DomainError> {
     // @cpt-begin:cpt-cf-resource-group-algo-entity-hier-seed-groups:p1:inst-seed-groups-1

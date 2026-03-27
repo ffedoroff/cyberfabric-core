@@ -3,6 +3,7 @@
 //! All surrogate SMALLINT ID resolution happens here. The domain and API layers
 //! work exclusively with string GTS type paths and UUIDs.
 
+use async_trait::async_trait;
 use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt};
 use modkit_odata::{ODataQuery, Page, SortDir};
@@ -13,6 +14,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::repo::MembershipRepositoryTrait;
 use crate::infra::storage::entity::resource_group_membership::{
     self as membership_entity, Entity as MembershipEntity,
 };
@@ -32,14 +34,16 @@ fn system_scope() -> AccessScope {
 /// Repository for membership persistence operations.
 pub struct MembershipRepository;
 
-impl MembershipRepository {
+#[async_trait]
+impl MembershipRepositoryTrait for MembershipRepository {
     /// List memberships with `OData` filtering and pagination.
     ///
     /// The `OData` filter supports `group_id`, `resource_type`, and `resource_id` fields.
     /// `resource_type` values in filters are GTS type path strings; they are resolved
     /// to surrogate IDs at the persistence boundary.
-    pub async fn list_memberships(
-        db: &impl DBRunner,
+    async fn list_memberships<C: DBRunner>(
+        &self,
+        db: &C,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, DomainError> {
         let scope = system_scope();
@@ -58,11 +62,13 @@ impl MembershipRepository {
 
         // Batch-resolve type IDs to GTS paths (single query)
         let type_ids: Vec<i16> = page.items.iter().map(|m| m.gts_type_id).collect();
-        let type_map =
-            crate::infra::storage::group_repo::GroupRepository::resolve_type_paths_batch(
-                db, &type_ids,
-            )
-            .await?;
+        let group_repo = crate::infra::storage::group_repo::GroupRepository;
+        let type_map = crate::domain::repo::GroupRepositoryTrait::resolve_type_paths_batch(
+            &group_repo,
+            db,
+            &type_ids,
+        )
+        .await?;
 
         let memberships = page
             .items
@@ -87,8 +93,9 @@ impl MembershipRepository {
     }
 
     /// Insert a membership. Returns the created membership with resolved type path.
-    pub async fn insert(
-        db: &impl DBRunner,
+    async fn insert<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
         gts_type_id: i16,
         resource_id: &str,
@@ -118,14 +125,15 @@ impl MembershipRepository {
             })?;
 
         // Read back the inserted model
-        Self::find_by_composite_key(db, group_id, gts_type_id, resource_id)
+        self.find_by_composite_key(db, group_id, gts_type_id, resource_id)
             .await?
             .ok_or_else(|| DomainError::database("Insert succeeded but membership not found"))
     }
 
     /// Delete a membership by its composite key. Returns the number of affected rows.
-    pub async fn delete(
-        db: &impl DBRunner,
+    async fn delete<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
         gts_type_id: i16,
         resource_id: &str,
@@ -144,8 +152,9 @@ impl MembershipRepository {
     }
 
     /// Find a membership by its composite key.
-    pub async fn find_by_composite_key(
-        db: &impl DBRunner,
+    async fn find_by_composite_key<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
         gts_type_id: i16,
         resource_id: &str,
@@ -164,8 +173,9 @@ impl MembershipRepository {
 
     /// Check existing membership tenants for a resource (for tenant compatibility).
     /// Returns the set of distinct `tenant_ids` for groups that have this resource as a member.
-    pub async fn get_existing_membership_tenant_ids(
-        db: &impl DBRunner,
+    async fn get_existing_membership_tenant_ids<C: DBRunner>(
+        &self,
+        db: &C,
         gts_type_id: i16,
         resource_id: &str,
     ) -> Result<Vec<Uuid>, DomainError> {

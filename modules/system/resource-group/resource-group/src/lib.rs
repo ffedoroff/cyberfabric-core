@@ -30,7 +30,7 @@
 
 // === PUBLIC API (from SDK) ===
 pub use resource_group_sdk::{
-    CreateGroupRequest, CreateTypeRequest, ResourceGroup as ResourceGroupModel,
+    CreateGroupRequest, CreateTypeRequest, PatchGroupRequest, ResourceGroup as ResourceGroupModel,
     ResourceGroupClient, ResourceGroupError, ResourceGroupType, ResourceGroupWithDepth,
     UpdateGroupRequest, UpdateTypeRequest,
 };

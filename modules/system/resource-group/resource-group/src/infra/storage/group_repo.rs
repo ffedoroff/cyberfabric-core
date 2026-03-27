@@ -3,6 +3,7 @@
 //! All surrogate SMALLINT ID resolution happens here. The domain and API layers
 //! work exclusively with string GTS type paths and UUIDs.
 
+use async_trait::async_trait;
 use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt};
 use modkit_odata::{CursorV1, ODataQuery, Page, SortDir};
@@ -16,6 +17,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::repo::GroupRepositoryTrait;
 use crate::infra::storage::entity::{
     gts_type::{self, Entity as GtsTypeEntity},
     resource_group::{self as rg_entity, Entity as ResourceGroupEntity},
@@ -50,98 +52,51 @@ fn system_scope() -> AccessScope {
 pub struct GroupRepository;
 
 impl GroupRepository {
-    // -- Read operations --
+    // -- Private helper functions --
 
-    /// Find a resource group by its UUID, returning the SDK model with resolved type path.
-    ///
-    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
-    pub async fn find_by_id(
-        db: &impl DBRunner,
-        scope: &AccessScope,
-        id: Uuid,
-    ) -> Result<Option<ResourceGroup>, DomainError> {
-        let model = ResourceGroupEntity::find()
-            .filter(rg_entity::Column::Id.eq(id))
-            .secure()
-            .scope_with(scope)
-            .one(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))?;
-
-        match model {
-            Some(m) => {
-                let type_path = Self::resolve_type_path(db, m.gts_type_id).await?;
-                Ok(Some(Self::model_to_resource_group(m, type_path)))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Find the raw entity model by ID.
-    pub async fn find_model_by_id(
-        db: &impl DBRunner,
-        id: Uuid,
-    ) -> Result<Option<rg_entity::Model>, DomainError> {
+    /// Resolve a SMALLINT type ID to its GTS type path string.
+    async fn resolve_type_path(db: &impl DBRunner, type_id: i16) -> Result<String, DomainError> {
         let scope = system_scope();
-        ResourceGroupEntity::find()
-            .filter(rg_entity::Column::Id.eq(id))
+        let model = GtsTypeEntity::find()
+            .filter(gts_type::Column::Id.eq(type_id))
             .secure()
             .scope_with(&scope)
             .one(db)
             .await
-            .map_err(|e| DomainError::database(e.to_string()))
+            .map_err(|e| DomainError::database(e.to_string()))?
+            .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
+        Ok(model.schema_id)
     }
 
-    /// List groups with `OData` filtering and pagination.
+    /// Convert a database model to the SDK `ResourceGroup` type.
+    fn model_to_resource_group(model: rg_entity::Model, type_path: String) -> ResourceGroup {
+        ResourceGroup {
+            id: model.id,
+            type_path,
+            name: model.name,
+            hierarchy: GroupHierarchy {
+                parent_id: model.parent_id,
+                tenant_id: model.tenant_id,
+            },
+            metadata: model.metadata,
+        }
+    }
+
+    /// Encode an offset value into a `CursorV1`-compatible base64url token.
     ///
-    /// The `type` filter field accepts GTS type path strings from the API
-    /// (e.g. `$filter=type eq 'gts.x.system.rg.type.v1~x.test.org.v1~'`).
-    /// Before passing to `SeaORM`, string values for the `type` field are
-    /// resolved to SMALLINT surrogate IDs at the persistence boundary.
-    /// List groups with `OData` filtering and pagination.
-    ///
-    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
-    pub async fn list_groups(
-        db: &impl DBRunner,
-        scope: &AccessScope,
-        query: &ODataQuery,
-    ) -> Result<Page<ResourceGroup>, DomainError> {
-        // Pre-resolve: transform `type` string values → SMALLINT IDs in filter AST
-        let resolved_query = Self::resolve_type_filter(db, query).await?;
-
-        let base_query = ResourceGroupEntity::find().secure().scope_with(scope);
-
-        let page = paginate_odata::<GroupFilterField, GroupODataMapper, _, _, _, _>(
-            base_query,
-            db,
-            &resolved_query,
-            ("id", SortDir::Desc),
-            GROUP_LIMIT_CFG,
-            |m: rg_entity::Model| m,
-        )
-        .await
-        .map_err(|e| DomainError::database(e.to_string()))?;
-
-        // Batch-resolve type paths for all groups in the page (single query)
-        let type_ids: Vec<i16> = page.items.iter().map(|m| m.gts_type_id).collect();
-        let type_map = Self::resolve_type_paths_batch(db, &type_ids).await?;
-
-        let groups = page
-            .items
-            .into_iter()
-            .map(|model| {
-                let type_path = type_map
-                    .get(&model.gts_type_id)
-                    .cloned()
-                    .unwrap_or_default();
-                Self::model_to_resource_group(model, type_path)
-            })
-            .collect();
-
-        Ok(Page {
-            items: groups,
-            page_info: page.page_info,
-        })
+    /// The hierarchy endpoint uses offset-based pagination (not keyset) because
+    /// results are assembled in memory from two separate queries. The offset is
+    /// stored in the `k` field and a fixed sort signature `"depth"` distinguishes
+    /// these cursors from keyset cursors used by `paginate_odata`.
+    fn encode_offset_cursor(offset: usize, direction: &str) -> Option<String> {
+        let cursor = CursorV1 {
+            k: vec![offset.to_string()],
+            o: SortDir::Asc,
+            s: "depth".to_owned(),
+            f: None,
+            d: direction.to_owned(),
+        };
+        cursor.encode().ok()
     }
 
     /// Resolve GTS type path strings in `type` filter values to SMALLINT IDs.
@@ -228,31 +183,207 @@ impl GroupRepository {
         })
     }
 
+    /// Parse and extract hierarchy filters from an `OData` query.
+    fn parse_hierarchy_filter(query: &ODataQuery) -> (Option<DepthFilter>, Option<TypeFilter>) {
+        let Some(filter_expr) = query.filter() else {
+            return (None, None);
+        };
+
+        let Ok(filter_node) =
+            modkit_odata::filter::convert_expr_to_filter_node::<HierarchyFilterField>(filter_expr)
+        else {
+            return (None, None);
+        };
+
+        let depth = Self::extract_depth_from_node(&filter_node);
+        let type_f = Self::extract_type_from_hierarchy_node(&filter_node);
+        (depth, type_f)
+    }
+
+    fn extract_depth_from_node(
+        node: &modkit_odata::filter::FilterNode<HierarchyFilterField>,
+    ) -> Option<DepthFilter> {
+        use modkit_odata::filter::{FilterNode, FilterOp};
+
+        match node {
+            FilterNode::Binary {
+                field: HierarchyFilterField::HierarchyDepth,
+                op,
+                value,
+            } => {
+                let v = match value {
+                    modkit_odata::filter::ODataValue::Number(n) => {
+                        // BigDecimal to i32
+                        n.to_string().parse::<i32>().ok()?
+                    }
+                    _ => return None,
+                };
+                Some(DepthFilter::Single(*op, v))
+            }
+            FilterNode::Composite {
+                op: FilterOp::And,
+                children,
+            } => {
+                let mut filters = Vec::new();
+                for child in children {
+                    if let Some(f) = Self::extract_depth_from_node(child) {
+                        filters.push(f);
+                    }
+                }
+                if filters.is_empty() {
+                    None
+                } else if filters.len() == 1 {
+                    Some(filters.remove(0))
+                } else {
+                    Some(DepthFilter::And(filters))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn extract_type_from_hierarchy_node(
+        node: &modkit_odata::filter::FilterNode<HierarchyFilterField>,
+    ) -> Option<TypeFilter> {
+        use modkit_odata::filter::{FilterNode, FilterOp};
+
+        match node {
+            FilterNode::Binary {
+                field: HierarchyFilterField::Type,
+                op: FilterOp::Eq,
+                value,
+            } => {
+                if let modkit_odata::filter::ODataValue::String(s) = value {
+                    Some(TypeFilter::Eq(s.clone()))
+                } else {
+                    None
+                }
+            }
+            FilterNode::Composite {
+                op: FilterOp::And,
+                children,
+            } => {
+                for child in children {
+                    if let Some(f) = Self::extract_type_from_hierarchy_node(child) {
+                        return Some(f);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+#[async_trait]
+impl GroupRepositoryTrait for GroupRepository {
+    // -- Read operations --
+
+    /// Find a resource group by its UUID, returning the SDK model with resolved type path.
+    ///
+    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
+    async fn find_by_id<C: DBRunner>(
+        &self,
+        db: &C,
+        scope: &AccessScope,
+        id: Uuid,
+    ) -> Result<Option<ResourceGroup>, DomainError> {
+        let model = ResourceGroupEntity::find()
+            .filter(rg_entity::Column::Id.eq(id))
+            .secure()
+            .scope_with(scope)
+            .one(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?;
+
+        match model {
+            Some(m) => {
+                let type_path = Self::resolve_type_path(db, m.gts_type_id).await?;
+                Ok(Some(Self::model_to_resource_group(m, type_path)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Find the raw entity model by ID.
+    async fn find_model_by_id<C: DBRunner>(
+        &self,
+        db: &C,
+        id: Uuid,
+    ) -> Result<Option<rg_entity::Model>, DomainError> {
+        let scope = system_scope();
+        ResourceGroupEntity::find()
+            .filter(rg_entity::Column::Id.eq(id))
+            .secure()
+            .scope_with(&scope)
+            .one(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))
+    }
+
+    /// List groups with `OData` filtering and pagination.
+    ///
+    /// The `type` filter field accepts GTS type path strings from the API
+    /// (e.g. `$filter=type eq 'gts.x.system.rg.type.v1~x.test.org.v1~'`).
+    /// Before passing to `SeaORM`, string values for the `type` field are
+    /// resolved to SMALLINT surrogate IDs at the persistence boundary.
+    /// List groups with `OData` filtering and pagination.
+    ///
+    /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
+    async fn list_groups<C: DBRunner>(
+        &self,
+        db: &C,
+        scope: &AccessScope,
+        query: &ODataQuery,
+    ) -> Result<Page<ResourceGroup>, DomainError> {
+        // Pre-resolve: transform `type` string values → SMALLINT IDs in filter AST
+        let resolved_query = Self::resolve_type_filter(db, query).await?;
+
+        let base_query = ResourceGroupEntity::find().secure().scope_with(scope);
+
+        let page = paginate_odata::<GroupFilterField, GroupODataMapper, _, _, _, _>(
+            base_query,
+            db,
+            &resolved_query,
+            ("id", SortDir::Desc),
+            GROUP_LIMIT_CFG,
+            |m: rg_entity::Model| m,
+        )
+        .await
+        .map_err(|e| DomainError::database(e.to_string()))?;
+
+        // Batch-resolve type paths for all groups in the page (single query)
+        let type_ids: Vec<i16> = page.items.iter().map(|m| m.gts_type_id).collect();
+        let type_map = self.resolve_type_paths_batch(db, &type_ids).await?;
+
+        let groups = page
+            .items
+            .into_iter()
+            .map(|model| {
+                let type_path = type_map
+                    .get(&model.gts_type_id)
+                    .cloned()
+                    .unwrap_or_default();
+                Self::model_to_resource_group(model, type_path)
+            })
+            .collect();
+
+        Ok(Page {
+            items: groups,
+            page_info: page.page_info,
+        })
+    }
+
     /// Query hierarchy from a reference group, returning groups with relative depth.
     ///
     /// Uses the provided `AccessScope` for tenant-level filtering (`SecureORM`).
-    pub async fn list_hierarchy(
-        db: &impl DBRunner,
+    async fn list_hierarchy<C: DBRunner>(
+        &self,
+        db: &C,
         scope: &AccessScope,
         group_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, DomainError> {
-        // We query ancestors AND descendants by joining closure table with
-        // resource_group. The depth is relative to the reference group.
-        //
-        // For ancestors: closure rows where descendant_id = group_id, depth = -closure.depth
-        // For descendants: closure rows where ancestor_id = group_id, depth = closure.depth
-        //
-        // We use a UNION approach but implement it as two separate queries merged,
-        // OR we query all closure rows involving group_id and compute relative depth.
-        //
-        // Simpler approach: query closure table for rows where ancestor_id = group_id
-        // (descendants) UNION rows where descendant_id = group_id (ancestors),
-        // computing relative depth accordingly.
-        //
-        // Since paginate_odata expects a SeaORM Select, we cannot easily use UNION.
-        // Instead, we'll query the closure table directly and apply OData filters manually.
-
         // Parse OData depth and type filters early so we can push depth bounds into SQL
         let (depth_filter, type_filter) = Self::parse_hierarchy_filter(query);
 
@@ -334,7 +465,7 @@ impl GroupRepository {
 
         // Batch-resolve type paths for all groups (single query)
         let all_type_ids: Vec<i16> = group_map.values().map(|g| g.gts_type_id).collect();
-        let type_path_map = Self::resolve_type_paths_batch(db, &all_type_ids).await?;
+        let type_path_map = self.resolve_type_paths_batch(db, &all_type_ids).await?;
 
         // Build results with type path lookup and filtering
         let mut results: Vec<ResourceGroupWithDepth> = Vec::new();
@@ -426,8 +557,9 @@ impl GroupRepository {
     // -- Write operations --
 
     /// Insert a new resource group entity.
-    pub async fn insert(
-        db: &impl DBRunner,
+    async fn insert<C: DBRunner>(
+        &self,
+        db: &C,
         id: Uuid,
         parent_id: Option<Uuid>,
         gts_type_id: i16,
@@ -451,14 +583,15 @@ impl GroupRepository {
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
 
-        Self::find_model_by_id(db, id)
+        self.find_model_by_id(db, id)
             .await?
             .ok_or_else(|| DomainError::database("Insert succeeded but row not found"))
     }
 
     /// Update a resource group entity.
-    pub async fn update(
-        db: &impl DBRunner,
+    async fn update<C: DBRunner>(
+        &self,
+        db: &C,
         id: Uuid,
         parent_id: Option<Uuid>,
         gts_type_id: i16,
@@ -493,13 +626,13 @@ impl GroupRepository {
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
 
-        Self::find_model_by_id(db, id)
+        self.find_model_by_id(db, id)
             .await?
             .ok_or_else(|| DomainError::group_not_found(id))
     }
 
     /// Delete a resource group entity by ID.
-    pub async fn delete_by_id(db: &impl DBRunner, id: Uuid) -> Result<(), DomainError> {
+    async fn delete_by_id<C: DBRunner>(&self, db: &C, id: Uuid) -> Result<(), DomainError> {
         let scope = system_scope();
         ResourceGroupEntity::delete_many()
             .filter(rg_entity::Column::Id.eq(id))
@@ -514,8 +647,9 @@ impl GroupRepository {
     // -- Closure table operations --
 
     /// Insert a self-row in the closure table (depth=0).
-    pub async fn insert_closure_self_row(
-        db: &impl DBRunner,
+    async fn insert_closure_self_row<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
     ) -> Result<(), DomainError> {
         let scope = system_scope();
@@ -532,8 +666,9 @@ impl GroupRepository {
 
     /// Insert ancestor closure rows for a new child group.
     /// For each ancestor of the parent, create a row linking ancestor -> child with depth+1.
-    pub async fn insert_ancestor_closure_rows(
-        db: &impl DBRunner,
+    async fn insert_ancestor_closure_rows<C: DBRunner>(
+        &self,
+        db: &C,
         child_id: Uuid,
         parent_id: Uuid,
     ) -> Result<(), DomainError> {
@@ -564,8 +699,9 @@ impl GroupRepository {
     }
 
     /// Get all descendants of a group (from closure table, excluding self-row).
-    pub async fn get_descendant_ids(
-        db: &impl DBRunner,
+    async fn get_descendant_ids<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
     ) -> Result<Vec<Uuid>, DomainError> {
         let scope = system_scope();
@@ -583,7 +719,7 @@ impl GroupRepository {
 
     /// Get the depth of a group from its root (max depth in closure table where
     /// this group is the descendant).
-    pub async fn get_depth(db: &impl DBRunner, group_id: Uuid) -> Result<i32, DomainError> {
+    async fn get_depth<C: DBRunner>(&self, db: &C, group_id: Uuid) -> Result<i32, DomainError> {
         let scope = system_scope();
         let rows = ClosureEntity::find()
             .filter(closure_entity::Column::DescendantId.eq(group_id))
@@ -597,7 +733,11 @@ impl GroupRepository {
     }
 
     /// Count direct children of a group.
-    pub async fn count_children(db: &impl DBRunner, parent_id: Uuid) -> Result<u64, DomainError> {
+    async fn count_children<C: DBRunner>(
+        &self,
+        db: &C,
+        parent_id: Uuid,
+    ) -> Result<u64, DomainError> {
         let scope = system_scope();
         let count = ResourceGroupEntity::find()
             .filter(rg_entity::Column::ParentId.eq(parent_id))
@@ -610,8 +750,9 @@ impl GroupRepository {
     }
 
     /// Check if a group is a descendant of another group (for cycle detection).
-    pub async fn is_descendant(
-        db: &impl DBRunner,
+    async fn is_descendant<C: DBRunner>(
+        &self,
+        db: &C,
         potential_ancestor: Uuid,
         potential_descendant: Uuid,
     ) -> Result<bool, DomainError> {
@@ -629,8 +770,9 @@ impl GroupRepository {
 
     /// Delete all closure rows where a given group is the descendant
     /// (its ancestor paths). Keeps the self-row if `keep_self` is true.
-    pub async fn delete_ancestor_closure_rows(
-        db: &impl DBRunner,
+    async fn delete_ancestor_closure_rows<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
         keep_self: bool,
     ) -> Result<(), DomainError> {
@@ -652,8 +794,9 @@ impl GroupRepository {
     }
 
     /// Delete ALL closure rows for a group (both as ancestor and descendant).
-    pub async fn delete_all_closure_rows(
-        db: &impl DBRunner,
+    async fn delete_all_closure_rows<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
     ) -> Result<(), DomainError> {
         let scope = system_scope();
@@ -683,8 +826,9 @@ impl GroupRepository {
     /// Rebuild closure rows for a subtree after a move operation.
     /// This deletes old ancestor paths for the entire subtree and
     /// inserts new paths based on the new parent.
-    pub async fn rebuild_subtree_closure(
-        db: &impl DBRunner,
+    async fn rebuild_subtree_closure<C: DBRunner>(
+        &self,
+        db: &C,
         group_id: Uuid,
         new_parent_id: Option<Uuid>,
     ) -> Result<(), DomainError> {
@@ -794,7 +938,11 @@ impl GroupRepository {
     }
 
     /// Check if a group has any memberships.
-    pub async fn has_memberships(db: &impl DBRunner, group_id: Uuid) -> Result<bool, DomainError> {
+    async fn has_memberships<C: DBRunner>(
+        &self,
+        db: &C,
+        group_id: Uuid,
+    ) -> Result<bool, DomainError> {
         let scope = system_scope();
         let count = MembershipEntity::find()
             .filter(membership_entity::Column::GroupId.eq(group_id))
@@ -807,7 +955,11 @@ impl GroupRepository {
     }
 
     /// Delete all memberships for a group.
-    pub async fn delete_memberships(db: &impl DBRunner, group_id: Uuid) -> Result<(), DomainError> {
+    async fn delete_memberships<C: DBRunner>(
+        &self,
+        db: &C,
+        group_id: Uuid,
+    ) -> Result<(), DomainError> {
         let scope = system_scope();
         MembershipEntity::delete_many()
             .filter(membership_entity::Column::GroupId.eq(group_id))
@@ -819,28 +971,13 @@ impl GroupRepository {
         Ok(())
     }
 
-    // -- Helper functions --
-
-    /// Resolve a SMALLINT type ID to its GTS type path string.
-    async fn resolve_type_path(db: &impl DBRunner, type_id: i16) -> Result<String, DomainError> {
-        let scope = system_scope();
-        let model = GtsTypeEntity::find()
-            .filter(gts_type::Column::Id.eq(type_id))
-            .secure()
-            .scope_with(&scope)
-            .one(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))?
-            .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
-        Ok(model.schema_id)
-    }
-
     /// Batch-resolve SMALLINT type IDs to GTS type path strings.
     ///
     /// Issues a single `SELECT ... WHERE id IN (...)` query for all distinct type IDs,
     /// returning a `HashMap` for O(1) lookup. Eliminates N+1 queries in list operations.
-    pub async fn resolve_type_paths_batch(
-        db: &impl DBRunner,
+    async fn resolve_type_paths_batch<C: DBRunner>(
+        &self,
+        db: &C,
         type_ids: &[i16],
     ) -> Result<std::collections::HashMap<i16, String>, DomainError> {
         use std::collections::HashMap;
@@ -866,132 +1003,6 @@ impl GroupRepository {
             .map_err(|e| DomainError::database(e.to_string()))?;
 
         Ok(models.into_iter().map(|m| (m.id, m.schema_id)).collect())
-    }
-
-    /// Convert a database model to the SDK `ResourceGroup` type.
-    fn model_to_resource_group(model: rg_entity::Model, type_path: String) -> ResourceGroup {
-        ResourceGroup {
-            id: model.id,
-            type_path,
-            name: model.name,
-            hierarchy: GroupHierarchy {
-                parent_id: model.parent_id,
-                tenant_id: model.tenant_id,
-            },
-            metadata: model.metadata,
-        }
-    }
-
-    // -- Offset cursor helpers --
-
-    /// Encode an offset value into a `CursorV1`-compatible base64url token.
-    ///
-    /// The hierarchy endpoint uses offset-based pagination (not keyset) because
-    /// results are assembled in memory from two separate queries. The offset is
-    /// stored in the `k` field and a fixed sort signature `"depth"` distinguishes
-    /// these cursors from keyset cursors used by `paginate_odata`.
-    fn encode_offset_cursor(offset: usize, direction: &str) -> Option<String> {
-        let cursor = CursorV1 {
-            k: vec![offset.to_string()],
-            o: SortDir::Asc,
-            s: "depth".to_owned(),
-            f: None,
-            d: direction.to_owned(),
-        };
-        cursor.encode().ok()
-    }
-
-    // -- OData filter extraction helpers --
-
-    /// Parse and extract hierarchy filters from an `OData` query.
-    fn parse_hierarchy_filter(query: &ODataQuery) -> (Option<DepthFilter>, Option<TypeFilter>) {
-        let Some(filter_expr) = query.filter() else {
-            return (None, None);
-        };
-
-        let Ok(filter_node) =
-            modkit_odata::filter::convert_expr_to_filter_node::<HierarchyFilterField>(filter_expr)
-        else {
-            return (None, None);
-        };
-
-        let depth = Self::extract_depth_from_node(&filter_node);
-        let type_f = Self::extract_type_from_hierarchy_node(&filter_node);
-        (depth, type_f)
-    }
-
-    fn extract_depth_from_node(
-        node: &modkit_odata::filter::FilterNode<HierarchyFilterField>,
-    ) -> Option<DepthFilter> {
-        use modkit_odata::filter::{FilterNode, FilterOp};
-
-        match node {
-            FilterNode::Binary {
-                field: HierarchyFilterField::HierarchyDepth,
-                op,
-                value,
-            } => {
-                let v = match value {
-                    modkit_odata::filter::ODataValue::Number(n) => {
-                        // BigDecimal to i32
-                        n.to_string().parse::<i32>().ok()?
-                    }
-                    _ => return None,
-                };
-                Some(DepthFilter::Single(*op, v))
-            }
-            FilterNode::Composite {
-                op: FilterOp::And,
-                children,
-            } => {
-                let mut filters = Vec::new();
-                for child in children {
-                    if let Some(f) = Self::extract_depth_from_node(child) {
-                        filters.push(f);
-                    }
-                }
-                if filters.is_empty() {
-                    None
-                } else if filters.len() == 1 {
-                    Some(filters.remove(0))
-                } else {
-                    Some(DepthFilter::And(filters))
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn extract_type_from_hierarchy_node(
-        node: &modkit_odata::filter::FilterNode<HierarchyFilterField>,
-    ) -> Option<TypeFilter> {
-        use modkit_odata::filter::{FilterNode, FilterOp};
-
-        match node {
-            FilterNode::Binary {
-                field: HierarchyFilterField::Type,
-                op: FilterOp::Eq,
-                value,
-            } => {
-                if let modkit_odata::filter::ODataValue::String(s) = value {
-                    Some(TypeFilter::Eq(s.clone()))
-                } else {
-                    None
-                }
-            }
-            FilterNode::Composite {
-                op: FilterOp::And,
-                children,
-            } => {
-                for child in children {
-                    if let Some(f) = Self::extract_type_from_hierarchy_node(child) {
-                        return Some(f);
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
     }
 }
 

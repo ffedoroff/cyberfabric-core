@@ -374,7 +374,7 @@ The system **MUST** provide an idempotent group seeding mechanism for deployment
 - [x] Moving group to incompatible parent type returns `InvalidParentType` (409)
 - [x] Updating group type validates both parent and children compatibility
 - [x] Deleting leaf group (no children, no memberships) succeeds (204) and removes closure rows
-- [x] Deleting group with children without force returns `ConflictActiveReferences` (409)
+- [x] Deleting group with children without force returns `ConflictActiveReferences` (409) with response body listing blocking entities (children count/IDs and membership count) so the caller can display what prevents deletion
 - [x] Force delete removes entire subtree including memberships and closure rows
 - [x] Hierarchy endpoint returns ancestors (negative depth) and descendants (positive depth) with correct relative distances
 - [x] OData `$filter` on `hierarchy/depth` supports eq, ne, gt, ge, lt, le operators
@@ -387,3 +387,4 @@ The system **MUST** provide an idempotent group seeding mechanism for deployment
 - [x] Creating group with valid metadata matching type's metadata_schema succeeds
 - [x] Updating group metadata validates against type's metadata_schema
 - [x] Creating group when type has no metadata_schema accepts any metadata (no validation)
+- [ ] `PATCH /groups/{group_id}` supports partial update: omitted fields remain unchanged, explicit `null` clears nullable fields (e.g., `parent_id`, `metadata`). Uses `Option<Option<T>>` deserialization pattern to distinguish "not provided" from "set to null"

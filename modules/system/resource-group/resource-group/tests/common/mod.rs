@@ -24,7 +24,10 @@ use sea_orm_migration::MigratorTrait;
 use cf_resource_group::domain::group_service::{GroupService, QueryProfile};
 use cf_resource_group::domain::membership_service::MembershipService;
 use cf_resource_group::domain::type_service::TypeService;
+use cf_resource_group::infra::storage::group_repo::GroupRepository;
+use cf_resource_group::infra::storage::membership_repo::MembershipRepository;
 use cf_resource_group::infra::storage::migrations::Migrator;
+use cf_resource_group::infra::storage::type_repo::TypeRepository;
 use resource_group_sdk::{
     CreateGroupRequest, CreateTypeRequest, ResourceGroup as ResourceGroupModel, ResourceGroupType,
 };
@@ -107,7 +110,10 @@ pub fn make_enforcer() -> PolicyEnforcer {
 // -- Type helpers --
 
 /// Create a root type (can_be_root = true, no parents, no memberships).
-pub async fn create_root_type(svc: &TypeService, suffix: &str) -> ResourceGroupType {
+pub async fn create_root_type(
+    svc: &TypeService<TypeRepository>,
+    suffix: &str,
+) -> ResourceGroupType {
     let code = format!(
         "gts.x.system.rg.type.v1~x.test.{}{}.v1~",
         suffix,
@@ -126,7 +132,7 @@ pub async fn create_root_type(svc: &TypeService, suffix: &str) -> ResourceGroupT
 
 /// Create a child type with specified allowed parents and memberships.
 pub async fn create_child_type(
-    svc: &TypeService,
+    svc: &TypeService<TypeRepository>,
     suffix: &str,
     parents: &[&str],
     memberships: &[&str],
@@ -151,7 +157,7 @@ pub async fn create_child_type(
 
 /// Create a root group of the given type.
 pub async fn create_root_group(
-    svc: &GroupService,
+    svc: &GroupService<GroupRepository, TypeRepository>,
     ctx: &SecurityContext,
     type_code: &str,
     name: &str,
@@ -173,7 +179,7 @@ pub async fn create_root_group(
 
 /// Create a child group under the given parent.
 pub async fn create_child_group(
-    svc: &GroupService,
+    svc: &GroupService<GroupRepository, TypeRepository>,
     ctx: &SecurityContext,
     type_code: &str,
     parent_id: Uuid,
@@ -279,11 +285,27 @@ pub fn assert_no_surrogate_ids(json: &serde_json::Value) {
 // -- Service construction helpers --
 
 /// Build a `GroupService` from a DB provider using the allow-all enforcer.
-pub fn make_group_service(db: Arc<DBProvider<DbError>>) -> GroupService {
-    GroupService::new(db, QueryProfile::default(), make_enforcer())
+pub fn make_group_service(
+    db: Arc<DBProvider<DbError>>,
+) -> GroupService<GroupRepository, TypeRepository> {
+    GroupService::new(
+        db,
+        QueryProfile::default(),
+        make_enforcer(),
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+    )
 }
 
 /// Build a `MembershipService` from a DB provider using the allow-all enforcer.
-pub fn make_membership_service(db: Arc<DBProvider<DbError>>) -> MembershipService {
-    MembershipService::new(db, make_enforcer())
+pub fn make_membership_service(
+    db: Arc<DBProvider<DbError>>,
+) -> MembershipService<GroupRepository, TypeRepository, MembershipRepository> {
+    MembershipService::new(
+        db,
+        make_enforcer(),
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+        Arc::new(MembershipRepository),
+    )
 }

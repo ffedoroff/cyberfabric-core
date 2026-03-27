@@ -26,7 +26,10 @@ use sea_orm_migration::MigratorTrait;
 
 use cf_resource_group::domain::group_service::{GroupService, QueryProfile};
 use cf_resource_group::domain::type_service::TypeService;
+use cf_resource_group::infra::storage::group_repo::GroupRepository;
+use cf_resource_group::infra::storage::membership_repo::MembershipRepository;
 use cf_resource_group::infra::storage::migrations::Migrator;
+use cf_resource_group::infra::storage::type_repo::TypeRepository;
 
 // ── Mock AuthZ: tenant-scoping (like static-authz-plugin) ───────────────
 
@@ -88,10 +91,18 @@ async fn test_db() -> Arc<DBProvider<DbError>> {
     Arc::new(DBProvider::new(db))
 }
 
-fn make_group_service(db: Arc<DBProvider<DbError>>) -> GroupService {
+fn make_group_service(
+    db: Arc<DBProvider<DbError>>,
+) -> GroupService<GroupRepository, TypeRepository> {
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
     let enforcer = PolicyEnforcer::new(authz);
-    GroupService::new(db, QueryProfile::default(), enforcer)
+    GroupService::new(
+        db,
+        QueryProfile::default(),
+        enforcer,
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+    )
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -108,7 +119,7 @@ fn make_group_service(db: Arc<DBProvider<DbError>>) -> GroupService {
 #[tokio::test]
 async fn tenant_isolation_list_groups() {
     let db = test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = make_group_service(db.clone());
 
     let tenant_a = Uuid::now_v7();
@@ -216,7 +227,7 @@ async fn tenant_isolation_list_groups() {
 #[tokio::test]
 async fn tenant_isolation_get_group_cross_tenant_invisible() {
     let db = test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = make_group_service(db.clone());
 
     let tenant_a = Uuid::now_v7();
@@ -268,7 +279,7 @@ async fn tenant_isolation_get_group_cross_tenant_invisible() {
 #[tokio::test]
 async fn tenant_isolation_hierarchy_scoped() {
     let db = test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = make_group_service(db.clone());
 
     let tenant_a = Uuid::now_v7();
@@ -379,7 +390,7 @@ async fn tenant_isolation_hierarchy_scoped() {
 #[tokio::test]
 async fn tenant_isolation_update_cross_tenant_blocked() {
     let db = test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = make_group_service(db.clone());
 
     let tenant_a = Uuid::now_v7();
@@ -441,7 +452,7 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
 #[tokio::test]
 async fn tenant_isolation_delete_cross_tenant_blocked() {
     let db = test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = make_group_service(db.clone());
 
     let tenant_a = Uuid::now_v7();
@@ -595,7 +606,7 @@ async fn group_based_in_group_predicate_produces_combined_scope() {
 #[tokio::test]
 async fn group_based_membership_data_correctly_stored() {
     let db = test_db().await;
-    let type_svc = TypeService::new(db.clone());
+    let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
     let group_svc = make_group_service(db.clone());
 
     let tenant = Uuid::now_v7();
@@ -666,8 +677,13 @@ async fn group_based_membership_data_correctly_stored() {
     // Add memberships via MembershipService (with PolicyEnforcer)
     let authz: Arc<dyn AuthZResolverClient> = Arc::new(TenantScopingAuthZ);
     let enforcer = PolicyEnforcer::new(authz);
-    let membership_svc =
-        cf_resource_group::domain::membership_service::MembershipService::new(db.clone(), enforcer);
+    let membership_svc = cf_resource_group::domain::membership_service::MembershipService::new(
+        db.clone(),
+        enforcer,
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+        Arc::new(MembershipRepository),
+    );
 
     // task-001, task-002 → ProjectA
     membership_svc

@@ -15,9 +15,7 @@ use tracing::debug;
 
 use crate::domain::DbProvider;
 use crate::domain::error::DomainError;
-use crate::infra::storage::group_repo::GroupRepository;
-use crate::infra::storage::membership_repo::MembershipRepository;
-use crate::infra::storage::type_repo::TypeRepository;
+use crate::domain::repo::{GroupRepositoryTrait, MembershipRepositoryTrait, TypeRepositoryTrait};
 
 /// `AuthZ` resource type descriptor for group memberships.
 pub const RG_MEMBERSHIP_RESOURCE: ResourceType = ResourceType {
@@ -33,17 +31,38 @@ pub const RG_MEMBERSHIP_RESOURCE: ResourceType = ResourceType {
 /// Service for resource group membership lifecycle management.
 #[allow(unknown_lints, de0309_must_have_domain_model)]
 #[derive(Clone)]
-pub struct MembershipService {
+pub struct MembershipService<
+    GR: GroupRepositoryTrait,
+    TR: TypeRepositoryTrait,
+    MR: MembershipRepositoryTrait,
+> {
     db: Arc<DbProvider>,
     enforcer: PolicyEnforcer,
+    group_repo: Arc<GR>,
+    type_repo: Arc<TR>,
+    membership_repo: Arc<MR>,
 }
 
-impl MembershipService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    MembershipService<GR, TR, MR>
+{
     /// Create a new `MembershipService` with the given database provider
     /// and `PolicyEnforcer` for AuthZ-scoped queries.
     #[must_use]
-    pub fn new(db: Arc<DbProvider>, enforcer: PolicyEnforcer) -> Self {
-        Self { db, enforcer }
+    pub fn new(
+        db: Arc<DbProvider>,
+        enforcer: PolicyEnforcer,
+        group_repo: Arc<GR>,
+        type_repo: Arc<TR>,
+        membership_repo: Arc<MR>,
+    ) -> Self {
+        Self {
+            db,
+            enforcer,
+            group_repo,
+            type_repo,
+            membership_repo,
+        }
     }
 
     fn conn(&self) -> Result<impl modkit_db::secure::DBRunner + '_, DomainError> {
@@ -79,7 +98,9 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
         // Verify the group exists and get its type info
-        let group_model = GroupRepository::find_model_by_id(&conn, group_id)
+        let group_model = self
+            .group_repo
+            .find_model_by_id(&conn, group_id)
             .await?
             .ok_or(DomainError::GroupNotFound { id: group_id })?;
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
@@ -88,7 +109,9 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
         // Resolve the GTS type path to a surrogate SMALLINT ID
-        let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
+        let gts_type_id = self
+            .type_repo
+            .resolve_id(&conn, resource_type)
             .await?
             .ok_or_else(|| {
                 DomainError::validation(format!("Unknown resource type: {resource_type}"))
@@ -98,7 +121,10 @@ impl MembershipService {
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
         // Load group type's allowed_memberships and validate
-        let allowed = TypeRepository::load_full_type_by_id(&conn, group_model.gts_type_id).await?;
+        let allowed = self
+            .type_repo
+            .load_full_type_by_id(&conn, group_model.gts_type_id)
+            .await?;
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-8
@@ -118,12 +144,10 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-10
         // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
         // Tenant compatibility: check existing memberships for this resource
-        let existing_tenants = MembershipRepository::get_existing_membership_tenant_ids(
-            &conn,
-            gts_type_id,
-            resource_id,
-        )
-        .await?;
+        let existing_tenants = self
+            .membership_repo
+            .get_existing_membership_tenant_ids(&conn, gts_type_id, resource_id)
+            .await?;
         // @cpt-end:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-1
 
         // @cpt-begin:cpt-cf-resource-group-algo-membership-check-tenant-compat:p1:inst-tenant-check-2
@@ -156,7 +180,10 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-11
         // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-12
         // Insert the membership (repo handles duplicate detection)
-        let model = MembershipRepository::insert(&conn, group_id, gts_type_id, resource_id).await?;
+        let model = self
+            .membership_repo
+            .insert(&conn, group_id, gts_type_id, resource_id)
+            .await?;
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-12
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-11
 
@@ -194,7 +221,9 @@ impl MembershipService {
 
         // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-2
         // Resolve resource_type GTS path to surrogate ID
-        let gts_type_id = TypeRepository::resolve_id(&conn, resource_type)
+        let gts_type_id = self
+            .type_repo
+            .resolve_id(&conn, resource_type)
             .await?
             .ok_or_else(|| {
                 DomainError::validation(format!("Unknown resource type: {resource_type}"))
@@ -204,7 +233,8 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-3
         // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-4
         // Verify the membership exists
-        MembershipRepository::find_by_composite_key(&conn, group_id, gts_type_id, resource_id)
+        self.membership_repo
+            .find_by_composite_key(&conn, group_id, gts_type_id, resource_id)
             .await?
             .ok_or_else(|| {
                 DomainError::membership_not_found(format!(
@@ -214,7 +244,9 @@ impl MembershipService {
         // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-4
 
         // Delete the membership
-        MembershipRepository::delete(&conn, group_id, gts_type_id, resource_id).await?;
+        self.membership_repo
+            .delete(&conn, group_id, gts_type_id, resource_id)
+            .await?;
         // @cpt-end:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-3
         // @cpt-begin:cpt-cf-resource-group-flow-membership-remove:p1:inst-remove-memb-5
         Ok(())
@@ -247,7 +279,7 @@ impl MembershipService {
         // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-6
         // @cpt-begin:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-7
         #[allow(clippy::let_and_return)]
-        let result = MembershipRepository::list_memberships(&conn, query).await;
+        let result = self.membership_repo.list_memberships(&conn, query).await;
         // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-7
         // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-6
         // @cpt-end:cpt-cf-resource-group-flow-membership-list:p1:inst-list-memb-5
@@ -260,7 +292,9 @@ impl MembershipService {
 // -- MembershipAdder trait implementation for seeding --
 
 #[async_trait::async_trait]
-impl crate::domain::seeding::MembershipAdder for MembershipService {
+impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepositoryTrait>
+    crate::domain::seeding::MembershipAdder for MembershipService<GR, TR, MR>
+{
     async fn add_membership(
         &self,
         group_id: Uuid,

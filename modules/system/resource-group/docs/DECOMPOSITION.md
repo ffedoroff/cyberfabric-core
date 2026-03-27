@@ -169,7 +169,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
 - **Depends On**: `cpt-cf-resource-group-feature-type-management`
 
 - **Scope**:
-  - Entity service: create/get/update/move/delete group operations with domain validation
+  - Entity service: create/get/update (PUT full replace)/patch (PATCH partial update)/move/delete group operations with domain validation
   - Forest integrity: cycle detection and single-parent validation inside SERIALIZABLE write transactions
   - Parent type compatibility: validate parent-child type rules on create, move, and type change (including validation that children's types still permit the new type in their `allowed_parents`)
   - Entity delete safety: reject when active references (children, memberships) prevent removal per configured deletion policy
@@ -203,6 +203,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
   - [x] `p1` - `cpt-cf-resource-group-fr-reduced-constraints-behavior`
   - [x] `p1` - `cpt-cf-resource-group-fr-list-groups-depth`
   - [x] `p2` - `cpt-cf-resource-group-fr-force-delete`
+  - [x] `p2` - `cpt-cf-resource-group-fr-partial-update-group`
   - [x] `p1` - `cpt-cf-resource-group-nfr-hierarchy-query-latency`
 
 - **Design Principles Covered**:
@@ -229,6 +230,7 @@ The Resource Group DESIGN is decomposed into five features organized around the 
   - POST /api/resource-group/v1/groups
   - GET /api/resource-group/v1/groups/{group_id}
   - PUT /api/resource-group/v1/groups/{group_id}
+  - PATCH /api/resource-group/v1/groups/{group_id}
   - DELETE /api/resource-group/v1/groups/{group_id}
   - GET /api/resource-group/v1/groups/{group_id}/hierarchy
 

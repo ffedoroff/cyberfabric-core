@@ -11,7 +11,7 @@ use modkit::api::odata::OData;
 use modkit::api::prelude::*;
 
 use super::{CreateTypeDto, SecurityContext, TypeDto, UpdateTypeDto, info};
-use crate::domain::type_service::TypeService;
+use crate::module::ConcreteTypeService;
 
 /// List GTS types with optional `OData` filtering and pagination.
 #[tracing::instrument(
@@ -20,7 +20,7 @@ use crate::domain::type_service::TypeService;
 )]
 pub async fn list_types(
     Extension(_ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<TypeService>>,
+    Extension(svc): Extension<Arc<ConcreteTypeService>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<TypeDto>>> {
     info!("Listing GTS types");
@@ -42,7 +42,7 @@ pub async fn list_types(
 pub async fn create_type(
     uri: Uri,
     Extension(_ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<TypeService>>,
+    Extension(svc): Extension<Arc<ConcreteTypeService>>,
     Json(req_body): Json<CreateTypeDto>,
 ) -> ApiResult<impl IntoResponse> {
     info!(
@@ -67,7 +67,7 @@ pub async fn create_type(
 )]
 pub async fn get_type(
     Extension(_ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<TypeService>>,
+    Extension(svc): Extension<Arc<ConcreteTypeService>>,
     Path(code): Path<String>,
 ) -> ApiResult<Json<TypeDto>> {
     info!(
@@ -89,7 +89,7 @@ pub async fn get_type(
 )]
 pub async fn update_type(
     Extension(_ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<TypeService>>,
+    Extension(svc): Extension<Arc<ConcreteTypeService>>,
     Path(code): Path<String>,
     Json(req_body): Json<UpdateTypeDto>,
 ) -> ApiResult<Json<TypeDto>> {
@@ -112,7 +112,7 @@ pub async fn update_type(
 )]
 pub async fn delete_type(
     Extension(_ctx): Extension<SecurityContext>,
-    Extension(svc): Extension<Arc<TypeService>>,
+    Extension(svc): Extension<Arc<ConcreteTypeService>>,
     Path(code): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     info!(

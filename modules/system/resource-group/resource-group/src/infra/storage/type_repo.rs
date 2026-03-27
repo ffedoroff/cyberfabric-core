@@ -3,6 +3,7 @@
 //! All surrogate SMALLINT ID resolution happens here. The domain and API layers
 //! work exclusively with string GTS type paths.
 
+use async_trait::async_trait;
 use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt};
 use modkit_odata::{ODataQuery, Page, SortDir};
@@ -13,6 +14,7 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 
 use crate::domain::error::DomainError;
+use crate::domain::repo::TypeRepositoryTrait;
 use crate::infra::storage::entity::{
     gts_type::{self, Entity as GtsTypeEntity},
     gts_type_allowed_membership::{self, Entity as AllowedMembershipEntity},
@@ -36,89 +38,17 @@ fn system_scope() -> AccessScope {
 pub struct TypeRepository;
 
 impl TypeRepository {
-    /// Load a full type by its `schema_id` (GTS type path), resolving all
-    /// junction table references from SMALLINT IDs to string paths.
-    pub async fn find_by_code(
-        db: &impl DBRunner,
-        code: &str,
-    ) -> Result<Option<ResourceGroupType>, DomainError> {
+    /// Resolve a GTS type path to its surrogate SMALLINT ID (static helper for filter resolution).
+    pub async fn resolve_id(db: &impl DBRunner, code: &str) -> Result<Option<i16>, DomainError> {
         let scope = system_scope();
-        let type_model = GtsTypeEntity::find()
+        let result = GtsTypeEntity::find()
             .filter(gts_type::Column::SchemaId.eq(code))
             .secure()
             .scope_with(&scope)
             .one(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
-
-        let Some(type_model) = type_model else {
-            return Ok(None);
-        };
-
-        Self::load_full_type(db, &type_model).await.map(Some)
-    }
-
-    /// Load a full type by its surrogate SMALLINT ID.
-    pub async fn load_full_type_by_id(
-        db: &impl DBRunner,
-        type_id: i16,
-    ) -> Result<ResourceGroupType, DomainError> {
-        let scope = system_scope();
-        let type_model = GtsTypeEntity::find()
-            .filter(gts_type::Column::Id.eq(type_id))
-            .secure()
-            .scope_with(&scope)
-            .one(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))?
-            .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
-
-        Self::load_full_type(db, &type_model).await
-    }
-
-    /// Load a full type from a model, resolving junction references.
-    pub async fn load_full_type(
-        db: &impl DBRunner,
-        type_model: &gts_type::Model,
-    ) -> Result<ResourceGroupType, DomainError> {
-        let allowed_parents = Self::load_allowed_parents(db, type_model.id).await?;
-        let allowed_memberships = Self::load_allowed_memberships(db, type_model.id).await?;
-
-        // Derive can_be_root from stored metadata_schema internal key.
-        // Per the placement invariant: can_be_root == true OR len(allowed_parents) >= 1.
-        // If no allowed_parents, can_be_root must be true.
-        let can_be_root = type_model
-            .metadata_schema
-            .as_ref()
-            .and_then(|ms| ms.get("__can_be_root"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(allowed_parents.is_empty());
-
-        // Extract the user-facing metadata_schema without internal keys
-        let metadata_schema = type_model.metadata_schema.as_ref().and_then(|ms| {
-            if let serde_json::Value::Object(map) = ms {
-                let filtered: serde_json::Map<String, serde_json::Value> = map
-                    .iter()
-                    .filter(|(k, _)| !k.starts_with("__"))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                if filtered.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::Value::Object(filtered))
-                }
-            } else {
-                Some(ms.clone())
-            }
-        });
-
-        Ok(ResourceGroupType {
-            code: type_model.schema_id.clone(),
-            can_be_root,
-            allowed_parents,
-            allowed_memberships,
-            metadata_schema,
-        })
+        Ok(result.map(|m| m.id))
     }
 
     /// Resolve allowed parent SMALLINT IDs to string paths.
@@ -186,22 +116,147 @@ impl TypeRepository {
         Ok(membership_types.into_iter().map(|m| m.schema_id).collect())
     }
 
-    /// Resolve a GTS type path to its surrogate SMALLINT ID.
-    pub async fn resolve_id(db: &impl DBRunner, code: &str) -> Result<Option<i16>, DomainError> {
+    /// Find the raw model by code.
+    async fn find_model_by_code(
+        db: &impl DBRunner,
+        code: &str,
+    ) -> Result<gts_type::Model, DomainError> {
         let scope = system_scope();
-        let result = GtsTypeEntity::find()
+        GtsTypeEntity::find()
+            .filter(gts_type::Column::SchemaId.eq(code))
+            .secure()
+            .scope_with(&scope)
+            .one(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?
+            .ok_or_else(|| DomainError::database("Insert succeeded but row not found"))
+    }
+
+    /// Build the stored `metadata_schema` JSON with internal `__can_be_root` key.
+    fn build_stored_schema(
+        can_be_root: bool,
+        metadata_schema: Option<&serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut map = match metadata_schema {
+            Some(serde_json::Value::Object(m)) => m.clone(),
+            Some(v) => {
+                let mut m = serde_json::Map::new();
+                m.insert("__user_schema".to_owned(), v.clone());
+                m
+            }
+            None => serde_json::Map::new(),
+        };
+        map.insert(
+            "__can_be_root".to_owned(),
+            serde_json::Value::Bool(can_be_root),
+        );
+        serde_json::Value::Object(map)
+    }
+}
+
+#[async_trait]
+impl TypeRepositoryTrait for TypeRepository {
+    /// Load a full type by its `schema_id` (GTS type path), resolving all
+    /// junction table references from SMALLINT IDs to string paths.
+    async fn find_by_code<C: DBRunner>(
+        &self,
+        db: &C,
+        code: &str,
+    ) -> Result<Option<ResourceGroupType>, DomainError> {
+        let scope = system_scope();
+        let type_model = GtsTypeEntity::find()
             .filter(gts_type::Column::SchemaId.eq(code))
             .secure()
             .scope_with(&scope)
             .one(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
-        Ok(result.map(|m| m.id))
+
+        let Some(type_model) = type_model else {
+            return Ok(None);
+        };
+
+        self.load_full_type(db, &type_model).await.map(Some)
+    }
+
+    /// Load a full type by its surrogate SMALLINT ID.
+    async fn load_full_type_by_id<C: DBRunner>(
+        &self,
+        db: &C,
+        type_id: i16,
+    ) -> Result<ResourceGroupType, DomainError> {
+        let scope = system_scope();
+        let type_model = GtsTypeEntity::find()
+            .filter(gts_type::Column::Id.eq(type_id))
+            .secure()
+            .scope_with(&scope)
+            .one(db)
+            .await
+            .map_err(|e| DomainError::database(e.to_string()))?
+            .ok_or_else(|| DomainError::database(format!("Type ID {type_id} not found")))?;
+
+        self.load_full_type(db, &type_model).await
+    }
+
+    /// Load a full type from a model, resolving junction references.
+    async fn load_full_type<C: DBRunner>(
+        &self,
+        db: &C,
+        type_model: &gts_type::Model,
+    ) -> Result<ResourceGroupType, DomainError> {
+        let allowed_parents = Self::load_allowed_parents(db, type_model.id).await?;
+        let allowed_memberships = Self::load_allowed_memberships(db, type_model.id).await?;
+
+        // Derive can_be_root from stored metadata_schema internal key.
+        // Per the placement invariant: can_be_root == true OR len(allowed_parents) >= 1.
+        // If no allowed_parents, can_be_root must be true.
+        let can_be_root = type_model
+            .metadata_schema
+            .as_ref()
+            .and_then(|ms| ms.get("__can_be_root"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(allowed_parents.is_empty());
+
+        // Extract the user-facing metadata_schema without internal keys
+        let metadata_schema = type_model.metadata_schema.as_ref().and_then(|ms| {
+            if let serde_json::Value::Object(map) = ms {
+                let filtered: serde_json::Map<String, serde_json::Value> = map
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with("__"))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if filtered.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::Value::Object(filtered))
+                }
+            } else {
+                Some(ms.clone())
+            }
+        });
+
+        Ok(ResourceGroupType {
+            code: type_model.schema_id.clone(),
+            can_be_root,
+            allowed_parents,
+            allowed_memberships,
+            metadata_schema,
+        })
+    }
+
+    /// Resolve a GTS type path to its surrogate SMALLINT ID.
+    async fn resolve_id<C: DBRunner>(
+        &self,
+        db: &C,
+        code: &str,
+    ) -> Result<Option<i16>, DomainError> {
+        Self::resolve_id(db, code).await
     }
 
     /// Insert a new GTS type. Returns the inserted model.
-    pub async fn insert(
-        db: &impl DBRunner,
+    async fn insert<C: DBRunner>(
+        &self,
+        db: &C,
         schema_id: &str,
         can_be_root: bool,
         metadata_schema: Option<&serde_json::Value>,
@@ -223,25 +278,10 @@ impl TypeRepository {
         Self::find_model_by_code(db, schema_id).await
     }
 
-    /// Find the raw model by code.
-    async fn find_model_by_code(
-        db: &impl DBRunner,
-        code: &str,
-    ) -> Result<gts_type::Model, DomainError> {
-        let scope = system_scope();
-        GtsTypeEntity::find()
-            .filter(gts_type::Column::SchemaId.eq(code))
-            .secure()
-            .scope_with(&scope)
-            .one(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))?
-            .ok_or_else(|| DomainError::database("Insert succeeded but row not found"))
-    }
-
     /// Insert allowed parent junction entries.
-    pub async fn insert_allowed_parents(
-        db: &impl DBRunner,
+    async fn insert_allowed_parents<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
         parent_ids: &[i16],
     ) -> Result<(), DomainError> {
@@ -259,8 +299,9 @@ impl TypeRepository {
     }
 
     /// Insert allowed membership junction entries.
-    pub async fn insert_allowed_memberships(
-        db: &impl DBRunner,
+    async fn insert_allowed_memberships<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
         membership_ids: &[i16],
     ) -> Result<(), DomainError> {
@@ -278,8 +319,9 @@ impl TypeRepository {
     }
 
     /// Delete all allowed parent junction entries for a type.
-    pub async fn delete_allowed_parents(
-        db: &impl DBRunner,
+    async fn delete_allowed_parents<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
     ) -> Result<(), DomainError> {
         let scope = system_scope();
@@ -294,8 +336,9 @@ impl TypeRepository {
     }
 
     /// Delete all allowed membership junction entries for a type.
-    pub async fn delete_allowed_memberships(
-        db: &impl DBRunner,
+    async fn delete_allowed_memberships<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
     ) -> Result<(), DomainError> {
         let scope = system_scope();
@@ -310,11 +353,9 @@ impl TypeRepository {
     }
 
     /// Update the `gts_type` row (`metadata_schema`, `updated_at`).
-    ///
-    /// Since `gts_type` uses SMALLINT identity PK (not UUID), we use
-    /// a scoped update via the update-many + condition approach.
-    pub async fn update_type(
-        db: &impl DBRunner,
+    async fn update_type<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
         code: &str,
         can_be_root: bool,
@@ -341,7 +382,7 @@ impl TypeRepository {
     }
 
     /// Delete a GTS type by its surrogate ID. CASCADE handles junction rows.
-    pub async fn delete_by_id(db: &impl DBRunner, type_id: i16) -> Result<(), DomainError> {
+    async fn delete_by_id<C: DBRunner>(&self, db: &C, type_id: i16) -> Result<(), DomainError> {
         let scope = system_scope();
         GtsTypeEntity::delete_many()
             .filter(gts_type::Column::Id.eq(type_id))
@@ -354,8 +395,9 @@ impl TypeRepository {
     }
 
     /// Count resource groups of a given type.
-    pub async fn count_groups_of_type(
-        db: &impl DBRunner,
+    async fn count_groups_of_type<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
     ) -> Result<u64, DomainError> {
         let scope = system_scope();
@@ -372,8 +414,9 @@ impl TypeRepository {
     /// Find resource groups that have a specific parent type and are of a given child type.
     ///
     /// Uses a batch lookup instead of N+1 individual parent queries.
-    pub async fn find_groups_using_parent_type(
-        db: &impl DBRunner,
+    async fn find_groups_using_parent_type<C: DBRunner>(
+        &self,
+        db: &C,
         child_type_id: i16,
         parent_type_id: i16,
     ) -> Result<Vec<(uuid::Uuid, String)>, DomainError> {
@@ -420,8 +463,9 @@ impl TypeRepository {
     }
 
     /// Find root groups (`parent_id` IS NULL) of a given type.
-    pub async fn find_root_groups_of_type(
-        db: &impl DBRunner,
+    async fn find_root_groups_of_type<C: DBRunner>(
+        &self,
+        db: &C,
         type_id: i16,
     ) -> Result<Vec<(uuid::Uuid, String)>, DomainError> {
         let scope = system_scope();
@@ -438,8 +482,9 @@ impl TypeRepository {
     }
 
     /// List GTS types with `OData` filtering and cursor-based pagination.
-    pub async fn list_types(
-        db: &impl DBRunner,
+    async fn list_types<C: DBRunner>(
+        &self,
+        db: &C,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupType>, DomainError> {
         let scope = system_scope();
@@ -459,7 +504,7 @@ impl TypeRepository {
         // Resolve full types (junction references) for each model in the page
         let mut types = Vec::with_capacity(page.items.len());
         for model in &page.items {
-            let rg_type = Self::load_full_type(db, model).await?;
+            let rg_type = self.load_full_type(db, model).await?;
             types.push(rg_type);
         }
 
@@ -470,8 +515,9 @@ impl TypeRepository {
     }
 
     /// Resolve multiple GTS type paths to their surrogate IDs.
-    pub async fn resolve_ids(
-        db: &impl DBRunner,
+    async fn resolve_ids<C: DBRunner>(
+        &self,
+        db: &C,
         codes: &[String],
     ) -> Result<Vec<i16>, DomainError> {
         if codes.is_empty() {
@@ -502,26 +548,5 @@ impl TypeRepository {
         }
 
         Ok(types.into_iter().map(|t| t.id).collect())
-    }
-
-    /// Build the stored `metadata_schema` JSON with internal `__can_be_root` key.
-    fn build_stored_schema(
-        can_be_root: bool,
-        metadata_schema: Option<&serde_json::Value>,
-    ) -> serde_json::Value {
-        let mut map = match metadata_schema {
-            Some(serde_json::Value::Object(m)) => m.clone(),
-            Some(v) => {
-                let mut m = serde_json::Map::new();
-                m.insert("__user_schema".to_owned(), v.clone());
-                m
-            }
-            None => serde_json::Map::new(),
-        };
-        map.insert(
-            "__can_be_root".to_owned(),
-            serde_json::Value::Bool(can_be_root),
-        );
-        serde_json::Value::Object(map)
     }
 }
