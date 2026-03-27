@@ -106,8 +106,12 @@ pub mod pep_properties {
 ///
 /// Used by the `SecureORM` condition builder to translate `InGroup`/`InGroupSubtree`
 /// scope filters into SQL subqueries without depending on entity types.
+///
+/// **Note:** These tables are canonical to the RG module's database.
+/// `resource_group_membership` is not projected to domain services.
+/// `InGroup`/`InGroupSubtree` predicates are only executable within the RG module.
 pub mod rg_tables {
-    /// Membership projection table.
+    /// Membership table (RG-internal, not projected to domain services).
     pub const MEMBERSHIP_TABLE: &str = "resource_group_membership";
     /// Column in membership table: the resource's external ID.
     pub const MEMBERSHIP_RESOURCE_ID: &str = "resource_id";

@@ -199,7 +199,7 @@ WHERE owner_tenant_id IN ('T1')
 ### What remains for production use
 
 - **RG-aware AuthZ plugin**: static-authz-plugin currently only returns tenant predicates. A real plugin needs to resolve user→group access from an external policy source and emit `InGroup`/`InGroupSubtree` predicates
-- **Domain entity integration**: consuming modules need `resource_group_membership` and `resource_group_closure` as projection tables in their DB for the subquery JOINs to resolve
+- **Domain entity integration**: consuming modules may project `resource_group_closure` for hierarchy queries. `resource_group_membership` is **not projected** to domain services (too large) — it stays in the RG module's database only. Domain services rely on PDP capability degradation: PDP resolves group memberships and returns explicit resource IDs via `in` predicates
 
 ---
 

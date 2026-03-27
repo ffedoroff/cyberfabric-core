@@ -2526,12 +2526,11 @@ First-party applications (UI) use `token_scopes: ["*"]`. Third-party integration
 
 When Projects / chat sharing is introduced (P2+), the authorization model extends naturally:
 
-1. Add `group_membership` capability (and optionally `group_hierarchy`).
-2. Maintain `resource_group_membership` projection table mapping chat IDs to project group IDs.
-3. The PDP returns additional access paths via OR'd constraints - e.g., one constraint for owned chats (`user_id` predicate), another for shared-via-project chats (`in_group` predicate).
-4. `supported_properties` remains unchanged (the `id` property is used for group membership joins).
+1. PDP resolves the user's project group memberships and returns explicit chat IDs via `in` predicate (capability degradation — `resource_group_membership` is not projected to domain services).
+2. The PDP returns additional access paths via OR'd constraints — e.g., one constraint for owned chats (`user_id` predicate), another for shared-via-project chats (`in` predicate with resolved chat IDs).
+3. `supported_properties` remains unchanged (the `id` property is used for the `in` predicate).
 
-No changes to the PEP flow or constraint compilation logic are needed. The PDP's response structure naturally handles multiple access paths through OR'd constraints.
+No changes to the PEP flow or constraint compilation logic are needed. The PDP's response structure naturally handles multiple access paths through OR'd constraints. Mini Chat does not need `resource_group_membership` locally — the PDP handles group resolution.
 
 ### 3.9 Turn Mutation Rules (P1)
 
