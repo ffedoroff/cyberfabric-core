@@ -1,7 +1,7 @@
 # @cpt-dod:cpt-cf-resource-group-dod-e2e-test-suite:p1
 """E2E integration seam tests for resource-group module (Feature 0007).
 
-10 tests. One file. < 15 seconds. Zero flakes.
+11 tests. One file. < 15 seconds. Zero flakes.
 
 Each test guards a specific integration seam -- a point where two independently
 correct components can break when connected. If the seam is already covered by
@@ -36,37 +36,70 @@ def _memberships(base: str) -> str:
 # ── S1: Route smoke ─────────────────────────────────────────────────────
 
 
-async def test_route_smoke_all_endpoints(rg_base_url, rg_headers):
+@pytest.mark.smoke
+async def test_route_smoke_all_endpoints(
+    rg_base_url, rg_headers, create_type, create_group,
+):
     """Seam: Route registration -- handlers mounted on correct method + path.
 
-    Verifies all endpoints respond (not 404/405), meaning routes are registered
-    and handlers are wired. No data setup needed -- fastest possible test.
+    Verifies every endpoint/method combination responds (not 404/405), meaning
+    routes are registered and handlers are wired. Endpoints already exercised
+    by S2-S10 are not repeated here; this test covers only the gaps.
     """
     rid = str(uuid.uuid4())
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as c:
         h = rg_headers
 
-        # GET endpoints -- must not be 404/405
-        r = await c.get(_groups(rg_base_url), headers=h)
-        assert r.status_code not in (404, 405), f"GET /groups: {r.status_code}"
+        # --- Endpoints NOT covered by other seam tests ---
 
-        r = await c.get(f"{_groups(rg_base_url)}/{rid}", headers=h)
-        assert r.status_code != 405, f"GET /groups/{{id}}: {r.status_code}"
+        # PATCH /groups/{id} -- not exercised by any other test
+        r = await c.patch(
+            f"{_groups(rg_base_url)}/{rid}", headers=h, json={"name": "x"},
+        )
+        assert r.status_code != 405, f"PATCH /groups/{{id}}: {r.status_code}"
 
-        r = await c.get(f"{_groups(rg_base_url)}/{rid}/hierarchy", headers=h)
-        assert r.status_code != 405, f"GET /groups/{{id}}/hierarchy: {r.status_code}"
+        # GET /types -- list types, not exercised elsewhere
+        r = await c.get(_types(rg_base_url), headers=h)
+        assert r.status_code not in (404, 405), f"GET /types: {r.status_code}"
 
-        r = await c.get(_memberships(rg_base_url), headers=h)
-        assert r.status_code not in (404, 405), f"GET /memberships: {r.status_code}"
+        # GET /types/{code} -- get single type, not exercised elsewhere
+        type_data = await create_type("s1route")
+        type_code = type_data["code"]
+        r = await c.get(f"{_types(rg_base_url)}/{type_code}", headers=h)
+        assert r.status_code not in (404, 405), f"GET /types/{{code}}: {r.status_code}"
 
-        # POST with empty body -- 400 is fine (validation), 404/405 is not
-        r = await c.post(_types(rg_base_url), headers=h, content=b"{}")
-        assert r.status_code not in (404, 405), f"POST /types: {r.status_code}"
+        # PUT /types/{code} -- update type, not exercised elsewhere
+        r = await c.put(
+            f"{_types(rg_base_url)}/{type_code}", headers=h,
+            json={"code": type_code, "can_be_root": True},
+        )
+        assert r.status_code not in (404, 405), f"PUT /types/{{code}}: {r.status_code}"
+
+        # DELETE /types/{code} -- delete type, not exercised elsewhere
+        del_type = await create_type("s1del")
+        r = await c.delete(f"{_types(rg_base_url)}/{del_type['code']}", headers=h)
+        assert r.status_code not in (404, 405), f"DELETE /types/{{code}}: {r.status_code}"
+
+        # DELETE /memberships/{group_id}/{type}/{id} -- not exercised elsewhere
+        member_type = await create_type("s1mem", allowed_memberships=[])
+        org_type = await create_type("s1org", allowed_memberships=[member_type["code"]])
+        group = await create_group(org_type["code"], "S1 Route")
+        r = await c.post(
+            f"{_memberships(rg_base_url)}/{group['id']}/{member_type['code']}/res-s1",
+            headers=h,
+        )
+        assert r.status_code == 201, f"POST membership setup: {r.status_code}"
+        r = await c.delete(
+            f"{_memberships(rg_base_url)}/{group['id']}/{member_type['code']}/res-s1",
+            headers=h,
+        )
+        assert r.status_code not in (404, 405), f"DELETE /memberships/...: {r.status_code}"
 
 
 # ── S2: DTO roundtrip ───────────────────────────────────────────────────
 
 
+@pytest.mark.smoke
 async def test_dto_roundtrip_group_json_shape(
     rg_base_url, rg_headers, create_type, create_group,
 ):
@@ -90,19 +123,25 @@ async def test_dto_roundtrip_group_json_shape(
     # Structural validation
     assert_group_shape(data)
 
-    # Exact key set (no internal field leaks)
-    expected_keys = {"id", "type", "name", "hierarchy"}
-    # metadata present because we set it
+    # Exact top-level key set (no internal field leaks)
+    allowed_top_keys = {"id", "type", "name", "hierarchy", "metadata"}
+    assert set(data.keys()) <= allowed_top_keys, (
+        f"Unexpected top-level keys: {set(data.keys()) - allowed_top_keys}"
+    )
     assert "metadata" in data
     assert data["metadata"] == {"barrier": True}
 
-    # "type" key (NOT "type_path", NOT "gts_type_id")
+    # "type" key (NOT legacy "type_path" or "gts_type_id")
     assert "type" in data
     assert "type_path" not in data
     assert "gts_type_id" not in data
 
-    # Hierarchy sub-object
+    # Hierarchy sub-object -- exact key set
     hier = data["hierarchy"]
+    allowed_hier_keys = {"tenant_id", "parent_id"}
+    assert set(hier.keys()) <= allowed_hier_keys, (
+        f"Unexpected hierarchy keys: {set(hier.keys()) - allowed_hier_keys}"
+    )
     assert "tenant_id" in hier
     # Root group: parent_id absent or null
     assert hier.get("parent_id") is None
@@ -115,6 +154,7 @@ async def test_dto_roundtrip_group_json_shape(
 # ── S3: AuthZ tenant filter ─────────────────────────────────────────────
 
 
+@pytest.mark.smoke
 async def test_authz_tenant_filter_applied(
     rg_base_url, rg_headers, create_type, create_group,
 ):
@@ -123,16 +163,20 @@ async def test_authz_tenant_filter_applied(
     Unit tests mock PolicyEnforcer; real wiring only exists in module.rs.
     """
     type_data = await create_type("s3authz")
-    group = await create_group(type_data["code"], "S3 AuthZ Test")
+    type_code = type_data["code"]
+    group = await create_group(type_code, "S3 AuthZ Test")
     group_id = group["id"]
     tenant_id = group["hierarchy"]["tenant_id"]
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as c:
-        # List -- created group must appear
-        r = await c.get(_groups(rg_base_url), headers=rg_headers)
+        # List filtered by unique type -- created group must appear
+        r = await c.get(
+            _groups(rg_base_url), headers=rg_headers,
+            params={"$filter": f"type eq '{type_code}'"},
+        )
         assert r.status_code == 200
         ids = [item["id"] for item in r.json()["items"]]
-        assert group_id in ids, "Created group not found in list"
+        assert group_id in ids, "Created group not found in filtered list"
 
         # GET -- tenant_id must match
         r = await c.get(
@@ -151,16 +195,15 @@ async def test_cross_tenant_invisible(
     """Seam: Same as S3 but negative -- tenant boundary enforced.
 
     Uses two real HTTP tokens producing different SecurityContexts.
-    Skip if E2E_AUTH_TOKEN_TENANT_B not set.
+    Defaults to e2e-token-tenant-b (configured in config/e2e-local.yaml).
     """
-    token_b = os.getenv("E2E_AUTH_TOKEN_TENANT_B")
-    if not token_b:
-        pytest.skip("E2E_AUTH_TOKEN_TENANT_B not set")
+    token_b = os.getenv("E2E_AUTH_TOKEN_TENANT_B", "e2e-token-tenant-b")
 
     headers_b = {**rg_headers, "Authorization": f"Bearer {token_b}"}
 
     type_data = await create_type("s4xtenant")
-    group = await create_group(type_data["code"], "S4 Cross-Tenant")
+    type_code = type_data["code"]
+    group = await create_group(type_code, "S4 Cross-Tenant")
     group_id = group["id"]
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as c:
@@ -172,8 +215,11 @@ async def test_cross_tenant_invisible(
             f"Cross-tenant GET should be 404, got {r.status_code}"
         )
 
-        # Token B: list -> group not in items
-        r = await c.get(_groups(rg_base_url), headers=headers_b)
+        # Token B: list filtered by type -- group not in items
+        r = await c.get(
+            _groups(rg_base_url), headers=headers_b,
+            params={"$filter": f"type eq '{type_code}'"},
+        )
         assert r.status_code == 200
         ids = [item["id"] for item in r.json()["items"]]
         assert group_id not in ids, "Group visible to other tenant"
@@ -188,6 +234,7 @@ async def test_cross_tenant_invisible(
 # ── S5: Hierarchy + closure (PG) ────────────────────────────────────────
 
 
+@pytest.mark.smoke
 async def test_hierarchy_closure_postgresql(
     rg_base_url, rg_headers, create_type, create_group,
 ):
@@ -306,6 +353,7 @@ async def test_move_closure_rebuild_postgresql(
 # ── S7: Force delete cascade (PG) ───────────────────────────────────────
 
 
+@pytest.mark.smoke
 async def test_force_delete_cascade_postgresql(
     rg_base_url, rg_headers, create_type, create_group,
 ):
@@ -367,16 +415,18 @@ async def test_force_delete_cascade_postgresql(
 # ── S8: Error response format ───────────────────────────────────────────
 
 
+@pytest.mark.smoke
 async def test_error_response_rfc9457(rg_base_url, rg_headers):
     """Seam: Error middleware -- DomainError -> application/problem+json.
 
     Unit tests assert DomainError variant, not HTTP headers. If the error handler
     is missing, clients get generic framework errors instead of RFC 9457.
+    One 404 path is enough to confirm the middleware is wired. Duplicate/409
+    is left to Rust REST tests.
     """
     rid = str(uuid.uuid4())
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as c:
-        # 404 -- not found
         r = await c.get(
             f"{_groups(rg_base_url)}/{rid}", headers=rg_headers,
         )
@@ -392,17 +442,6 @@ async def test_error_response_rfc9457(rg_base_url, rg_headers):
         # No internal leaks
         assert "stack" not in body
         assert "trace" not in body
-
-        # 409 -- duplicate type
-        type_code = unique_type_code("s8dup")
-        payload = {"code": type_code, "can_be_root": True}
-        r = await c.post(_types(rg_base_url), headers=rg_headers, json=payload)
-        assert r.status_code == 201
-
-        r = await c.post(_types(rg_base_url), headers=rg_headers, json=payload)
-        assert r.status_code == 409
-        body = r.json()
-        assert body.get("status") == 409
 
 
 # ── S9: Cursor pagination ───────────────────────────────────────────────
@@ -461,6 +500,7 @@ async def test_pagination_cursor_roundtrip(
 # ── S10: Membership filter wiring ───────────────────────────────────────
 
 
+@pytest.mark.smoke
 async def test_membership_filter_wiring(
     rg_base_url, rg_headers, create_type, create_group,
 ):
@@ -511,3 +551,49 @@ async def test_membership_filter_wiring(
         items = r.json()["items"]
         assert all(m["group_id"] == group_b["id"] for m in items)
         assert any(m["resource_id"] == "res-2" for m in items)
+
+
+# ── S11: Hierarchy depth filter wiring ─────────────────────────────────
+
+
+async def test_hierarchy_depth_filter_wiring(
+    rg_base_url, rg_headers, create_type, create_group,
+):
+    """Seam: OData hierarchy/depth filter -> SQL shaping -> response subset.
+
+    The full chain -- HTTP query string -> OData parser -> hierarchy filter
+    extraction -> SQL WHERE -> correct depth subset -- is never tested E2E.
+    """
+    root_type = await create_type("s11root")
+    child_type = await create_type(
+        "s11child", can_be_root=False, allowed_parents=[root_type["code"]],
+    )
+    gc_type = await create_type(
+        "s11gc", can_be_root=False, allowed_parents=[child_type["code"]],
+    )
+
+    root = await create_group(root_type["code"], "S11 Root")
+    child = await create_group(child_type["code"], "S11 Child", parent_id=root["id"])
+    grandchild = await create_group(gc_type["code"], "S11 GC", parent_id=child["id"])
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as c:
+        # Hierarchy from child with depth >= 0 filter (self + descendants only)
+        r = await c.get(
+            f"{_groups(rg_base_url)}/{child['id']}/hierarchy",
+            headers=rg_headers,
+            params={"$filter": "hierarchy/depth ge 0"},
+        )
+        assert r.status_code == 200
+        items = r.json()["items"]
+        by_id = {item["id"]: item for item in items}
+
+        # Root (ancestor, depth=-1) must be excluded by the filter
+        assert root["id"] not in by_id, "Ancestor should be excluded by depth >= 0"
+
+        # Child (self, depth=0) must be present
+        assert child["id"] in by_id, "Self node missing"
+        assert by_id[child["id"]]["hierarchy"]["depth"] == 0
+
+        # Grandchild (descendant, depth=1) must be present
+        assert grandchild["id"] in by_id, "Descendant missing"
+        assert by_id[grandchild["id"]]["hierarchy"]["depth"] == 1

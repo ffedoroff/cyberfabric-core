@@ -67,7 +67,7 @@ impl From<ClaimsError> for crate::errors::AuthError {
                 crate::errors::AuthError::AudienceMismatch { expected, actual }
             }
             ClaimsError::JwksFetchFailed(msg) => crate::errors::AuthError::JwksFetchFailed(msg),
-            other => crate::errors::AuthError::ValidationFailed(other.to_string()),
+            other => crate::errors::AuthError::ValidationFailed(format!("{other}")),
         }
     }
 }

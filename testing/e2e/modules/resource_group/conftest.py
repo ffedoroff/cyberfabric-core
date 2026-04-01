@@ -20,11 +20,11 @@ def rg_base_url():
 @pytest.fixture
 def rg_headers():
     """Standard headers with auth token for resource-group requests."""
-    headers = {"Content-Type": "application/json"}
-    token = os.getenv("E2E_AUTH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+    token = os.getenv("E2E_AUTH_TOKEN", "e2e-token-tenant-a")
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
 
 
 # ── Reachability check ───────────────────────────────────────────────────
@@ -37,7 +37,7 @@ def _check_rg_reachable():
         resp = httpx.get(
             f"{url}/resource-group/v1/groups",
             timeout=5.0,
-            headers={"Authorization": "Bearer test"},
+            headers={"Authorization": "Bearer e2e-token-tenant-a"},
         )
         # Any response (even 401/403) means the service is up.
     except httpx.ConnectError:

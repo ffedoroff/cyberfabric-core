@@ -310,12 +310,17 @@ impl PolicyEnforcer {
         action: &str,
         resource_id: Option<Uuid>,
     ) -> Result<AccessScope, EnforcerError> {
+        // Explicitly pass subject_tenant_id as the context tenant for the AuthZ
+        // evaluation request. Without this, tenant_context.root_id is None and the
+        // AuthZ plugin falls back to subject.properties["tenant_id"] — which yields
+        // the same value for a single caller but breaks cross-tenant isolation when
+        // two callers with different subject_tenant_id share the same PDP pipeline.
         self.access_scope_with(
             ctx,
             resource,
             action,
             resource_id,
-            &AccessRequest::default(),
+            &AccessRequest::new().context_tenant_id(ctx.subject_tenant_id()),
         )
         .await
     }
@@ -529,16 +534,19 @@ mod tests {
     // ── access_scope ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn access_scope_no_explicit_tenant_returns_compile_error() {
+    async fn access_scope_uses_subject_tenant_as_context() {
         let e = enforcer(AllowAllMock);
         let ctx = test_ctx();
-        // No explicit context_tenant_id → mock returns empty constraints
-        // → require_constraints=true → CompileFailed
-        let result = e
+        // access_scope() automatically uses subject_tenant_id as context_tenant_id
+        let scope = e
             .access_scope(&ctx, &TEST_RESOURCE, "get", Some(uuid(RESOURCE)))
-            .await;
+            .await
+            .expect("should succeed — subject tenant is used as context tenant");
 
-        assert!(matches!(result, Err(EnforcerError::CompileFailed(_))));
+        assert_eq!(
+            scope.all_uuid_values_for(pep_properties::OWNER_TENANT_ID),
+            &[uuid(TENANT)]
+        );
     }
 
     #[tokio::test]
@@ -626,13 +634,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn access_scope_anonymous_no_tenant_returns_compile_error() {
+    async fn access_scope_anonymous_uses_nil_tenant() {
         let e = enforcer(AllowAllMock);
         let ctx = SecurityContext::anonymous();
-        // No explicit tenant context → mock returns empty constraints → CompileFailed
-        let result = e.access_scope(&ctx, &TEST_RESOURCE, "list", None).await;
+        // anonymous() has nil UUID as subject_tenant_id → access_scope() passes it
+        // as context_tenant_id → mock returns constraint with nil UUID
+        let scope = e
+            .access_scope(&ctx, &TEST_RESOURCE, "list", None)
+            .await
+            .expect("should succeed — nil tenant produces a constraint from mock");
 
-        assert!(matches!(result, Err(EnforcerError::CompileFailed(_))));
+        assert_eq!(
+            scope.all_uuid_values_for(pep_properties::OWNER_TENANT_ID),
+            &[Uuid::default()]
+        );
     }
 
     // ── builder methods ──────────────────────────────────────────────

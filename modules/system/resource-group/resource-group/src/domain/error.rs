@@ -178,27 +178,31 @@ impl From<DomainError> for ResourceGroupError {
 
 impl From<sea_orm::DbErr> for DomainError {
     fn from(e: sea_orm::DbErr) -> Self {
-        DomainError::database(e.to_string())
+        DomainError::database(format!("{e}"))
     }
 }
 
 impl From<modkit_db::DbError> for DomainError {
     fn from(e: modkit_db::DbError) -> Self {
-        DomainError::database(e.to_string())
+        DomainError::database(format!("{e}"))
     }
 }
 
 impl From<EnforcerError> for DomainError {
     fn from(e: EnforcerError) -> Self {
         match e {
-            EnforcerError::Denied { .. } => DomainError::AccessDenied {
-                message: e.to_string(),
+            EnforcerError::Denied { deny_reason } => DomainError::AccessDenied {
+                message: deny_reason.map_or_else(
+                    || "access denied by PDP".to_owned(),
+                    |reason| format!("access denied by PDP: {reason:?}"),
+                ),
             },
-            EnforcerError::EvaluationFailed(_) | EnforcerError::CompileFailed(_) => {
-                DomainError::AccessDenied {
-                    message: e.to_string(),
-                }
-            }
+            EnforcerError::EvaluationFailed(err) => DomainError::AccessDenied {
+                message: format!("authorization evaluation failed: {err}"),
+            },
+            EnforcerError::CompileFailed(err) => DomainError::AccessDenied {
+                message: format!("constraint compilation failed: {err}"),
+            },
         }
     }
 }

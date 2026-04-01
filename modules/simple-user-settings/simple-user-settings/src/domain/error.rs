@@ -42,9 +42,18 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
     fn from(e: authz_resolver_sdk::EnforcerError) -> Self {
         tracing::error!(error = %e, "AuthZ scope resolution failed");
         match e {
-            authz_resolver_sdk::EnforcerError::Denied { .. }
-            | authz_resolver_sdk::EnforcerError::CompileFailed(_) => Self::Forbidden(e.to_string()),
-            authz_resolver_sdk::EnforcerError::EvaluationFailed(_) => Self::Internal(e.to_string()),
+            authz_resolver_sdk::EnforcerError::Denied { deny_reason } => {
+                Self::Forbidden(deny_reason.map_or_else(
+                    || "access denied by PDP".to_owned(),
+                    |reason| format!("access denied by PDP: {reason:?}"),
+                ))
+            }
+            authz_resolver_sdk::EnforcerError::CompileFailed(err) => {
+                Self::Forbidden(format!("constraint compilation failed: {err}"))
+            }
+            authz_resolver_sdk::EnforcerError::EvaluationFailed(err) => {
+                Self::Internal(format!("authorization evaluation failed: {err}"))
+            }
         }
     }
 }

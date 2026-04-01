@@ -150,7 +150,7 @@ impl From<ServiceGatewayError> for LlmProviderError {
             ServiceGatewayError::UpstreamDisabled { .. } => LlmProviderError::ProviderUnavailable,
 
             other => {
-                let raw = other.to_string();
+                let raw = format!("{other}");
                 let sanitized = sanitize_provider_message(&raw);
                 LlmProviderError::ProviderError {
                     code: "gateway_error".to_owned(),
