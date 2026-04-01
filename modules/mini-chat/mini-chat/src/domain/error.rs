@@ -150,7 +150,7 @@ impl DomainError {
 impl From<Box<dyn std::error::Error>> for DomainError {
     fn from(value: Box<dyn std::error::Error>) -> Self {
         tracing::debug!(error = %value, "Converting boxed error to DomainError");
-        DomainError::internal(value.to_string())
+        DomainError::internal(format!("{value}"))
     }
 }
 
@@ -161,7 +161,7 @@ pub fn db_err(e: impl std::fmt::Display) -> DomainError {
 
 impl From<DbError> for DomainError {
     fn from(e: DbError) -> Self {
-        DomainError::database(e.to_string())
+        DomainError::database(format!("{e}"))
     }
 }
 
@@ -200,7 +200,7 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             }
             authz_resolver_sdk::EnforcerError::EvaluationFailed(ref err) => {
                 tracing::error!(error = %err, "AuthZ evaluation failed (internal error)");
-                Self::internal(err.to_string())
+                Self::internal(format!("{err}"))
             }
         }
     }

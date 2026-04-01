@@ -196,7 +196,7 @@ impl From<DomainError> for Problem {
         let inst = error_instance(&err).to_string();
         let status = http_status_code(&err);
         let t = error_title(&err).to_string();
-        let detail = err.to_string();
+        let detail = format!("{err}");
 
         Problem::new(status, t, detail)
             .with_type(gts)

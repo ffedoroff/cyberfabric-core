@@ -33,19 +33,19 @@ pub enum DomainError {
 
 impl From<types_registry_sdk::TypesRegistryError> for DomainError {
     fn from(e: types_registry_sdk::TypesRegistryError) -> Self {
-        Self::Internal(e.to_string())
+        Self::Internal(format!("{e}"))
     }
 }
 
 impl From<modkit::client_hub::ClientHubError> for DomainError {
     fn from(e: modkit::client_hub::ClientHubError) -> Self {
-        Self::Internal(e.to_string())
+        Self::Internal(format!("{e}"))
     }
 }
 
 impl From<serde_json::Error> for DomainError {
     fn from(e: serde_json::Error) -> Self {
-        Self::Internal(e.to_string())
+        Self::Internal(format!("{e}"))
     }
 }
 

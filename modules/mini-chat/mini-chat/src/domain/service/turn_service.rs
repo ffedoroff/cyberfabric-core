@@ -86,7 +86,7 @@ impl From<EnforcerError> for MutationError {
             EnforcerError::EvaluationFailed(ref err) => {
                 tracing::error!(error = %err, "AuthZ evaluation failed (internal error)");
                 Self::Internal {
-                    message: err.to_string(),
+                    message: format!("{err}"),
                 }
             }
         }
