@@ -1184,6 +1184,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "de1101_tests_in_separate_files"
+version = "0.1.0"
+dependencies = [
+ "clippy_utils",
+ "dylint_linting",
+ "dylint_testing",
+ "lint_utils",
+]
+
+[[package]]
 name = "de1301_no_print_macros"
 version = "0.1.0"
 dependencies = [
@@ -1192,6 +1202,17 @@ dependencies = [
  "dylint_testing",
  "lint_utils",
  "tokio",
+]
+
+[[package]]
+name = "de1302_error_from_to_string"
+version = "0.1.0"
+dependencies = [
+ "clippy_utils",
+ "dylint_linting",
+ "dylint_testing",
+ "lint_utils",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
