@@ -578,19 +578,19 @@ impl std::error::Error for CanonicalError {}
 
 impl From<std::io::Error> for CanonicalError {
     fn from(err: std::io::Error) -> Self {
-        Self::__internal(Internal::new(err.to_string()))
+        Self::__internal(Internal::new(format!("{err}")))
     }
 }
 
 impl From<serde_json::Error> for CanonicalError {
     fn from(err: serde_json::Error) -> Self {
-        Self::__internal(Internal::new(err.to_string())).with_detail("Malformed JSON request body")
+        Self::__internal(Internal::new(format!("{err}"))).with_detail("Malformed JSON request body")
     }
 }
 
 #[cfg(feature = "sea-orm")]
 impl From<sea_orm::DbErr> for CanonicalError {
     fn from(err: sea_orm::DbErr) -> Self {
-        Self::__internal(Internal::new(err.to_string()))
+        Self::__internal(Internal::new(format!("{err}")))
     }
 }

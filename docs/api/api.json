@@ -8293,6 +8293,11 @@
             "type": "string",
             "description": "Optional machine-readable error code defined by the application."
           },
+          "context": {
+            "type": "object",
+            "description": "Optional structured context (e.g. `resource_type`, `resource_name`).",
+            "additionalProperties": true
+          },
           "detail": {
             "type": "string",
             "description": "A human-readable explanation specific to this occurrence of the problem."

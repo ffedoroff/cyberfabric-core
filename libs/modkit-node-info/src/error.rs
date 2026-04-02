@@ -16,6 +16,6 @@ pub enum NodeInfoError {
 
 impl From<anyhow::Error> for NodeInfoError {
     fn from(e: anyhow::Error) -> Self {
-        Self::Internal(e.to_string())
+        Self::Internal(format!("{e}"))
     }
 }

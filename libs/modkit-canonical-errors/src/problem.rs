@@ -127,7 +127,7 @@ impl From<CanonicalError> for Problem {
                 detail: err.detail().to_owned(),
                 instance: None,
                 trace_id: None,
-                context: serde_json::Value::String(ser_err.to_string()),
+                context: serde_json::Value::String(format!("{ser_err}")),
             },
         }
     }

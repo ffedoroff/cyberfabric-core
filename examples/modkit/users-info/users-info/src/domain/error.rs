@@ -132,13 +132,13 @@ impl From<Box<dyn std::error::Error>> for DomainError {
 
 impl From<DbError> for DomainError {
     fn from(e: DbError) -> Self {
-        DomainError::database(e.to_string())
+        DomainError::database(format!("{e}"))
     }
 }
 
 impl From<ScopeError> for DomainError {
     fn from(e: ScopeError) -> Self {
-        DomainError::database(e.to_string())
+        DomainError::database(format!("{e}"))
     }
 }
 
