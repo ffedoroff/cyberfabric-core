@@ -142,7 +142,9 @@ pub struct RemoveMembershipRequest {
 pub struct PageInfo {
     pub next_cursor: Option<String>,
     pub prev_cursor: Option<String>,
-    pub limit: i32,
+    pub limit: u64,
+    pub has_next_page: bool,
+    pub has_previous_page: bool,
 }
 
 /// Generic paginated response. Matches REST `*Page` schemas.
@@ -176,6 +178,7 @@ pub trait ResourceGroupClient: Send + Sync {
     async fn get_group(&self, ctx: &SecurityContext, group_id: Uuid) -> Result<ResourceGroup, ResourceGroupError>;
     async fn list_groups(&self, ctx: &SecurityContext, query: ListQuery) -> Result<Page<ResourceGroup>, ResourceGroupError>;
     async fn update_group(&self, ctx: &SecurityContext, group_id: Uuid, request: UpdateGroupRequest) -> Result<ResourceGroup, ResourceGroupError>;
+    async fn patch_group(&self, ctx: &SecurityContext, group_id: Uuid, request: PatchGroupRequest) -> Result<ResourceGroup, ResourceGroupError>;
     async fn delete_group(&self, ctx: &SecurityContext, group_id: Uuid, force: bool) -> Result<(), ResourceGroupError>;
 
     // ── Hierarchy ───────────────────────────────────────────────────
@@ -275,6 +278,6 @@ let group = rg
 
 | Trait | Methods | Consumers | ClientHub key |
 |-------|---------|-----------|---------------|
-| `ResourceGroupClient` | 14 (full CRUD: types, groups, memberships, hierarchy) | Domain services, Apps, Admins | `dyn ResourceGroupClient` |
+| `ResourceGroupClient` | 15 (full CRUD: types, groups, memberships, hierarchy) | Domain services, Apps, Admins | `dyn ResourceGroupClient` |
 | `ResourceGroupReadHierarchy` | 1 (`list_group_depth`) | AuthZ plugin | `dyn ResourceGroupReadHierarchy` |
 | `ResourceGroupReadPluginClient` | 1 + inherited (`list_memberships` + `list_group_depth`) | Vendor-specific plugin gateway | Scoped plugin resolution |

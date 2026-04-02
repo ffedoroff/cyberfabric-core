@@ -12,7 +12,7 @@ Updated:  2026-03-06 by Constructor Tech
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Option 1: Immutable tree with parent_message_id](#option-1-immutable-tree-with-parentmessageid)
+  - [Option 1: Immutable tree with parent_message_id](#option-1-immutable-tree-with-parent_message_id)
   - [Option 2: Mutable linked list](#option-2-mutable-linked-list)
   - [Option 3: Graph structure with edge table](#option-3-graph-structure-with-edge-table)
 - [Related Design Elements](#related-design-elements)

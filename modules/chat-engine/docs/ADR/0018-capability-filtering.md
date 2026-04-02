@@ -12,7 +12,7 @@ Updated:  2026-03-06 by Constructor Tech
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Option 1: enabled_capabilities array per message](#option-1-enabledcapabilities-array-per-message)
+  - [Option 1: enabled_capabilities array per message](#option-1-enabled_capabilities-array-per-message)
   - [Option 2: Session-level toggle](#option-2-session-level-toggle)
   - [Option 3: Implicit capabilities](#option-3-implicit-capabilities)
 - [Related Design Elements](#related-design-elements)

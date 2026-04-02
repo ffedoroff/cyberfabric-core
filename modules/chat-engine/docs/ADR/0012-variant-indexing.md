@@ -12,7 +12,7 @@ Updated:  2026-03-06 by Constructor Tech
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Option 1: 0-based variant_index](#option-1-0-based-variantindex)
+  - [Option 1: 0-based variant_index](#option-1-0-based-variant_index)
   - [Option 2: UUID-based ordering](#option-2-uuid-based-ordering)
   - [Option 3: Timestamp-based ordering](#option-3-timestamp-based-ordering)
 - [Related Design Elements](#related-design-elements)

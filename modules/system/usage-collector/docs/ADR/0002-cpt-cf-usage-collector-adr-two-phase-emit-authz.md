@@ -20,7 +20,7 @@ scope: usage-collector-sdk ScopedUsageCollectorClientV1 API; all platform module
   - [PDP call synchronously at `emit()` time (inside or adjacent to DB transaction)](#pdp-call-synchronously-at-emit-time-inside-or-adjacent-to-db-transaction)
   - [Authorization deferred to gateway at delivery time (dispatcher → gateway)](#authorization-deferred-to-gateway-at-delivery-time-dispatcher--gateway)
   - [Pre-loaded static SDK policy (config-based metric allowlist, no PDP)](#pre-loaded-static-sdk-policy-config-based-metric-allowlist-no-pdp)
-  - [Two-phase PDP: `authorize_emit()` before transaction + in-memory constraint evaluation at `emit()`](#two-phase-pdp-authorizeemit-before-transaction--in-memory-constraint-evaluation-at-emit)
+  - [Two-phase PDP: `authorize_emit()` before transaction + in-memory constraint evaluation at `emit()`](#two-phase-pdp-authorize_emit-before-transaction--in-memory-constraint-evaluation-at-emit)
 - [More Information](#more-information)
   - [TOCTOU Window Analysis](#toctou-window-analysis)
   - [Performance Budget](#performance-budget)

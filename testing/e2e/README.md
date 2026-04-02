@@ -85,6 +85,9 @@ The `scripts/ci.py` Python script accepts the following options:
 
 ## Writing Tests
 
+For philosophy, patterns, anti-flaking practices, and assert guidelines see the unified guide:
+[`docs/modkit_unified_system/13_e2e_testing.md`](../../docs/modkit_unified_system/13_e2e_testing.md)
+
 Tests are written using pytest and httpx. See `modules/file_parser/test_file_parser_info.py` for an example.
 
 Key fixtures available:
