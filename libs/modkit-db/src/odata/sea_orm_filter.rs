@@ -154,6 +154,14 @@ where
             let column = M::map_field(*field);
             build_binary_condition(column, *op, value)
         }
+        FilterNode::InList { field, values } => {
+            let column = M::map_field(*field);
+            let sea_values: Vec<sea_orm::Value> = values
+                .iter()
+                .map(odata_value_to_sea_value)
+                .collect::<Result<_, _>>()?;
+            Ok(Condition::all().add(Expr::col(column).is_in(sea_values)))
+        }
         FilterNode::Composite { op, children } => {
             // Combine child conditions with AND or OR
             let base = match op {
@@ -218,8 +226,8 @@ where
             let s = extract_string(value)?;
             Expr::col(column).like(format!("%{}", escape_like(&s)))
         }
-        FilterOp::And | FilterOp::Or => {
-            return Err(format!("Logical operator {op:?} in binary context"));
+        FilterOp::In | FilterOp::And | FilterOp::Or => {
+            return Err(format!("Operator {op:?} not valid in binary context"));
         }
     };
 
@@ -581,12 +589,17 @@ where
 
     let items = rows.into_iter().map(model_to_domain).collect();
 
+    let has_next_page = next_cursor.is_some();
+    let has_previous_page = prev_cursor.is_some();
+
     Ok(Page {
         items,
         page_info: PageInfo {
             next_cursor,
             prev_cursor,
             limit,
+            has_next_page,
+            has_previous_page,
         },
     })
 }
