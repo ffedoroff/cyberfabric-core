@@ -58,6 +58,7 @@ pub enum FilterOp {
     Ge,
     Lt,
     Le,
+    In,
     Contains,
     StartsWith,
     EndsWith,
@@ -74,6 +75,7 @@ impl fmt::Display for FilterOp {
             FilterOp::Ge => write!(f, "ge"),
             FilterOp::Lt => write!(f, "lt"),
             FilterOp::Le => write!(f, "le"),
+            FilterOp::In => write!(f, "in"),
             FilterOp::Contains => write!(f, "contains"),
             FilterOp::StartsWith => write!(f, "startswith"),
             FilterOp::EndsWith => write!(f, "endswith"),
@@ -89,6 +91,10 @@ pub enum FilterNode<F: FilterField> {
         field: F,
         op: FilterOp,
         value: ODataValue,
+    },
+    InList {
+        field: F,
+        values: Vec<ODataValue>,
     },
     Composite {
         op: FilterOp,
@@ -306,9 +312,42 @@ pub fn convert_expr_to_filter_node<F: FilterField>(
             }
         }
 
-        E::In(_left, _list) => Err(FilterError::UnsupportedOperation(
-            "IN operator not yet supported in typed filters".to_owned(),
-        )),
+        E::In(left, list) => {
+            let field_name = match &**left {
+                E::Identifier(name) => name.as_str(),
+                _ => {
+                    return Err(FilterError::InvalidExpression(
+                        "IN operator requires a field identifier on the left side".to_owned(),
+                    ));
+                }
+            };
+
+            let field = F::from_name(field_name)
+                .ok_or_else(|| FilterError::UnknownField(field_name.to_owned()))?;
+
+            let mut values = Vec::with_capacity(list.len());
+            for item in list {
+                match item {
+                    E::Value(val) => {
+                        validate_value_type(field, val)?;
+                        values.push(val.clone());
+                    }
+                    _ => {
+                        return Err(FilterError::InvalidExpression(
+                            "IN operator values must be literals".to_owned(),
+                        ));
+                    }
+                }
+            }
+
+            if values.is_empty() {
+                return Err(FilterError::InvalidExpression(
+                    "IN operator requires at least one value".to_owned(),
+                ));
+            }
+
+            Ok(FilterNode::InList { field, values })
+        }
 
         E::Identifier(name) => Err(FilterError::BareIdentifier(name.clone())),
         E::Value(_) => Err(FilterError::BareLiteral),
