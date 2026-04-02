@@ -22,10 +22,8 @@ def auth_headers():
     Returns:
         dict: Headers dict with Authorization header if token is set, empty dict otherwise.
     """
-    token = os.getenv("E2E_AUTH_TOKEN")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
-    return {}
+    token = os.getenv("E2E_AUTH_TOKEN", "e2e-token-tenant-a")
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture

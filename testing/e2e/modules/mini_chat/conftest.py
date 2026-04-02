@@ -462,6 +462,16 @@ def mock_provider(test_env):
     return test_env.sidecars.get("mock-provider")
 
 
+@pytest.fixture(autouse=True)
+def reset_mock_provider_state(mock_provider):
+    """Prevent session-scoped mock sidecar state from leaking between tests."""
+    mock_provider.clear_captured_requests()
+    mock_provider.clear_override_scenarios()
+    yield
+    mock_provider.clear_captured_requests()
+    mock_provider.clear_override_scenarios()
+
+
 @pytest.fixture
 def chat(server) -> dict:
     """Create a fresh chat with the default model (azure-gpt-4.1)."""
