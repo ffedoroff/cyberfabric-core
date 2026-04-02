@@ -541,7 +541,7 @@ mod tests {
         let scope = e
             .access_scope(&ctx, &TEST_RESOURCE, "get", Some(uuid(RESOURCE)))
             .await
-            .expect("should succeed — subject tenant is used as context tenant");
+            .expect("should succeed \u{2014} subject tenant is used as context tenant");
 
         assert_eq!(
             scope.all_uuid_values_for(pep_properties::OWNER_TENANT_ID),
@@ -642,7 +642,7 @@ mod tests {
         let scope = e
             .access_scope(&ctx, &TEST_RESOURCE, "list", None)
             .await
-            .expect("should succeed — nil tenant produces a constraint from mock");
+            .expect("should succeed \u{2014} nil tenant produces a constraint from mock");
 
         assert_eq!(
             scope.all_uuid_values_for(pep_properties::OWNER_TENANT_ID),
