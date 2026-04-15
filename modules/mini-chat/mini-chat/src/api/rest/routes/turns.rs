@@ -5,6 +5,8 @@ use modkit::api::operation_builder::OperationBuilder;
 use super::AiChatLicense;
 use crate::api::rest::handlers;
 
+const API_TAG: &str = "Mini Chat Turns";
+
 pub(super) fn register_turn_routes(
     mut router: Router,
     openapi: &dyn OpenApiRegistry,
@@ -14,7 +16,7 @@ pub(super) fn register_turn_routes(
     router = OperationBuilder::get(format!("{prefix}/v1/chats/{{id}}/turns/{{request_id}}"))
         .operation_id("mini_chat.get_turn")
         .summary("Get a turn by request ID")
-        .tag("turns")
+        .tag(API_TAG)
         .authenticated()
         .require_license_features([&AiChatLicense])
         .path_param("id", "Chat UUID")
@@ -24,17 +26,19 @@ pub(super) fn register_turn_routes(
         .standard_errors(openapi)
         .register(router, openapi);
 
-    // TODO: DESIGN.md specifies Google-style custom method `{request_id}:retry`, but Axum's
-    // matchit router doesn't support mixed param+literal segments. Consider adding a
-    // rewrite middleware in api-gateway to map `:verb` → `/verb` so clients can use the
-    // colon syntax externally while Axum routes via `/retry` internally.
     // POST {prefix}/v1/chats/{id}/turns/{request_id}/retry
+    //
+    // TODO: DESIGN.md specifies Google-style `{request_id}:retry` (AIP-136), but
+    // axum 0.8 pins matchit =0.8.4 which cannot split `{param}:suffix` in one
+    // segment. Using `/retry` as a sub-resource until axum bumps matchit ≥0.8.6
+    // which adds suffix support.
+    // Tracking: https://github.com/tokio-rs/axum/issues/3140
     router = OperationBuilder::post(format!(
         "{prefix}/v1/chats/{{id}}/turns/{{request_id}}/retry"
     ))
     .operation_id("mini_chat.retry_turn")
     .summary("Retry a failed turn")
-    .tag("turns")
+    .tag(API_TAG)
     .authenticated()
     .require_license_features([&AiChatLicense])
     .path_param("id", "Chat UUID")
@@ -48,7 +52,7 @@ pub(super) fn register_turn_routes(
     router = OperationBuilder::patch(format!("{prefix}/v1/chats/{{id}}/turns/{{request_id}}"))
         .operation_id("mini_chat.edit_turn")
         .summary("Edit a turn (user message)")
-        .tag("turns")
+        .tag(API_TAG)
         .authenticated()
         .require_license_features([&AiChatLicense])
         .path_param("id", "Chat UUID")
@@ -62,7 +66,7 @@ pub(super) fn register_turn_routes(
     router = OperationBuilder::delete(format!("{prefix}/v1/chats/{{id}}/turns/{{request_id}}"))
         .operation_id("mini_chat.delete_turn")
         .summary("Delete a turn")
-        .tag("turns")
+        .tag(API_TAG)
         .authenticated()
         .require_license_features([&AiChatLicense])
         .path_param("id", "Chat UUID")

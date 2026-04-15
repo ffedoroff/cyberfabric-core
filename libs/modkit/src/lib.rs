@@ -94,7 +94,10 @@ pub use client_hub::ClientHub;
 pub use registry::ModuleRegistry;
 
 // Re-export the macros from the proc-macro crate
-pub use modkit_macros::{lifecycle, module};
+pub use modkit_macros::{ExpandVars, lifecycle, module};
+
+// Re-export var_expand module so derive-generated impls resolve via ::modkit::var_expand
+pub use modkit_utils::var_expand;
 
 // Core module contracts and traits
 pub mod contracts;
@@ -152,8 +155,8 @@ pub use backends::{
 pub use lifecycle::{Lifecycle, Runnable, Status, StopReason, WithLifecycle};
 pub use plugins::GtsPluginSelector;
 pub use runtime::{
-    DbOptions, Endpoint, ModuleInstance, ModuleManager, OopModuleSpawnConfig, OopSpawnOptions,
-    RunOptions, ShutdownOptions, run,
+    DEFAULT_SHUTDOWN_DEADLINE, DbOptions, Endpoint, ModuleInstance, ModuleManager,
+    OopModuleSpawnConfig, OopSpawnOptions, RunOptions, ShutdownOptions, run,
 };
 
 #[cfg(feature = "bootstrap")]

@@ -42,10 +42,10 @@ impl Default for StaticAuthNPlugin {
 impl Module for StaticAuthNPlugin {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         // Load configuration
-        let cfg: StaticAuthNPluginConfig = ctx.config()?;
+        let cfg: StaticAuthNPluginConfig = ctx.config_or_default()?;
         if matches!(cfg.mode, crate::config::AuthNMode::AcceptAll) {
             tracing::warn!(
-                "Static AuthN plugin is running in `accept_all` mode \u{2014} \
+                "Static AuthN plugin is running in `accept_all` mode - \
                  all bearer tokens will be accepted with a hardcoded identity. \
                  Do NOT use this mode in production."
             );

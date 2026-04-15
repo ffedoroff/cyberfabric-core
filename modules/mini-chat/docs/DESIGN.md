@@ -23,7 +23,7 @@ Long conversations are managed via thread summaries - a Level 1 compression stra
 | `cpt-cf-mini-chat-fr-file-upload` | `p1` | Upload via OAGW -> Files API (OpenAI: `POST /v1/files`; Azure OpenAI: `POST /openai/files`); metadata persisted via infra/storage repositories; file added to the chat's vector store. P1 uses `purpose="assistants"` for both providers (OpenAI also supports `purpose="user_data"`, but we use `assistants` to keep parity and because the files are used with Vector Stores / File Search). |
 | `cpt-cf-mini-chat-fr-image-upload` | `p1` | Image upload via OAGW -> Files API; metadata persisted via infra/storage repositories; NOT added to vector store. Images referenced as multimodal input (file ID) in Responses API calls. Model capability checked before outbound call; defensive `unsupported_media` error if model lacks image support (unreachable under P1 catalog invariant where all models include `VISION_INPUT`). |
 | `cpt-cf-mini-chat-fr-file-search` | `p1` | File Search tool call scoped to the chat's dedicated vector store (identical `file_search` tool on both OpenAI and Azure OpenAI Responses API) |
-| `cpt-cf-mini-chat-fr-web-search` | `p1` | Web Search tool included in Responses API request when explicitly enabled via `web_search.enabled` parameter; provider decides invocation; per-message and per-day call limits enforced; global `disable_web_search` kill switch |
+| `cpt-cf-mini-chat-fr-web-search` | `p1` | Web Search tool included in Responses API request when explicitly enabled via `web_search.enabled` parameter; provider decides invocation; per-turn and per-day call limits enforced; global `disable_web_search` kill switch |
 | `cpt-cf-mini-chat-fr-doc-summary` | `p1` | See **File Upload** sequence ("Generate doc summary" background variant) and `attachments.doc_summary` schema field. `doc_summary` is server-generated asynchronously; never provided by the client. Status polled via `GET /v1/chats/{id}/attachments/{attachment_id}`. |
 | `cpt-cf-mini-chat-fr-thread-summary` | `p1` | Periodic LLM-driven summarization of old messages; summary replaces history in context |
 | `cpt-cf-mini-chat-fr-chat-crud` | `p1` | REST endpoints for create/list/get/update title/delete chats. Get returns metadata + message_count (no embedded messages). |
@@ -37,7 +37,7 @@ Long conversations are managed via thread summaries - a Level 1 compression stra
 | `cpt-cf-mini-chat-fr-ux-recovery` | `p1` | See **Streaming Contract** (Idempotency + reconnect rule) and **Turn Status API** |
 | `cpt-cf-mini-chat-fr-turn-mutations` | `p1` | Retry / edit / delete last turn via Turn Mutation API; see **Turn Mutation Rules (P1)** and turn mutation endpoints |
 | `cpt-cf-mini-chat-fr-model-selection` | `p1` | User selects model per chat at creation; model locked for conversation lifetime; see constraint `cpt-cf-mini-chat-constraint-model-locked-per-chat` and Model Catalog Configuration |
-| `cpt-cf-mini-chat-fr-models-api` | `p1` | Public read-only Models API (`GET /v1/models`, `GET /v1/models/{model_id}`). Returns only models visible to the authenticated user (globally enabled AND user-enabled). Per-user model enable/disable via `user_model_prefs`. Catalog sourced from `minichat-policy-plugin`. See Models API (section 3.3). |
+| `cpt-cf-mini-chat-fr-models-api` | `p1` | Public read-only Models API (`GET /v1/models`, `GET /v1/models/{model_id}`). Returns only models visible to the authenticated user (globally enabled). Catalog sourced from `mini-chat-model-policy-plugin`. See Models API (section 3.3). |
 | `cpt-cf-mini-chat-fr-message-reactions` | `p1` | Binary like/dislike on assistant messages; see `message_reactions` table |
 | `cpt-cf-mini-chat-fr-group-chats` | `p2+` | Deferred — see `cpt-cf-mini-chat-adr-group-chat-usage-attribution` |
 
@@ -218,7 +218,7 @@ Where:
 - `effective_model_context_window` — from model catalog entry for the resolved effective_model (see `context_window` field)
 - `reserved_output_tokens` — `max_output_tokens` configured for the request (persisted as `chat_turns.max_output_tokens_applied`)
 
-When context exceeds the budget, the system truncates in reverse priority: retrieval excerpts first, then document summaries, then old messages (not summary). Thread summary and system prompt are never truncated.
+When context exceeds the budget, the system truncates in reverse priority: retrieval excerpts first, then document summaries, then old messages, then thread summary (droppable). System prompt and current user message are never truncated.
 
 The budget MUST be computed after `resolve_effective_model()` (i.e., after quota downgrade), because a downgraded model may have a smaller context window than the selected_model.
 
@@ -276,6 +276,8 @@ Global emergency flags / kill switches (P1): operators MUST have a way to immedi
 - `force_standard_tier` — if enabled, all requests MUST use the standard-tier model regardless of quota state or user selection.
 - `disable_file_search` — if enabled, `file_search` tool calls MUST be skipped; responses proceed without retrieval.
 - `disable_web_search` — if enabled, requests with `web_search.enabled=true` MUST be rejected with HTTP 400 and error code `web_search_disabled` before opening an SSE stream. The system MUST NOT silently ignore the parameter.
+- `disable_code_interpreter` — if enabled, two-phase enforcement applies: (1) **Upload phase**: attachments where `code_interpreter` would be the sole purpose (e.g. XLSX) are rejected with a validation error (422); attachments with additional purposes (e.g. file_search) have `for_code_interpreter` filtered out and proceed. (2) **Stream phase**: the `code_interpreter` tool is silently omitted from the Responses API request — the turn proceeds without code_interpreter capability. Unlike `disable_web_search`, the stream is NOT rejected with HTTP 400; the tool is simply excluded.
+- `disable_images` — if enabled, image uploads and image attachments MUST be rejected; requests containing image content MUST be rejected with HTTP 400 and error code `images_disabled` before opening an SSE stream.
 
 Ownership: these flags are owned and operated by platform configuration (P1: deployment config). Long-term, they are expected to be owned by Settings Service / License Manager with privileged operator access.
 
@@ -289,23 +291,24 @@ Hard caps: token budgets (`max_input_tokens`, `max_output_tokens`) MUST remain c
 
 **Core Entities**:
 
-| Entity | Description |
-|--------|-------------|
-| Chat | A conversation belonging to a user within a tenant. Has title, **selected_model** (locked at creation from catalog; immutable), `message_count`, creation/update timestamps. Detail response returns metadata + message_count only; messages are loaded separately via `GET /v1/chats/{id}/messages`. Temporary flag reserved for P2. |
-| Message | A single turn in a chat (role: user/assistant/system). Stores content, token estimate, compression status. Always includes a required `attachment_ids` field — an always-present array of associated attachment UUIDs (empty array when none). Always includes a required `request_id` (UUID) — within a normal turn, user and assistant messages share the same value (turn correlation key); system/background messages use an independently server-generated UUID v4. Assistant messages record the **effective_model** (the model actually used after quota/policy evaluation). |
-| Attachment | File uploaded to a chat (document or image). Identified by internal `attachment_id` (UUID). Stores `provider_file_id` internally (never exposed via API). Documents are linked to the chat's vector store; images are not. Has processing status and `attachment_kind` (`document|image`). For image attachments, an optional `img_thumbnail` (server-generated preview, `image/webp`, fit inside configured WxH preserving aspect ratio; max decoded size 128 KiB by default, configurable via `thumbnail_max_bytes`) is produced on upload and stored in Mini Chat database only (never uploaded to provider); null for documents and when thumbnail generation is unavailable or failed. `doc_summary` is always null for images. |
-| ThreadSummary | Compressed representation of older messages in a chat. Replaces old history in the context window. |
-| ChatVectorStore | Mapping from `(tenant_id, chat_id)` to provider `vector_store_id` (OpenAI or Azure OpenAI Vector Stores API). One vector store per chat (created on first document upload). Physical and logical isolation are both per chat (see File Search Retrieval Scope). |
-| AuditEvent | Structured event emitted to platform `audit_service`: prompt, response, user/tenant, timestamps, policy decisions, usage. Not stored locally. |
-| QuotaUsage | Per-user usage counters for rate limiting and budget enforcement. Tracks daily and monthly periods per tier in credits. Credits are computed from provider-reported token usage using the model credit multipliers in the policy snapshot. Premium models have stricter limits; standard-tier models have separate, higher limits. |
-| MessageReaction | A binary like or dislike reaction on an assistant message. One reaction per user per message. Stored for analytics and feedback collection. |
-| ContextPlan | Transient object assembled per request: system prompt, summary, doc summaries, recent messages, user message, retrieval excerpts. |
+| Entity | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Chat | A conversation belonging to a user within a tenant. Has title, **selected_model** (locked at creation from catalog; immutable), `message_count`, creation/update timestamps. Detail response returns metadata + message_count only; messages are loaded separately via `GET /v1/chats/{id}/messages`. Temporary flag reserved for P2.                                                                                                                                                                                                                                               |
+| Message | A single turn in a chat (role: user/assistant/system). Stores content, token estimate, compression status. Always includes a required `attachments` field — an always-present array of `AttachmentSummary` objects (empty array when none), derived from the `message_attachments` join table (not stored on the `messages` row). Each `AttachmentSummary` contains `attachment_id`, `kind`, `filename`, `status`, and `img_thumbnail` (for images). Always includes a required `request_id` (UUID) — within a normal turn, user and assistant messages share the same value (turn correlation key); system/background messages use an independently server-generated UUID v4. Assistant messages record the **effective_model** (the model actually used after quota/policy evaluation). Includes a nullable `my_reaction` field (`"like"`, `"dislike"`, or `null`) representing the requesting user's reaction on the message. |
+| Attachment | File uploaded to a chat (document or image). Identified by internal `attachment_id` (UUID). Stores `provider_file_id` internally (never exposed via API). Documents are linked to the chat's vector store; images are not. Has processing status and `attachment_kind (document|image)`. For image attachments, an optional `img_thumbnail` (server-generated preview, `image/webp`, fit inside configured WxH preserving aspect ratio; max decoded size 128 KiB by default, configurable via `thumbnail_max_bytes`) is produced on upload and stored in Mini Chat database only (never uploaded to provider); null for documents and when thumbnail generation is unavailable or failed. `doc_summary` is always null for images. |
+| ThreadSummary | Compressed representation of older messages in a chat. Replaces old history in the context window.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ChatVectorStore | Mapping from `(tenant_id, chat_id)` to provider `vector_store_id` (OpenAI or Azure OpenAI Vector Stores API). One vector store per chat (created on first document upload). Physical and logical isolation are both per chat (see File Search Retrieval Scope).                                                                                                                                                                                                                                                                                                                 |
+| AuditEvent | Structured event emitted to platform `audit_service`: prompt, response, user/tenant, timestamps, policy decisions, usage. Not stored locally.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| QuotaUsage | Per-user usage counters for rate limiting and budget enforcement. Tracks daily and monthly periods per tier in credits. Credits are computed from provider-reported token usage using the model credit multipliers in the policy snapshot. Premium models have stricter limits; standard-tier models have separate, higher limits.                                                                                                                                                                                                                                                  |
+| MessageReaction | A binary like or dislike reaction on an assistant message. One reaction per user per message. Stored for analytics and feedback collection.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ContextPlan | Transient object assembled per request: system prompt, summary, doc summaries, recent messages, user message, retrieval excerpts. Retrieval always operates over the entire chat vector store (see File Search Retrieval Scope). |
 
 **Relationships**:
 - Chat -> Message: 1..\*
 - Chat -> Attachment: 0..\*
 - Chat -> ThreadSummary: 0..1
-- Attachment -> ChatVectorStore: belongs to (via chat_id)
+- Message -> Attachment: 0..\* (M:N via `message_attachments` join table; user messages reference attachments from `attachment_ids`)
+- Attachment -> ChatVectorStore: belongs to (via chat_id; documents only — images are not indexed)
 - Message -> AuditEvent: 1..1 (each turn emits an audit event to platform `audit_service`)
 - Message -> MessageReaction: 0..1 (per user)
 
@@ -343,11 +346,11 @@ graph TB
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-component-chat-service`
 
-- **mini-chat module** — A ModKit module (`#[modkit::module(name = "mini-chat", deps = ["authz-resolver"], capabilities = [db, rest])]`). The domain service layer is the core orchestrator and Policy Enforcement Point (PEP): receives user messages, evaluates authorization via AuthZ Resolver (PolicyEnforcer → AccessScope), builds context plan, invokes LLM via `llm_provider`, relays streaming tokens, persists messages and usage via infra/storage repositories, triggers thread summary updates.
+- **mini-chat module** — A ModKit module (`#[modkit::module(name = "mini-chat", deps = ["authz-resolver"], capabilities = [db, rest])]`). The domain service layer is the core orchestrator and Policy Enforcement Point (PEP): receives user messages, evaluates authorization via AuthZ Resolver (PolicyEnforcer → AccessScope), builds context plan, invokes LLM via `llm_provider`, relays streaming tokens, persists messages and usage via infra/storage repositories, and evaluates the thread summary trigger during request processing using the assembled context/token estimate. When the trigger fires, thread-summary outbox work is transactionally enqueued in the transaction that durably persists or finalizes the causing turn; chat-deletion cleanup outbox work is transactionally enqueued in the transaction that durably applies chat soft-delete.
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-component-chat-store`
 
-- **infra/storage** — SeaORM persistence layer with `#[derive(Scopable)]` entities, ORM repositories, and migrations. All queries are scoped via `AccessScope` (compiled from PolicyEnforcer decisions). Source of truth for chats, messages, attachments, thread summaries, chat vector store mappings, and quota usage.
+- **infra/storage** — SeaORM persistence layer with `#[derive(Scopable)]` entities, ORM repositories, and migrations. All queries are scoped via `AccessScope` (compiled from PolicyEnforcer decisions). Source of truth for chats, messages, attachments, thread summaries, chat vector store mappings, cleanup outcome state, and quota usage. The shared outbox table is infrastructure-owned and is used as the durable execution substrate for Mini-Chat asynchronous work.
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-component-llm-provider`
 
@@ -359,9 +362,9 @@ graph TB
 
   **Tier availability rule**: a tier is considered **available** only if it has remaining quota in **ALL** configured periods for that tier. If **ANY** period is exhausted, the tier is treated as exhausted and the downgrade cascade continues to the next tier. When all tiers are exhausted, the system rejects with `quota_exceeded`.
 
-  - **Phase 1 - Preflight (reserve) estimate** (on request start, before any streaming begins and before outbound call): estimate token usage from `ContextPlan` size + `max_output_tokens` (persisted as `max_output_tokens_applied`), convert to reserved credits using model multipliers (section 5.4.1), and reserve credits for quota enforcement. Decision: allow at requested tier / downgrade to next tier / reject if all tiers exhausted.
+  - **Phase 1 - Preflight (reserve) estimate** (on request start, before any streaming begins and before outbound call): estimate token usage from current message size + `prior_context_tokens` (actual `input_tokens + output_tokens` from the last completed turn, representing the conversation history that will be re-sent) + `max_output_tokens` (persisted as `max_output_tokens_applied`), convert to reserved credits using model multipliers (section 5.4.1), and reserve credits for quota enforcement. Decision: allow at requested tier / downgrade to next tier / reject if all tiers exhausted.
     - Reserve MUST prevent parallel requests from overspending remaining tier quota.
-    - Reserve SHOULD be keyed by `(tenant_id, user_id, period_type, period_start, bucket)` and reconciled on terminal outcome. Reserves MUST be checked across all configured period types (`daily`, `monthly`) and all required buckets for the current tier; if any period or bucket is exhausted, the tier is considered exhausted and the cascade proceeds to the next tier.
+    - Reserve MUST be keyed by `(tenant_id, user_id, period_type, period_start, bucket)` and reconciled on terminal outcome. Reserves MUST be checked across all configured period types (`daily`, `monthly`) and all required buckets for the current tier; if any period or bucket is exhausted, the tier is considered exhausted and the cascade proceeds to the next tier.
   - **Phase 2 - Commit actual** (on `event: done`): reconcile the reserve to actual provider usage (`response.usage.input_tokens` + `response.usage.output_tokens`), compute actual credits via model multipliers, and commit actual credits to `quota_usage`. If actual exceeds estimate (overshoot), the completed response is never retroactively cancelled, but guardrails apply:
     - Commit MUST be atomic per `(tenant_id, user_id, period_type, period_start, bucket)` row (avoid race conditions under parallel streams)
     - If the remaining quota for a tier is below a configured negative threshold, preflight MUST downgrade new requests to the next tier in the cascade. The negative threshold is a configurable absolute credit value defined in quota configuration.
@@ -370,7 +373,7 @@ graph TB
 
 Preflight failures MUST be returned as normal JSON HTTP errors and MUST NOT open an SSE stream.
 
-Cancel/disconnect rule: if a stream ends without a terminal `done`/`error` event, `quota_service` MUST commit a bounded best-effort debit (default: the reserved estimate) so cancellations cannot evade quotas. The quota settlement and the corresponding `modkit_outbox_events` row MUST be written in the same DB transaction (see section 5.7 turn finalization contract).
+Cancel/disconnect rule: if a stream ends without a terminal `done`/`error` event, `quota_service` MUST commit a bounded best-effort debit (default: the reserved estimate) so cancellations cannot evade quotas. The quota settlement and the corresponding Mini-Chat outbox message enqueue MUST happen in the same DB transaction (see section 5.7 turn finalization contract).
 
 Reserve is an internal accounting concept (it may be implemented as held/pending fields or a row-level marker), but the observable external semantics MUST match the rules above.
 
@@ -385,9 +388,19 @@ All period boundaries use UTC. Per-tenant timezone configuration (`quota_timezon
 
 **Quota period boundary invariant (normative)**: All settlement operations (reserve release and commit) MUST target the same `(period_type, period_start)` bucket rows as the original reserve. The `period_start` values are computed at preflight time and MUST NOT be recomputed at settlement time using the current clock. Implementations MUST persist the preflight `period_start` values alongside the reserve (e.g., in the `chat_turns` row or in context passed to the settlement path) and use those persisted values for all subsequent settlement operations. This ensures that in-flight reserves straddling period boundaries (e.g., a turn started at 23:59:59 UTC and completed at 00:00:01 UTC) are settled against the correct day-1 bucket rows rather than incorrectly targeting day-2 — which would cause `reserved_credits_micro` in day-1 to remain permanently inflated while day-2 is double-reserved.
 
-#### Quota Warning Thresholds (P2+)
+#### Quota Warning Thresholds (P1)
 
-Quota warning thresholds (`warning_threshold_pct`, `quota_warnings` array in the SSE `done` event) are deferred to P2+. P1 does not emit quota warning notifications in the SSE stream.
+The SSE `done` event carries a `quota_warnings` array with per-tier, per-period remaining percentage, warning flag, and exhausted flag. A REST endpoint `GET /v1/quota/status` provides the same data plus credit breakdowns and next-reset timestamps for at-rest queries.
+
+**Configuration:** `warning_threshold_pct` (integer, default 80, range 1-99). Warning fires when `remaining_percentage <= (100 - warning_threshold_pct)`. Exhausted fires when `remaining_percentage == 0`.
+
+#### Quota Status Endpoint (P1)
+
+`GET /v1/quota/status` returns per-tier, per-period quota breakdown for the authenticated user. No query parameters — returns all tiers and periods.
+
+Response includes: `tier` (premium/total), `period` (daily/monthly), `limit_credits_micro`, `used_credits_micro` (spent + reserved, conservative), `remaining_credits_micro`, `remaining_percentage` (0-100), `next_reset` (RFC 3339 — midnight UTC tomorrow for daily, midnight UTC 1st of next month for monthly), `warning` (boolean), `exhausted` (boolean), and `warning_threshold_pct` (config value).
+
+Authorization: authenticated + licensed. Scoped to tenant + user. Billing outcomes and settlement details are NOT exposed — only remaining quota data.
 
 Background tasks (thread summary update, document summary generation) MUST run with `requester_type=system` and MUST NOT be charged to an arbitrary end user. Usage for these tasks is charged to a tenant operational bucket (implementation-defined) and still emitted to `audit_service`.
 
@@ -398,8 +411,8 @@ Background/system tasks MUST NOT create `chat_turns` records. `chat_turns` idemp
 System tasks (thread summary update, document summary generation) MUST be isolated from user-turn billing and idempotency paths:
 
 1. System tasks MUST NOT participate in `chat_turns` idempotency and finalization CAS. They MUST NOT write to the `chat_turns` table and MUST NOT use `chat_turns.state` transitions.
-2. System tasks MUST NOT debit user quota tables (`quota_usage` rows keyed by `(tenant_id, user_id)`). They are not subject to per-user quota enforcement.
-3. System tasks MUST emit `modkit_outbox_events` usage events with `requester_type=system` (or equivalent field in the payload) so CyberChatManager can attribute cost to the tenant operational bucket, not to an individual user.
+2. System tasks MUST NOT debit user quota tables (`quota_usage` rows keyed by `(user_id)`). They are not subject to per-user quota enforcement.
+3. System tasks MUST enqueue Mini-Chat usage messages through the shared `modkit_db::outbox` subsystem. The serialized usage payload MUST carry `requester_type=system` (or equivalent field in the payload) so CyberChatManager can attribute cost to the tenant operational bucket, not to an individual user.
 4. System tasks MUST follow the same provider-id sanitization rules as user turns (no provider identifiers in outbox payloads or audit events).
 5. System tasks MUST still obey global cost controls (tenant-level token budgets, kill switches) as defined in PRD section 5.6.
 
@@ -430,8 +443,9 @@ System tasks (thread summary update, document summary generation) MUST be isolat
    - MUST be a server-generated UUID v4 (unique per system task invocation)
    - NOT derived from any user request_id
    - Rationale: System tasks are idempotent on their own identity, not correlated with user turns
+   - For durable outbox-driven system work, this stable `system_request_id` MUST be persisted in the serialized outbox payload at enqueue time and reused unchanged across every later retry, replay, dead-letter handoff, and terminal emission for that same durable outbox message.
 
-6. **Outbox `dedupe_key` format for system tasks:**
+6. **Serialized usage-event `dedupe_key` format for system tasks:**
 
    Since system tasks do NOT create `chat_turns` rows, the dedupe_key format is:
 
@@ -453,34 +467,33 @@ System tasks (thread summary update, document summary generation) MUST be isolat
    ```
 
    **Idempotency:** If a system task is retried (e.g., after failure), it MUST use the same `system_request_id` to prevent duplicate outbox events.
+   The same stable `system_request_id` MUST also be propagated as the system task `request_id` in audit events so that outbox and audit records share one durable idempotency/correlation key for that task invocation.
 
 **Quota enforcement:**
 
-- System tasks MUST NOT debit `quota_usage` rows keyed by `(tenant_id, user_id)`
+- System tasks MUST NOT debit `quota_usage` rows keyed by `(user_id)`
 - System tasks MAY debit a tenant-level operational quota bucket (implementation-defined, P2+)
 - P1: System tasks do not participate in per-user quota enforcement but DO emit usage events for tenant billing
 
 **Outbox payload schema for system tasks:**
 
+System-task usage messages are enqueued to the dedicated Mini-Chat usage outbox queue via `modkit_db::outbox`. The exact queue name is implementation-defined in P1. `payload_type` MUST identify the Mini-Chat usage schema/version and remain stable for all producers and consumers of that queue.
+
 ```json
 {
-  "namespace": "mini-chat",
-  "topic": "usage_snapshot",
-  "tenant_id": "<tenant_uuid>",
+  "event_type": "usage_snapshot",
   "dedupe_key": "{tenant_id}/{system_task_type}/{system_request_id}",
-  "payload": {
-    "tenant_id": "<tenant_uuid>",
-    "user_id": null,
-    "requester_type": "system",
-    "system_task_type": "thread_summary_update",
-    "chat_id": "<chat_uuid>",
-    "request_id": "<system_request_uuid>",
-    "usage": { "input_tokens": 5000, "output_tokens": 200 },
-    "actual_credits_micro": 125000,
-    "effective_model": "claude-opus-4",
-    "outcome": "completed",
-    "settlement_method": "actual"
-  }
+  "tenant_id": "<tenant_uuid>",
+  "user_id": null,
+  "requester_type": "system",
+  "system_task_type": "thread_summary_update",
+  "chat_id": "<chat_uuid>",
+  "request_id": "<system_request_uuid>",
+  "usage": { "input_tokens": 5000, "output_tokens": 200, "cache_read_input_tokens": 4000, "cache_write_input_tokens": 0, "reasoning_tokens": 0 },
+  "actual_credits_micro": 125000,
+  "effective_model": "claude-opus-4",
+  "outcome": "completed",
+  "settlement_method": "actual"
 }
 ```
 
@@ -491,8 +504,10 @@ System tasks do NOT create:
 - `messages` rows (unless the summary is persisted separately, P2+)
 
 System tasks DO create:
-- `modkit_outbox_events` rows (for billing attribution)
+- serialized outbox messages enqueued through `modkit_db::outbox` (for billing attribution)
 - Metrics/audit events (for observability)
+
+For automatic thread summary work, the serialized thread-summary outbox payload is the authoritative persisted carrier of that stable system-task identity. `system_request_id` is generated exactly once when the durable outbox message is inserted and MUST be reused unchanged by every later retry or replay of that same message rather than regenerated per handler attempt.
 
 **Implementation guard:** Any code that assumes all LLM invocations have a corresponding `chat_turns` row is incorrect and will fail for system tasks.
 
@@ -502,7 +517,7 @@ System tasks DO create:
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-component-orphan-watchdog`
 
-- **orphan_watchdog** — P1 mandatory. Periodic background job that detects and cleans up turns abandoned by crashed pods. Transitions orphaned `running` turns to `failed` after a configurable timeout (default: 5 min), commits bounded quota debit, and emits a `modkit_outbox_events` row. MUST use leader election to ensure exactly one active watchdog instance per environment. See section "Turn Lifecycle, Crash Recovery and Orphan Handling" for full specification.
+- **orphan_watchdog** — P1 mandatory. Periodic background job that detects and cleans up turns abandoned by crashed pods. Transitions stale `running` turns to `failed` after a configurable timeout (default: 5 min) measured from durable `last_progress_at`, commits bounded quota debit, and enqueues the corresponding Mini-Chat usage message through `modkit_db::outbox`. MUST use leader election to ensure exactly one active watchdog instance per environment. See section "Turn Lifecycle, Crash Recovery and Orphan Handling" for full specification.
 
 ### 3.3 API Contracts
 
@@ -525,8 +540,9 @@ Covers public API from PRD: `cpt-cf-mini-chat-interface-public-api`
 | `POST` | `/v1/chats/{id}/messages:stream` | Send message, receive SSE stream | stable |
 | `POST` | `/v1/chats/{id}/attachments` | Upload file attachment | stable |
 | `GET` | `/v1/chats/{id}/attachments/{attachment_id}` | Get attachment status and metadata (polling) | stable |
+| `DELETE` | `/v1/chats/{id}/attachments/{attachment_id}` | Delete attachment from chat and retrieval corpus | stable |
 | `GET` | `/v1/chats/{id}/turns/{request_id}` | Get authoritative turn status (read-only) | stable |
-| `POST` | `/v1/chats/{id}/turns/{request_id}:retry` | Retry last turn (new generation) | stable |
+| `POST` | `/v1/chats/{id}/turns/{request_id}/retry` | Retry last turn (new generation) | stable |
 | `PATCH` | `/v1/chats/{id}/turns/{request_id}` | Edit last turn (replace content + regenerate) | stable |
 | `DELETE` | `/v1/chats/{id}/turns/{request_id}` | Delete last turn (soft-delete) | stable |
 | `GET` | `/v1/models` | List models visible to the current user | stable |
@@ -545,7 +561,7 @@ Request body:
 
 - `model`: If provided, MUST reference a valid `model_id` in the model catalog with `status: enabled`. If absent, the system uses the `is_default` premium model (see Model Catalog Configuration). The model is stored on the chat and locked for all subsequent messages (see `cpt-cf-mini-chat-constraint-model-locked-per-chat`). Returns HTTP 400 if the model_id is not in the catalog or is disabled.
 
-Response includes the resolved `model` in chat metadata. `tenant_id` and `user_id` are NOT included in API response bodies — identity is derived from the authentication context. These fields exist in the database schema for internal use only.
+Response includes the resolved `model` in chat metadata. `user_id` is NOT included in API response bodies — identity is derived from the authentication context. These fields exist in the database schema for internal use only.
 
 **List Chats** (`GET /v1/chats`):
 
@@ -638,7 +654,7 @@ Returns paginated messages using cursor-based pagination with OData v4 query sup
 Query parameters:
 - `limit` (integer, optional, default 20, max 100)
 - `cursor` (string, optional) — opaque cursor for next/previous page
-- `$select` (string, optional) — OData v4 field projection (top-level fields including `attachment_ids`)
+- `$select` (string, optional) — OData v4 field projection (top-level fields including `attachments`)
 - `$orderby` (string, optional) — allowed: `created_at asc|desc`, `id asc|desc`
 - `$filter` (string, optional) — allowed fields and operators: `created_at` (eq, ne, gt, ge, lt, le), `role` (eq, ne, in), `id` (eq, ne, in)
 
@@ -654,7 +670,9 @@ Response follows the platform Page + PageInfo convention:
 }
 ```
 
-Each `Message` includes: a required `request_id` (UUID, always present and non-null — within a normal turn, user and assistant messages share the same value; system/background messages use a server-generated UUID v4) and a required `attachment_ids` field (always-present array of attachment UUIDs, empty array when none). Attachment details are fetched individually via `GET /v1/chats/{id}/attachments/{attachment_id}` if needed.
+Each `Message` includes: a required `request_id` (UUID, always present and non-null — within a normal turn, user and assistant messages share the same value; system/background messages use a server-generated UUID v4) and a required `attachments` field (always-present array of `AttachmentSummary` objects, empty array when none). Each `AttachmentSummary` contains `attachment_id`, `kind`, `filename`, `status`, and `img_thumbnail` (present only for images with `status=ready`). The `attachments` array is derived from the `message_attachments` join table via a lateral join in the `listMessages` query, joined with attachment metadata from the `attachments` table. Full attachment details (doc_summary, size_bytes, content_type, error_code) are available via `GET /v1/chats/{id}/attachments/{attachment_id}`.
+
+Each `Message` also includes a nullable `my_reaction` field (`"like"`, `"dislike"`, or `null`) representing the requesting user's reaction on the message. For user and system messages, `my_reaction` is always `null` (only assistant messages support reactions). For assistant messages, `my_reaction` is `null` when no reaction exists. The field is populated via a batch lookup against `message_reactions` for the current `user_id` and the returned message IDs, following the same batch-enrichment pattern as `attachments`.
 
 **Get Attachment** (`GET /v1/chats/{id}/attachments/{attachment_id}`):
 
@@ -722,21 +740,51 @@ impl MessageEntity {
 
 `web_search` is an optional object controlling web search for this turn. Defaults to `{ "enabled": false }` when omitted (backward compatible). When `web_search.enabled=true`, the backend includes the `web_search` tool in the provider Responses API request. The provider decides whether to invoke the tool. If the global `disable_web_search` kill switch is active, the request is rejected with HTTP 400 and error code `web_search_disabled` before opening an SSE stream.
 
-`attachment_ids` is an optional list of **attachment IDs** to include as input on the current turn. P1 supports image attachments only. Validation MUST ensure all of the following:
+`attachment_ids` is an optional list of **attachment IDs** (documents or images) explicitly attached/referenced on the current user message. When the user message is persisted, the association between the message and each referenced attachment is recorded in the `message_attachments` join table (see section 3.7). This is the **single source of truth** for the `attachments` array returned in `GET /v1/chats/{id}/messages` (each entry is an `AttachmentSummary` with `attachment_id`, `kind`, `filename`, `status`, `img_thumbnail`). Images from `attachment_ids` are included in multimodal model input for the current turn only. Previously uploaded image attachments MAY be re-attached on later turns via `attachment_ids`; only explicit re-attachment includes them in multimodal input — images from previous turns are never implicitly reused. `attachment_ids` records the association between messages and attachments for UI/audit/history purposes. In P1, `attachment_ids` does **not** scope or filter retrieval — retrieval always operates over the entire chat vector store when document attachments exist in the chat (see Retrieval Model below).
+
+**Retrieval Model (normative)**:
+
+Retrieval behavior depends on the attachment state of the chat and the current message:
+
+1. **No attachments in the chat** — The backend does NOT include `file_search` in Responses API calls. No vector store exists for the chat, so retrieval is unavailable.
+
+2. **Chat has ready document attachments** — The backend includes `file_search` referencing the chat vector store without metadata filtering. Retrieval always operates over all documents currently present in the chat vector store. The LLM decides whether to invoke `file_search`. The `attachment_ids` field on the message does not affect retrieval scope in P1.
+
+> **P2 (deferred)**: Attachment-scoped retrieval — when `attachment_ids` includes document attachments, retrieval is restricted to those documents via metadata filtering on `attachment_id`.
+
+**Image input scope invariant (P1)**: Image attachments affect model input only on the turn where they are explicitly included in `attachment_ids`. Uploading an image to the chat does not make it part of future model context by default. Previously uploaded images MAY be reused on later turns only via explicit re-attachment in `attachment_ids`. Images are never indexed into the vector store.
+
+**P1 attachment scenarios**:
+
+- **Scenario A — upload + attach on this turn**: User uploads a file via `POST /v1/chats/{id}/attachments`, then sends the attachment ID in `attachment_ids`. Result: `message_attachments` row created; file appears in the message `attachments` array; if image, included in multimodal input; if document, already indexed in the chat vector store and retrieval operates over the entire chat vector store (no per-document filtering in P1).
+- **Scenario B — retrieval over the chat**: User sends a message (with or without document attachments in `attachment_ids`). If the chat has ready document attachments, the backend includes the `file_search` tool with the chat vector store. Retrieval covers all documents in the chat. If the chat has no document attachments at all, `file_search` is not included.
+
+**P1 intentionally NOT supported** (out of scope):
+- Resolving filename references from free-form user text (e.g., "that contract PDF")
+- Fuzzy matching user text to a specific stored file
+- Multilingual filename or entity resolution
+- Hidden helper LLM call to infer intended file(s) from message text
+
+Validation MUST ensure all of the following for each `attachment_id` in `attachment_ids`:
 
 - `attachments.tenant_id` matches the request security context tenant
+- `attachments.uploaded_by_user_id` matches the user who uploads attachment
 - The owning chat's `user_id` matches the request security context user
 - `attachments.chat_id` matches the requested `chat_id`
 - `attachments.status == ready`
 
+Additionally:
+- Each array MUST contain unique attachment IDs. Duplicate IDs within `attachment_ids` MUST be rejected with HTTP 400 (`invalid_request`) before quota reserve and before any provider call.
+
 ##### Attachment Preflight Validation Invariant (P1)
 
-Attachment validation MUST occur before any provider request is issued and before any quota reserve is taken. For each `attachment_id` in the request:
+Attachment validation MUST occur before any provider request is issued and before any quota reserve is taken. For each `attachment_id` in `attachment_ids`:
 
 - It MUST belong to the same `tenant_id` as the request security context.
 - It MUST belong to the same `user_id` as the request security context.
 - It MUST belong to the same `chat_id` as the requested chat.
 - `status` MUST equal `ready`.
+- Each array MUST contain unique attachment IDs (no duplicates within a single array).
 
 If any of the above validations fail, the request MUST be rejected with an appropriate error before any provider call or quota reserve. No `attachment_id` validation may rely on provider-side failure.
 
@@ -745,7 +793,7 @@ If any of the above validations fail, the request MUST be rejected with an appro
 | State | Server behavior |
 |-------|----------------|
 | Active generation exists for key | Return `409 Conflict` (JSON error response; no SSE stream is opened). (P2+: attach to existing stream.) |
-| Completed generation exists for key | Return a fast replay SSE stream without triggering a new provider request: one `delta` event containing the full persisted assistant text, then `citations` if available, then `done`. |
+| Completed generation exists for key | Return a fast replay SSE stream without triggering a new provider request: `stream_started` (with `is_new_turn: false`), one `delta` event containing the full persisted assistant text, then `citations` if available, then `done`. |
 | No record for key | Start a new generation normally (subject to the Parallel Turn Policy below). |
 
 If `request_id` is omitted in the request body, the server MUST generate a UUID v4 and assign it as the turn's `request_id`. The generated key participates in normal idempotency semantics: if the client persists the server-assigned value (e.g. from the SSE `done` event or Turn Status response), it can resubmit it for replay or recovery. In the public DTO, `request_id` is always present and non-null on every Message. Within a normal turn, the user message and assistant response always share the same `request_id` (turn correlation key). System/background messages (e.g. `doc_summary`, `thread_summary`) carry an independently server-generated UUID v4 and do not correspond to `chat_turns` rows.
@@ -757,7 +805,7 @@ If `request_id` is omitted in the request body, the server MUST generate a UUID 
 2. Streams it back to the client as SSE without issuing a new provider request.
 3. MUST NOT take a new quota reserve.
 4. MUST NOT update `quota_usage` or debit tokens.
-5. MUST NOT insert a new `modkit_outbox_events` row.
+5. MUST NOT enqueue a new outbox message.
 6. MUST NOT emit audit or billing events.
 Replay is a pure read-and-relay operation — idempotent and side-effect-free with respect to settlement. Only the CAS-winning finalizer (during the original execution) writes settlement and outbox; replays and CAS-losers never do.
 
@@ -780,7 +828,7 @@ To support reconnect UX and reduce support reliance on direct DB inspection, the
 - `request_id`
 - `state`: `running|done|error|cancelled`
 - `error_code` (nullable string) — terminal error code when `state` is `error` (e.g. `provider_error`, `orphan_timeout`). Null for non-error states and while running. Mapped from `chat_turns.error_code`. Provider identifiers and billing outcome are not exposed.
-- `assistant_message_id` (nullable UUID) — persisted assistant message ID when `state` is `done`. Null while running, on error, or on cancellation. Allows clients to fetch the assistant message directly without listing all messages.
+- `assistant_message_id` (nullable UUID) — persisted assistant message ID. Present when `state` is `done`. Present when `state` is `cancelled` if partial content was persisted (non-empty accumulated text at cancellation point). Null while `running` or on `error`. Allows clients to fetch the assistant message directly without listing all messages.
 - `updated_at`
 
 Turn Status is authoritative for lifecycle state resolution after disconnect. `error_code` provides actionable terminal error categorization so clients can display an appropriate error message without further queries. `assistant_message_id` lets clients fetch the completed assistant message directly by ID without scanning full message history; retrieving the message content itself requires one follow-up request (`GET /v1/chats/{id}/messages?$filter=id eq '{assistant_message_id}'`). Billing outcome, internal settlement details, and provider internals are not exposed via this endpoint in P1.
@@ -811,7 +859,7 @@ The Turn Status API `state: "error"` maps to internal `chat_turns.state = 'faile
 - **Do NOT assume `state: "error"` means "provider failure"**. Check `error_code`.
 - `orphan_timeout` indicates a **system timeout** (pod crash, network partition, orphan watchdog cleanup), not a provider-side error. The billing outcome for orphan timeout is `ABORTED` (estimated settlement), not `FAILED` (actual or released).
 - For UX error messages: `orphan_timeout` should display "Request timed out. Please try again." NOT "Provider error."
-- For operational dashboards: `orphan_timeout` metrics should be tracked separately from `provider_error` to distinguish infrastructure issues from LLM provider issues.
+- For operational dashboards: orphan-watchdog metrics (`mini_chat_orphan_detected_total{reason="stale_progress"}`, `mini_chat_orphan_finalized_total{reason="stale_progress"}`, `mini_chat_orphan_scan_duration_seconds`) should be tracked separately from `provider_error` to distinguish infrastructure issues from LLM provider issues.
 
 **Similarly, `state: "cancelled"` can map to billing outcome ABORTED:**
 - Client disconnect → internal `cancelled` → billing outcome `ABORTED` (estimated settlement)
@@ -828,7 +876,20 @@ UI guidance: if the SSE stream disconnects before a terminal event, the UI SHOUL
 
 #### SSE Event Definitions
 
-Six event types. The stream always ends with exactly one terminal event: `done` or `error`. Image-bearing turns use the same event types; no new SSE events are required for image support. The `citations` event MAY include items from both `file_search` (`source="file"`) and `web_search` (`source="web"`). Image inputs do not produce citations by themselves.
+Seven event types. The stream always begins with `stream_started` (carrying the resolved `request_id`, pre-generated `message_id`, and `is_new_turn` flag) and ends with exactly one terminal event: `done` or `error`. Image-bearing turns use the same event types; no new SSE events are required for image support. The `citations` event MAY include items from both `file_search` (`source="file"`) and `web_search` (`source="web"`). Image inputs do not produce citations by themselves.
+
+##### `event: stream_started`
+
+Emitted once at stream start, before any content events. Present on all SSE streams: new generations (`POST /messages:stream`, `POST /turns/{id}/retry`, `PATCH /turns/{id}`) and idempotent replays.
+
+Carries the resolved `request_id` (client-provided when supplied, otherwise server-generated) and the assistant `message_id`. For new generations, `message_id` is a **pre-allocated UUID** — the assistant `messages` row does not yet exist in the database at this point; it will be persisted during finalization (see Content durability invariant, §5.8). For replays, `message_id` is the persisted assistant message ID. The `is_new_turn` flag distinguishes the two cases.
+
+This allows clients to reference the assistant message before the stream completes (e.g., for optimistic rendering, scroll-to-message, or cancellation) in all scenarios, including recovery after network interruption.
+
+```
+event: stream_started
+data: {"request_id": "550e8400-e29b-41d4-a716-446655440000", "message_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "is_new_turn": true}
+```
 
 ##### `event: delta`
 
@@ -862,7 +923,7 @@ data: {"phase": "done", "name": "file_search", "details": {"files_searched": 3}}
 | Field | Type | Description |
 |-------|------|-------------|
 | `phase` | `"start"` \| `"progress"` \| `"done"` | Lifecycle phase of the tool call. |
-| `name` | string | Tool identifier. P1: `"file_search"`, `"web_search"`. |
+| `name` | string | Tool identifier. P1: `"file_search"`, `"web_search"`, `"code_interpreter"`. |
 | `details` | object | Tool-specific metadata. MUST be non-sensitive and tenant-safe. Content is minimal and stable at P1. |
 
 ##### `event: citations`
@@ -877,7 +938,7 @@ data: {"items": [{"source": "file", "title": "Q3 Report.pdf", "attachment_id": "
 | Field | Type | Description |
 |-------|------|-------------|
 | `items[].source` | `"file"` \| `"web"` | Citation source type. |
-| `items[].title` | string | Document or page title. |
+| `items[].title` | string | Citation title. For file citations (`source="file"`), contains the original uploaded filename (e.g. `"Q3_Report.pdf"`). For web citations (`source="web"`), contains the page title. |
 | `items[].url` | string (optional) | URL for web sources. |
 | `items[].attachment_id` | UUID (optional) | Internal attachment identifier for file sources. This is the only file identifier exposed to clients. |
 | `items[].span` | object (optional) | Reserved for mapping citations to the final assistant text. If provided: `{ "start": number, "end": number }` character offsets into the full assistant output. |
@@ -894,7 +955,6 @@ Finalizes the stream. Provides usage and model selection metadata.
 
 ```json
 {
-  "message_id": "uuid",
   "usage": {
     "input_tokens": 500,
     "output_tokens": 120,
@@ -910,7 +970,6 @@ Finalizes the stream. Provides usage and model selection metadata.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `message_id` | UUID | Persisted assistant message ID. |
 | `usage.input_tokens` | number | Actual input tokens consumed. |
 | `usage.output_tokens` | number | Actual output tokens consumed. |
 | `usage.model` | string | Effective model used for generation (same value as top-level `effective_model`; kept for backward compatibility). |
@@ -919,7 +978,7 @@ Finalizes the stream. Provides usage and model selection metadata.
 | `quota_decision` | `"allow"` \| `"downgrade"` (required) | Always present. `"allow"` when the turn used the selected model without override; `"downgrade"` when a quota-driven downgrade occurred. |
 | `downgrade_from` | string (optional) | Always equals `selected_model` when present — the model from which the quota-driven downgrade occurred. Present only when `quota_decision="downgrade"`. |
 | `downgrade_reason` | string (optional) | Why downgrade occurred. Present only when `quota_decision="downgrade"`. Values: `"premium_quota_exhausted"` (user's premium quota exhausted — quota-driven downgrade); `"force_standard_tier"` (operator kill switch: premium tier forcibly disabled for this tenant via `force_standard_tier=true`); `"disable_premium_tier"` (operator kill switch: premium tier globally disabled via `disable_premium_tier=true`); `"model_disabled"` (operator kill switch: the selected model's `global_enabled=false`). |
-| `quota_warnings` | array of objects (optional) | Deferred to P2+. Not emitted in P1. |
+| `quota_warnings` | array of objects (optional) | Per-tier quota status. Each entry: `{ tier, period, remaining_percentage, warning, exhausted }`. Present on CAS-winning completed/incomplete turns. Absent on error, cancelled, replay, and CAS-loser paths. |
 
 ##### `event: error`
 
@@ -934,7 +993,7 @@ data: {"code": "quota_exceeded", "message": "Daily limit reached", "quota_scope"
 |-------|------|-------------|
 | `code` | string | Canonical error code (see table below). |
 | `message` | string | Human-readable description. |
-| `quota_scope` | `"tokens"` \| `"uploads"` \| `"web_search"` | **Required** when `code = "quota_exceeded"`; MUST be absent otherwise. Clients MUST use this field, not `message` parsing, to determine quota scope. |
+| `quota_scope` | `"tokens"` \| `"uploads"` \| `"web_search"` \| `"code_interpreter"` \| `"image_inputs"` | **Required** when `code = "quota_exceeded"`; MUST be absent otherwise. Clients MUST use this field, not `message` parsing, to determine quota scope. |
 
 ##### `event: ping`
 
@@ -968,7 +1027,7 @@ A well-formed stream follows this ordering:
 **P1 normative ordering**:
 
 ```text
-ping*  delta*  tool*  citations?  (done | error)
+stream_started  ping*  (delta | tool)*  citations?  (done | error)
 ```
 
 - Zero or more `ping` events may appear at any point before terminal.
@@ -1000,6 +1059,7 @@ Provider-specific streaming events are internal to `llm_provider` and the domain
 | Web search annotations in response | `event: citations` | Extracted from provider annotations, mapped to `items[]` with `source: "web"`, `url`, `title`, `snippet`. |
 | File search annotations in response | `event: citations` | Extracted from provider annotations, mapped to `items[]` schema. When provider annotations include ranges, `items[].span` SHOULD be populated as character offsets into the final assistant text. |
 | `response.completed` | `event: done` | `usage` from `response.usage`. Provider `response.id` is persisted internally (`chat_turns.provider_response_id`) but MUST NOT be included in the SSE payload. |
+| `response.incomplete` | `event: done` | A truncated but valid completion. `usage` is still taken from `response.usage`. The incomplete reason MUST be surfaced as a non-fatal completion signal (audit/outbox payload + metrics), and MUST NOT be written to `chat_turns.error_code`. Provider response ID may be absent depending on provider behavior. |
 | Provider HTTP error / disconnect | `event: error` (`code: "provider_error"` or `"provider_timeout"`) | Error details sanitized; provider internals not exposed. |
 | Provider 429 | `event: error` (`code: "rate_limited"`) | After OAGW retry exhaustion. |
 
@@ -1024,7 +1084,7 @@ The following table is the normative mapping from provider failure modes to the 
 
 For streaming endpoints, failures before any streaming begins MUST be returned as normal JSON HTTP error responses. Once the stream has started, failures MUST be reported via a terminal `event: error`.
 
-**HTTP status policy (P1)**: request validation errors use HTTP 400; payload size / byte-limit rejections use HTTP 413; unsupported file types or unsupported media use HTTP 415.
+**HTTP status policy (P1)**: request validation errors use HTTP 400; payload size / byte-limit rejections use HTTP 413; unsupported file types or unsupported media use HTTP 415. **Exception:** upload-phase content rejections triggered by kill-switch filtering (e.g. `disable_code_interpreter` rejecting XLSX-only attachments) use HTTP 422 (Unprocessable Entity) — see line 279.
 
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
@@ -1034,36 +1094,37 @@ For streaming endpoints, failures before any streaming begins MUST be returned a
 | `chat_not_found` | 404 | Chat does not exist or not accessible under current authorization constraints |
 | `generation_in_progress` | 409 | A generation is already running for this chat (one running turn per chat policy). Always pre-stream JSON. |
 | `request_id_conflict` | 409 | The same `(chat_id, request_id)` is already in a non-replayable state (`running`, `failed`, or `cancelled`). Always pre-stream JSON. |
-| `quota_exceeded` | 429 | Quota exhaustion. Always accompanied by a `quota_scope` field: `"tokens"` (token rate limits across all tiers exhausted, emergency flags, or all models disabled), `"uploads"` (daily upload quota exceeded for the attachment endpoint), or `"web_search"` (per-user daily web search call quota exhausted). |
+| `quota_exceeded` | 429 | Quota exhaustion. Always accompanied by a `quota_scope` field: `"tokens"` (token rate limits across all tiers exhausted, emergency flags, or all models disabled), `"uploads"` (daily upload quota exceeded for the attachment endpoint), `"web_search"` (per-user daily web search call quota exhausted), `"code_interpreter"` (per-user daily code interpreter call quota exhausted), or `"image_inputs"` (per-turn or per-day image input limit exceeded). |
 | `web_search_disabled` | 400 | Request includes `web_search.enabled=true` but the global `disable_web_search` kill switch is active |
 | `rate_limited` | 429 | Provider upstream throttling (provider 429 after OAGW retry exhaustion) |
-| `file_too_large` | 413 | Uploaded file exceeds size limit |
+| `file_too_large` | 413 | Uploaded file exceeds the effective per-file size limit (`min(ConfigMap, CCM per-model)`). Enforced mid-stream during multipart ingestion — the handler aborts after the byte counter crosses the limit without buffering the full body. |
 | `unsupported_file_type` | 415 | File type not supported for upload |
 | `too_many_images` | 400 | Request includes more than the configured maximum images for a single turn |
 | `image_bytes_exceeded` | 413 | Request includes images whose total configured per-turn byte limit is exceeded |
 | `unsupported_media` | 415 | Request includes image input but the effective model does not support multimodal input. Defensive under P1 catalog invariant (all enabled models include `VISION_INPUT`); expected only on catalog misconfiguration or future non-vision models. |
-| `model_not_found` | 404 | Model does not exist in the catalog or is not visible to the user (globally disabled or user-disabled). Used by `GET /v1/models/{model_id}`. |
+| `model_not_found` | 404 | Model does not exist in the catalog or is globally disabled. Used by `GET /v1/models/{model_id}`. |
 | `provider_error` | 502 | LLM provider returned an error |
 | `provider_timeout` | 504 | LLM provider request timed out |
-| `web_search_calls_exceeded` | — (SSE only) | Per-message web search tool call limit exceeded mid-turn. Emitted as terminal `event: error` payload only; no HTTP error status is used because the stream is already open. The turn is finalized as `failed` with `settlement_method="actual"\|"estimated"`. |
+| `web_search_calls_exceeded` | — (SSE only) | Per-turn web search tool call limit exceeded mid-turn. Emitted as terminal `event: error` payload only; no HTTP error status is used because the stream is already open. The turn is finalized as `failed` with `settlement_method="actual"\|"estimated"`. |
 | `invalid_turn_state` | 400 | Retry, edit, or delete attempted on a turn that is not in a terminal state (turn is `running`). Always pre-stream JSON. |
 | `not_latest_turn` | 409 | Retry, edit, or delete targeted a turn that is not the most recent non-deleted turn for the chat. Always pre-stream JSON. |
+| `attachment_locked` | 409 | Attachment is referenced by a submitted message and cannot be deleted. Always pre-stream JSON. |
 | `message_not_found` | 404 | Target message does not exist or is not accessible. Used by reaction endpoints. Always pre-stream JSON. |
 | `invalid_reaction_target` | 400 | Reaction attempted on a message type that does not support reactions (e.g., system messages). Always pre-stream JSON. |
 
-**Quota error disambiguation invariant**: token quota exhaustion, upload quota exhaustion, and web search quota exhaustion MUST be distinguishable to clients via the stable, machine-readable `quota_scope` field on every `quota_exceeded` error response. Clients MUST NOT parse the `message` string to determine quota scope. The `quota_scope` field is REQUIRED when `code` is `quota_exceeded` and MUST be one of: `"tokens"` (token-based rate limit exhaustion), `"uploads"` (per-user daily upload limit exhaustion), or `"web_search"` (per-user daily web search call limit exhaustion).
+**Quota error disambiguation invariant**: token quota exhaustion, upload quota exhaustion, web search quota exhaustion, code interpreter quota exhaustion, and image input quota exhaustion MUST be distinguishable to clients via the stable, machine-readable `quota_scope` field on every `quota_exceeded` error response. Clients MUST NOT parse the `message` string to determine quota scope. The `quota_scope` field is REQUIRED when `code` is `quota_exceeded` and MUST be one of: `"tokens"` (token-based rate limit exhaustion), `"uploads"` (per-user daily upload limit exhaustion), `"web_search"` (per-user daily web search call limit exhaustion), `"code_interpreter"` (per-user daily code interpreter call limit exhaustion), or `"image_inputs"` (per-turn or per-day image input limit exhaustion).
 
 #### Models API — **ID**: `cpt-cf-mini-chat-interface-models-api`
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-interface-models-api`
 
-Read-only endpoints for the model catalog visible to the authenticated user. The canonical model catalog is provided by `minichat-policy-plugin` (section 5.2); Mini Chat caches it in memory and merges per-user preferences stored in `user_model_prefs` (section 3.7) to compute visibility.
+Read-only endpoints for the model catalog visible to the authenticated user. The canonical model catalog is provided by `mini-chat-model-policy-plugin` (section 5.2); Mini Chat caches it in memory and filters by `global_enabled` to compute visibility.
 
 ##### List Models
 
 **Endpoint**: `GET /v1/models`
 
-Returns all models that are (a) globally enabled in the policy catalog AND (b) user-enabled for this user (allow-by-default semantics — see Visibility Algorithm below).
+Returns all models that are globally enabled in the policy catalog (see Visibility Algorithm below).
 
 **Response** (success): `200 OK`
 ```json
@@ -1072,7 +1133,6 @@ Returns all models that are (a) globally enabled in the policy catalog AND (b) u
     {
       "model_id": "gpt-5.2",
       "display_name": "GPT-5.2",
-      "provider": "OpenAI",
       "tier": "premium",
       "multiplier_display": "1x",
       "description": "Best for complex reasoning tasks",
@@ -1087,9 +1147,8 @@ Response fields per item:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model_id` | string | Stable internal model identifier (e.g., `"gpt-5.2"`). Same value used in `POST /v1/chats` and `chats.model`. |
+| `model_id` | string | Stable internal model identifier (e.g., a UUID or any opaque string). Same value used in `POST /v1/chats` and `chats.model`. Format is not prescribed — may be a UUID, slug, or any unique string. |
 | `display_name` | string | User-facing name for the model selector UI. |
-| `provider` | string | User-facing display name of the provider (e.g., `"OpenAI"`, `"Azure OpenAI"`). MUST NOT be a deployment handle, routing identifier, or internal provider key. |
 | `tier` | `"standard"` \| `"premium"` | Rate-limit tier. |
 | `multiplier_display` | string | Human-readable credit multiplier (e.g., `"1x"`, `"2x"`). Informational only — MUST NOT expose `credits_micro` or numeric multiplier internals. |
 | `description` | string (optional) | User-facing help text. May be absent if no description is configured for the model. |
@@ -1102,7 +1161,7 @@ Standard errors: `401` (unauthenticated), `403` (license / permissions).
 
 **Endpoint**: `GET /v1/models/{model_id}`
 
-Returns the same model projection as the list endpoint, but for a single model. The model MUST pass the same visibility rule (globally enabled AND user-enabled). If the model is globally disabled, user-disabled, or does not exist, the server MUST return `404` with error code `model_not_found` to avoid leaking catalog details.
+Returns the same model projection as the list endpoint, but for a single model. The model MUST pass the same visibility rule (globally enabled). If the model is globally disabled or does not exist, the server MUST return `404` with error code `model_not_found` to avoid leaking catalog details.
 
 **Response** (success): `200 OK` — single model object (same shape as an item in the list response).
 
@@ -1110,24 +1169,19 @@ Standard errors: `401` (unauthenticated), `403` (license / permissions), `404` (
 
 ##### Visibility Algorithm (Normative)
 
-The domain service computes model visibility for `(tenant_id, user_id)` as follows:
+The domain service computes model visibility as follows:
 
-1. Read the cached policy catalog (source: `minichat-policy-plugin`).
+1. Read the cached policy catalog (source: `mini-chat-model-policy-plugin`).
 2. Filter to models where `global_enabled = true`.
-3. Load all `user_model_prefs` rows for this `(tenant_id, user_id)` in a single query.
-4. For each globally enabled model:
-   - If a `user_model_prefs` row exists with `is_enabled = false` → **exclude**.
-   - Otherwise (no row, or row with `is_enabled = true`) → **include** (allow-by-default).
-5. `GET /v1/models` returns all included models.
-6. `GET /v1/models/{model_id}` applies the same rule; returns `404` if excluded or not in the catalog.
+3. `GET /v1/models` returns all globally enabled models.
+4. `GET /v1/models/{model_id}` applies the same rule; returns `404` if disabled or not in the catalog.
 
-**Invariant**: disabled models (globally or per-user) MUST NOT appear in `GET /v1/models` and MUST NOT be retrievable via `GET /v1/models/{model_id}`.
+**Invariant**: globally disabled models MUST NOT appear in `GET /v1/models` and MUST NOT be retrievable via `GET /v1/models/{model_id}`.
 
 ##### Non-Exposure Rules (Models API)
 
-- Response MUST NOT include: provider deployment IDs, routing metadata, credit multipliers (`input_tokens_credit_multiplier`, `output_tokens_credit_multiplier`, `credits_micro`), `policy_version`, `max_output`, or `is_default`.
-- `provider` MUST be the user-facing display name (e.g., `"OpenAI"`, `"Azure OpenAI"`), not a deployment handle, OAGW routing identifier, or internal provider key.
-- `model_id` is the stable internal identifier used by the API (e.g., `"gpt-5.2"`), never a provider deployment handle.
+- Response MUST NOT include: `provider`, `provider_model_id`, provider deployment IDs, routing metadata, credit multipliers (`input_tokens_credit_multiplier`, `output_tokens_credit_multiplier`, `credits_micro`), `policy_version`, `max_output`, or `is_default`.
+- `model_id` is the stable internal identifier used by the API (e.g., a UUID or opaque slug), never a provider model name or deployment handle.
 
 #### Message Reaction API
 
@@ -1172,15 +1226,9 @@ The domain service computes model visibility for `(tenant_id, user_id)` as follo
 
 **Request body**: none
 
-**Response** (success): `200 OK` with:
-```json
-{
-  "message_id": "uuid",
-  "deleted": true
-}
-```
+**Response** (success): `204 No Content` (no body).
 
-If no reaction exists, return `200 OK` with `"deleted": true` (idempotent delete).
+Idempotent: returns `204` whether or not a reaction existed.
 
 **Errors**: same as Set Reaction (excluding `invalid_reaction_target`).
 
@@ -1293,17 +1341,23 @@ sequenceDiagram
         AG-->>UI: 400
     end
 
-    Note over CS, OAI: Single provider call per user turn. file_search is always enabled as a tool. web_search is included when web_search.enabled=true.
+    Note over CS: If disable_code_interpreter kill switch active: XLSX-only uploads rejected at upload time (422); at stream time, code_interpreter tool silently omitted from provider request.
 
-    CS->>OG: POST /outbound/llm/responses:stream (tools include file_search + optionally web_search, store=user_store, filtered to chat attachments)
+    Note over CS, DB: Preflight transaction (must commit before provider call): validate attachment_ids, persist `messages` (role='user'), persist `message_attachments` (from attachment_ids), insert `chat_turns` (state='running') + quota reserve.
+
+    Note over CS, OAI: Single provider call per user turn. file_search tool always included when chat has ready document attachments; retrieval scope = entire chat vector store. web_search included when web_search.enabled=true. code_interpreter included when code_interpreter.enabled=true and chat has ready code_interpreter attachments (unless disable_code_interpreter kill switch active).
+
+    CS->>DB: Preflight commit: Persist user msg + message_attachments (attachment_ids only) + chat_turns(running) + quota reserve
+
+    CS->>OG: POST /outbound/llm/responses:stream (tools: file_search if chat has ready docs + optionally web_search; retrieval scope = entire chat vector store)
     OG->>OAI: Responses API (streaming, tool calling enabled)
     OAI-->>OG: SSE tokens
     OG-->>CS: Token stream
     CS-->>AG: Token stream
     AG-->>UI: SSE tokens
 
-    CS->>DB: Persist user msg + assistant msg + usage
-    CS->>CS: Commit actual usage to quota_service (debit input_tokens + output_tokens)
+    Note over CS, DB: Finalization after provider terminal: persist assistant `messages` row + usage, CAS-finalize `chat_turns`, settle quota/outbox (commit), then emit terminal SSE.
+    CS->>DB: Finalize: Persist assistant msg + usage; update chat_turns terminal state; settle quota/outbox (commit)
 
     participant AS as audit_service
     CS->>AS: Emit audit event (selected_model, effective_model, usage, policy decisions)
@@ -1328,30 +1382,48 @@ sequenceDiagram
     participant OG as outbound_gateway
     participant OAI as OpenAI / Azure OpenAI
 
-    UI->>AG: POST /v1/chats/{id}/attachments (multipart)
-    AG->>CS: UploadAttachment(chat_id, file, security_ctx)
-    CS->>DB: Insert attachment metadata (status: pending)
-    CS->>OG: POST /outbound/llm/files (upload)
+    UI->>AG: POST /v1/chats/{id}/attachments (multipart, streaming)
+    AG->>CS: UploadAttachment(chat_id, multipart_stream, security_ctx)
+
+    Note over CS: Handler: resolve MIME from field headers (before body read)
+    Note over CS: Handler: authz + model resolve → UploadLimits (min(ConfigMap, CCM per-model))
+    Note over CS: Service: resolve purposes from MIME, apply kill switch / capability filtering
+    Note over CS: Handler: stream chunks with byte counter; abort 413 if limit exceeded
+
+    CS->>DB: Insert attachment metadata (status: pending, size_bytes=hint, for_file_search, for_code_interpreter)
+    CS->>OG: POST /outbound/llm/files (streaming multipart via OAGW SDK)
     OG->>OAI: Files API upload
     OAI-->>OG: provider_file_id
     OG-->>CS: provider_file_id
-    CS->>OG: POST /outbound/llm/vector_stores/{chat_store}/files (add file)
-    OG->>OAI: Add file to vector store
-    OAI-->>OG: OK
-    OG-->>CS: OK
-    CS->>DB: Update attachment (status: ready, provider_file_id)
 
-    opt Generate doc summary (Variant 1, background)
-        CS->>CS: Enqueue doc summary task (requester_type=system)
+    alt purposes contain file_search AND attachment_kind = document
+        CS->>OG: POST /outbound/llm/vector_stores/{chat_store}/files (add file)
+        OG->>OAI: Add file to vector store
+        OAI-->>OG: OK
+        OG-->>CS: OK
+        CS->>DB: Update attachment (status: ready, provider_file_id)
+        opt Generate doc summary (background)
+            CS->>CS: Enqueue doc summary task (requester_type=system)
+        end
+    else purposes contain code_interpreter only
+        Note over CS: NOT added to vector store; available via<br/>code_interpreter tool_resources at stream time
+        CS->>DB: Update attachment (status: ready, provider_file_id)
+    else attachment_kind = image
+        Note over CS: NOT added to vector store; NOT summarized
+        CS->>CS: Generate thumbnail (sync, best-effort)
+        CS->>DB: Update attachment (status: ready, provider_file_id, img_thumbnail)
+        Note over CS: Image will be included as multimodal content<br/>in Responses API calls via provider_file_id<br/>when referenced in attachments of a message
     end
 
     CS-->>AG: attachment_id, status
     AG-->>UI: 201 Created
 ```
 
-**Description**: File upload flow - the file is uploaded to the LLM provider (OpenAI or Azure OpenAI) via OAGW. The subsequent steps depend on attachment kind:
+**Description**: File upload flow - the file is uploaded to the LLM provider (OpenAI or Azure OpenAI) via OAGW. The subsequent steps depend on the attachment's resolved purposes (derived from MIME type, filtered by kill switches and model capabilities):
 
-- **Document** (`attachment_kind=document`): file is added to the chat's vector store (created on first upload), optionally summarized, and metadata is persisted locally. Status transitions: `pending` -> `ready` or `pending` -> `failed`.
+- **Document with `file_search` purpose** (most document types): file is added to the chat's vector store (created on first upload), optionally summarized, and metadata is persisted locally. Status transitions: `pending` -> `ready` or `pending` -> `failed`.
+- **Document with `code_interpreter` purpose only** (XLSX): file is uploaded to the provider via Files API but is NOT added to the vector store. It is available to the `code_interpreter` tool at stream time via `tools[].container.file_ids` in the provider request. Status transitions: `pending` -> `ready` or `pending` -> `failed`.
+- **Document with multiple purposes** (future): both the vector store indexing path and other purpose-specific paths execute independently. All matching purpose paths must succeed for the attachment to reach `ready`.
 - **Image** (`attachment_kind=image`): file is uploaded to the provider via Files API but is NOT added to the vector store and NOT summarized. After a successful provider upload, the server generates a preview thumbnail using the Rust `image` crate ([https://docs.rs/image/latest/image/](https://docs.rs/image/latest/image/)). Thumbnail generation is a synchronous step during image attachment processing (before transitioning to `ready`). The resulting thumbnail raw bytes are stored in the Mini Chat database (`attachments.img_thumbnail` BYTEA column). Status transitions: `pending` -> `ready` or `pending` -> `failed`. The image is available for multimodal input in subsequent Responses API calls via the internally stored `provider_file_id` (never exposed to clients). **Invariant**: `status=ready` implies `provider_file_id` is present AND the provider upload succeeded. If the provider file is deleted or becomes inaccessible (e.g., via cleanup), the attachment status MUST transition away from `ready` (to `failed` or be removed).
 
   **Thumbnail storage invariant**: thumbnails are stored only in Mini Chat database (`img_thumbnail` BYTEA). Thumbnails are never uploaded to or stored in provider Files API or external object storage in P1. Only the original image is uploaded to the provider.
@@ -1373,13 +1445,13 @@ sequenceDiagram
   | `thumbnail_max_pixels` | integer | 100000000 | Maximum source image pixel count (`width * height`) before skipping thumbnail generation (pre-screening heuristic) |
   | `thumbnail_max_decode_bytes` | integer | 33554432 | Maximum bytes the image decoder may consume before aborting (32 MiB). Security boundary against pixel-bomb attacks where malformed images advertise small header dimensions but expand to gigabytes on decode. |
 
-Attachment kind is derived from `content_type`: MIME types matching `image/png`, `image/jpeg`, or `image/webp` are classified as `image`; all other supported types are classified as `document`.
+Attachment kind is derived from `content_type`: MIME types matching `image/png`, `image/jpeg`, `image/webp`, or `image/gif` are classified as `image`; all other supported types are classified as `document`. Attachment purpose is derived from the validated MIME type: XLSX → `for_code_interpreter=true`; other document types → `for_file_search=true`; images have both flags `false` (handled as multimodal input). A single attachment may serve multiple purposes (both boolean columns can be `true`).
 
 **Attachment status polling**: After upload returns 201 with `status: pending`, the UI polls `GET /v1/chats/{id}/attachments/{attachment_id}` until the status transitions to `ready` or `failed`. `doc_summary` is server-generated asynchronously (background task, `requester_type=system`) and is null until processing completes; it is never provided by the client. `img_thumbnail` is server-generated during image upload processing; it appears only when `status=ready` and `kind=image` (null otherwise). If status is `failed`, the response includes an `error_code` field with a stable internal error code (no provider identifiers).
 
 **UI rendering flow for chat history**:
 1. `GET /v1/chats/{id}` returns chat metadata + `message_count` (no embedded messages).
-2. `GET /v1/chats/{id}/messages?limit=...&cursor=...` loads paginated message history. Each message includes `attachment_ids` — a lightweight reference array; attachment details are fetched individually via `GET /v1/chats/{id}/attachments/{attachment_id}` if the UI needs to display file metadata or status.
+2. `GET /v1/chats/{id}/messages?limit=...&cursor=...` loads paginated message history. Each message includes `attachments` — an array of `AttachmentSummary` objects (`attachment_id`, `kind`, `filename`, `status`, `img_thumbnail`) derived from the `message_attachments` join table. This provides all metadata needed for inline rendering (file icon, name, image preview) without additional API calls. Full attachment details (doc_summary, size_bytes, content_type, error_code) are available via `GET /v1/chats/{id}/attachments/{attachment_id}` if needed.
 
 #### Streaming Cancellation
 
@@ -1424,33 +1496,175 @@ sequenceDiagram
 sequenceDiagram
     participant CS as mini-chat module
     participant DB as Postgres
+    participant OB as shared outbox
     participant OG as outbound_gateway
     participant OAI as OpenAI / Azure OpenAI
 
-    CS->>CS: Check summary trigger (msg count > 20 OR tokens > budget OR every 15 user turns)
-    CS->>CS: Enqueue thread summary task (requester_type=system)
-    Note over CS: Background worker executes summary task asynchronously
-    CS->>DB: Load current thread_summary + old messages batch (10-20 msgs)
+    CS->>CS: Check summary trigger (assembled request token estimate exceeds compression threshold)
+    CS->>DB: Load current summary frontier (base_frontier)
+    CS->>DB: Determine frozen_target_frontier relative to base_frontier using message order (created_at, id)
+    CS->>DB: Commit causing turn and enqueue durable thread-summary outbox message in the same transaction
+    OB->>CS: Deliver thread-summary work asynchronously
+    CS->>DB: Load current frontier and fetch non-deleted, non-compressed messages in (base_frontier, frozen_target_frontier] ordered by created_at ASC, id ASC
     CS->>OG: POST /outbound/llm/responses (update summary prompt)
     OG->>OAI: Responses API
-    OAI-->>OG: Updated summary
-    OG-->>CS: Updated summary
-    CS->>DB: Save new thread_summary
-    CS->>DB: Mark summarized messages as compressed
+    alt Provider error / timeout
+        OAI-->>OG: Error / timeout
+        OG-->>CS: Error / timeout
+        CS->>CS: Keep previous summary unchanged
+    else Updated summary returned
+        OAI-->>OG: Updated summary
+        OG-->>CS: Updated summary
+        CS->>DB: Atomic commit (CAS on base_frontier): save new thread_summary, advance frontier, mark exact range compressed
+        alt CAS succeeds
+            DB-->>CS: Commit OK
+        else Frontier already advanced
+            DB-->>CS: 0 rows updated
+            CS->>CS: Finish without another commit
+        end
+    end
 ```
 
-**Description**: Thread summary is updated asynchronously after a chat turn when trigger conditions are met. Summary generation is a background task and MUST be attributed as `requester_type=system` so that its usage is not charged to an arbitrary end user.
+**Description**: Thread summary is updated asynchronously after a chat turn when trigger conditions are met. Summary generation is a background/system task and MUST run as `requester_type=system`. It MUST NOT create a `chat_turns` record, MUST NOT debit per-user quota, and MUST still emit usage for tenant/system attribution. Mini Chat MUST use the shared transactional outbox as the durable execution substrate for this work and MUST NOT define a second Mini-Chat-specific leader-elected or polling worker framework for automatic summary execution.
+
+##### Trigger timing
+
+- The system MUST evaluate the thread summary trigger using the assembled request/context token estimate already computed for the current turn.
+- The trigger decision MAY be computed before terminal turn commit, but durable scheduling MUST occur only in the transaction that makes the causing turn durable.
+- If the trigger condition is met, the CAS-winning turn persistence/finalization path MUST enqueue a durable thread-summary outbox message in the same DB transaction as the domain state change that caused the work.
+- Thread summary generation is asynchronous and MUST NOT block or modify the user-visible response path of the current turn.
+- Any summary produced by that outbox-driven work is eligible only for subsequent turns and MUST NOT alter the `ContextPlan` of the in-flight turn that caused the trigger.
 
 **P1 — Simple summarization (no quality gate):**
 
-- The background worker calls the LLM with a summarization prompt over the old messages batch.
-- If the LLM call succeeds: save the new `thread_summary` and mark the batch as `is_compressed = true`.
-- If the LLM call fails (provider error, timeout): keep the previous summary unchanged; do NOT mark messages as compressed; log the failure and increment `mini_chat_summary_fallback_total`.
+**Summary trigger based on token budget**
+
+Thread summary generation MUST be driven by the estimated token size of the assembled request context rather than by message count.
+
+Before each LLM call, the system already constructs a `ContextPlan` and computes an estimated input token size for the final request payload (system prompt, current thread summary, recent messages, retrieval/document context, tools, and the new user message).
+
+The thread summary trigger MUST evaluate the `assembled_context_tokens` value computed during context assembly (which reflects the real conversation size: system prompt + thread summary + history messages + current user message).
+
+A summary SHOULD be triggered under either of these conditions (OR):
+
+1. **Proactive (first summary):** `assembled_context_tokens >= compression_threshold_pct% of effective_budget` AND no existing summary. Default threshold: **80%**.
+2. **Urgent (re-summarize):** Context assembly had to truncate (drop) older messages (`messages_truncated = true`). This means the existing summary is stale and the conversation is losing context.
+
+When a summary already exists and context assembly is not truncating messages, the trigger MUST NOT fire — the existing summary is still effective.
+
+The default compression threshold SHOULD be **80% of the effective input token budget**.
+
+The effective input token budget is defined as:
+
+`token_budget = min(configured_max_input_tokens, model_context_window - reserved_output_tokens)`
+
+If the trigger conditions above are met (proactive or urgent), the system MUST enqueue durable thread-summary work in the transaction that durably persists or finalizes the causing turn.
+
+**Heuristic triggers**
+
+Implementations MAY use message-count or turn-count heuristics only as cheap signals indicating when token estimation should be recalculated.
+
+Such heuristics MUST NOT be used as the sole correctness criterion for summary generation.
+
+##### Execution stages and invariants
+
+1. **Trigger decision in the request path**
+
+- The request path MUST evaluate the trigger from the assembled request/context estimate for the current turn.
+- The request path MUST NOT block the user-visible turn on summary generation.
+
+2. **Durable scheduling**
+
+- If the trigger fires, the system MUST serialize a durable outbox message for thread-summary execution in the same DB transaction that durably persists the causing turn.
+- The serialized message MUST contain, at minimum, `tenant_id`, `chat_id`, stable `system_request_id`, `base_frontier_created_at`, `base_frontier_message_id`, `frozen_target_created_at`, `frozen_target_message_id`, and `system_task_type = "thread_summary_update"`.
+- The outbox queue SHOULD partition by `chat_id` so that all thread-summary messages for the same chat are assigned to the same partition and processed sequentially. Different chats MAY be processed in parallel across partitions. The partition count (e.g. 8) controls concurrency across chats, not within a single chat; the concrete value is implementation-defined and configured via `thread_summary.partition_count`.
+- Partition-level ordering reduces unnecessary concurrent summary execution for the same chat, but correctness MUST NOT depend on partition ordering alone — it relies on the frozen range identity and CAS-protected frontier advancement described below.
+
+3. **Asynchronous execution**
+
+- The shared outbox framework is responsible for delivery, partitioned ordering, lease/reclaim, retries with backoff, dead-letter handling, and reconciliation.
+- The thread-summary handler MAY run under either the transactional or decoupled outbox execution mode allowed by the shared infrastructure contract. Mini Chat MUST rely only on the shared outbox guarantees and MUST NOT define a second dedicated summary worker state machine.
+- A handler attempt MUST bind itself to the frozen target frontier carried by the durable outbox message.
+- The handler MUST load exactly the non-deleted, non-compressed messages whose order key is in `(base_frontier, frozen_target_frontier]`.
+- Messages appended after `frozen_target_frontier` MUST be excluded from the current run. They MUST NOT cancel, widen, or invalidate the in-flight run and are eligible only for a future summary cycle.
+- If the LLM call fails with a context-length-exceeded error (prompt too large for the summary model), the handler SHOULD retry by dropping the oldest messages from the prompt (up to 2 retries, dropping ~20% of messages each time). This PTL retry mechanism ensures summaries can be generated even for very long conversations.
+
+**Context assembly filtering**: when building the `ContextPlan` for a user turn, message queries (`recent_for_context`, `recent_after_boundary`) MUST filter `is_compressed = false` to exclude messages already covered by the thread summary. The `is_compressed` rows remain in the database for UI rendering (chat history display) but MUST NOT be sent to the LLM.
+
+4. **CAS-protected commit**
+
+- If the LLM call succeeds, the handler MUST attempt one atomic commit that:
+- saves the new `thread_summary`,
+- advances the stored summary frontier to `frozen_target_frontier`, and
+- marks exactly that summarized range as `is_compressed = true`.
+- The commit MUST succeed only if the stored summary frontier still equals the handler's `base_frontier` (compare-and-set).
+- If the CAS precondition fails because another successful commit already advanced the frontier, the current attempt MUST finish without another summary commit for that frozen range.
+- At most one successful CAS commit MAY advance the summary frontier for a given frozen summarized range.
+- Duplicate provider/LLM calls for the same frozen range are an accepted P1 operational side effect of outbox retry or replay. They are not a correctness violation by themselves.
+- If the LLM call fails before a successful CAS commit, the system MUST keep the previous summary unchanged, MUST NOT advance the frontier, and MUST NOT mark messages as compressed.
 - No length or entropy validation is performed in P1.
 
 Observability (P1):
 
-- Increment `mini_chat_summary_fallback_total` when the worker falls back due to provider failure.
+- Increment `mini_chat_thread_summary_trigger_total{result}` when trigger evaluation runs; `result` SHOULD distinguish at least `scheduled|not_needed`.
+- Increment `mini_chat_thread_summary_execution_total{result}` (counter) with a bounded `result` allowlist such as `success|provider_error|timeout|retry`.
+- `mini_chat_thread_summary_execution_total{result}` MAY exceed the number of successful frontier advances because outbox retry or replay can trigger duplicate provider calls for the same frozen range; this is expected in P1 and MUST NOT by itself be interpreted as a correctness failure.
+- Increment `mini_chat_thread_summary_cas_conflicts_total` when a handler loses the CAS precondition because another commit already advanced the frontier.
+- Increment `mini_chat_summary_fallback_total` when the system keeps the previous summary unchanged because summary generation failed before a successful CAS commit.
+- Queue lag, retry backlog, lease churn, and dead-letter depth for summary execution SHOULD be consumed from the shared outbox metrics surface rather than re-specified as Mini-Chat task-table metrics.
+
+##### Thread Summary - Stable Range and Commit Invariant
+
+**Definitions**:
+
+- **Summary frontier** — the inclusive per-chat frontier stored in `thread_summaries` as `(summarized_up_to_created_at, summarized_up_to_message_id)`. It identifies the last message already represented in `summary_text`. If no `thread_summaries` row exists for the chat, the frontier is empty.
+- **Durable summary work item** — one serialized thread-summary message in the shared outbox. `thread_summaries` stores committed summary state only; the shared outbox stores durable delivery state for asynchronous execution.
+- **Frozen target frontier** — the inclusive upper bound `(target_created_at, target_message_id)` captured at enqueue time and persisted in the outbox payload. Recomputing the target frontier at handler execution time is not sufficient.
+- **Message order** — thread summary selection MUST use the strict total order `(created_at ASC, id ASC)`. `created_at` alone is insufficient because multiple messages may share the same timestamp. `id` is the UUID message identifier and is used only as a deterministic tie-breaker when `created_at` values are equal.
+
+**Range selection**:
+
+For a work item with `base_frontier` and `frozen_target_frontier`, the handler MUST summarize exactly the set of messages in the same chat that satisfy all of the following:
+
+1. `deleted_at IS NULL`
+2. `is_compressed = false`
+3. `(created_at, id) > base_frontier`
+4. `(created_at, id) <= frozen_target_frontier`
+
+The handler MUST load these messages ordered by `(created_at ASC, id ASC)`.
+
+**Durable work identity and enqueue discipline**
+
+The intended summarized range is identified by the tuple:
+
+`(chat_id, base_frontier_created_at, base_frontier_message_id, frozen_target_created_at, frozen_target_message_id)`.
+
+The request path SHOULD avoid enqueueing a second thread-summary outbox message for the same frozen range when it can observe that the stored frontier and computed target range are unchanged, but correctness MUST NOT depend on perfect enqueue-time deduplication.
+
+**Range stability and concurrency**:
+
+- Messages created after `frozen_target_frontier` remain outside the current run and are eligible only for a future run after the frontier advances.
+- The commit MUST be atomic and MUST advance the summary frontier only if the stored frontier still equals `base_frontier`.
+- Only one handler attempt can win that compare-and-set. Any losing or stale attempt MUST NOT write a new committed summary for that frozen range.
+- If the compare-and-set commit fails, the attempt MUST terminate without issuing any additional commit attempt for that frozen range.
+
+**Frozen-range commit invariant**:
+
+For P1 automatic background processing, a frozen summary range identified by
+`(chat_id, base_frontier, frozen_target_frontier)`
+MUST have at most one successful summary commit.
+
+The durable `system_request_id` attached to one serialized work item MUST remain unchanged across every retry or replay of that same outbox message.
+
+Concurrent handlers, append-triggered rescheduling, outbox retry, or replay MUST NOT produce more than one committed summary result for the same frozen range.
+
+Duplicate external provider calls for that frozen range MAY still occur. P1 explicitly accepts that operational side effect. The persisted correctness guarantee is narrower: no more than one successful CAS commit may advance the summary frontier for that frozen range.
+
+A failed execution attempt does not advance the frontier. To prevent a permanently stuck frontier the following recovery paths apply:
+
+1. **Wider-range supersession**: if later messages advance the chat frontier, the system MAY enqueue a new automatic work item with the same `chat_id`, the same `base_frontier`, and a larger `frozen_target_frontier`. Such a wider-range work item MAY re-summarize content that was included in the previously failed narrower range. This is intentional and valid in P1.
+2. **Operator intervention**: an operator MAY re-drive summary generation by enqueueing a replacement outbox message for the same or a wider frozen range when no new messages arrive to trigger supersession.
+3. **Observability**: summary execution failure counters and shared outbox dead-letter visibility MUST be monitored so that stuck frontiers are detected before they impact user experience.
 
 **P2+ — Summary quality gate (deferred):**
 
@@ -1458,7 +1672,7 @@ The following quality gate is deferred to P2+. It is preserved here for forward 
 
 - After generating a summary, the domain service MUST validate the candidate summary text.
 - If summary length < `X` OR entropy < `Y`, the domain service MUST attempt regeneration.
-- If regeneration fails quality checks or the provider call fails, the domain service MUST fall back by keeping the previous summary unchanged and MUST NOT mark the message batch as compressed.
+- If regeneration fails quality checks or the provider call fails, the domain service MUST fall back by keeping the previous summary unchanged and MUST NOT advance the frontier or mark the frozen message range as compressed.
 
 `X` and `Y` are configurable thresholds. Entropy is a deterministic proxy computed as normalized token entropy over whitespace-delimited tokens:
 
@@ -1467,7 +1681,139 @@ The following quality gate is deferred to P2+. It is preserved here for forward 
 Observability (P2+):
 
 - Increment `mini_chat_summary_regen_total{reason}` for each regeneration attempt (`reason` from a bounded allowlist such as `too_short|low_entropy|provider_error|invalid_format`).
-- Increment `mini_chat_summary_fallback_total` when the fallback behavior above is used (replaces the P1 metric of the same name).
+- `mini_chat_summary_regen_total{reason}` is P2+ only and MUST NOT be required or alerted on in P1 deployments.
+- Increment `mini_chat_summary_fallback_total` when the fallback behavior above is used. This extends the existing P1 metric rather than replacing it with a different series name.
+
+#### Cleanup on Chat Deletion
+
+- [ ] `p1` - **ID**: `cpt-cf-mini-chat-seq-chat-deletion-cleanup`
+
+```mermaid
+sequenceDiagram
+    participant UI
+    participant AG as api_gateway
+    participant CS as mini-chat module
+    participant DB as Postgres
+    participant OB as shared outbox
+    participant OG as outbound_gateway
+    participant OAI as OpenAI / Azure OpenAI
+
+    UI->>AG: DELETE /v1/chats/{id}
+    AG->>CS: DeleteChat(chat_id, security_ctx)
+    CS->>DB: Soft-delete chat, mark attachments pending, enqueue chat-cleanup outbox message in one transaction
+    CS-->>AG: 204 No Content
+    AG-->>UI: 204 No Content
+
+    OB->>CS: Deliver chat-cleanup work asynchronously
+    loop For each attachment with cleanup_status = 'pending'
+        CS->>OG: DELETE /outbound/llm/files/{provider_file_id}
+        OG->>OAI: Files API delete
+        OAI-->>OG: OK (or 404 — already deleted)
+        OG-->>CS: OK
+        CS->>DB: Update attachment cleanup outcome (`done` or terminal `failed`)
+    end
+
+    opt All attachment cleanup rows are terminal and chat_vector_stores row still exists
+        CS->>OG: DELETE /outbound/llm/vector_stores/{vector_store_id}
+        OG->>OAI: Vector Stores API delete
+        OAI-->>OG: OK (or 404 — already deleted)
+        OG-->>CS: OK
+        CS->>DB: Delete chat_vector_stores row
+    end
+```
+
+**Description**: Chat deletion is a two-phase operation: synchronous soft-delete (immediate 204 response) followed by asynchronous cleanup of external provider resources. Cleanup of provider files and provider vector stores for soft-deleted chats MUST be driven by the shared transactional outbox. Mini Chat MUST rely on the shared outbox for durable enqueue, partitioned ordering, retries with backoff, lease/reclaim, dead-letter handling, and reconciliation. Mini Chat MUST NOT define a second module-local polling or claim/reclaim worker for this cleanup path.
+
+##### Cleanup responsibility boundaries
+
+There are two distinct cleanup paths in the system:
+
+1. Attachment deletion via API uses the transactional outbox mechanism.
+2. Chat deletion cleanup uses a chat-scoped outbox message emitted when the chat is soft-deleted.
+
+Normative rules:
+
+- Attachment deletion (`DELETE /v1/chats/{chat_id}/attachments/{attachment_id}`) MUST use the transactional outbox mechanism to trigger provider deletion.
+- Chat deletion cleanup MUST be performed only by the outbox-driven soft-delete cleanup path.
+- A failed outbox-driven delete for an attachment whose parent chat is still active MUST remain owned by the attachment-delete path; it MUST NOT be silently picked up by the chat-deletion cleanup path.
+- The two mechanisms MUST NOT both attempt cleanup for the same attachment simultaneously.
+- Ownership transfer from the attachment-delete path to the chat-deletion cleanup path occurs only when the chat itself becomes soft-deleted, after which the soft-delete cleanup path exclusively owns provider cleanup for that attachment.
+
+##### Attachment cleanup state machine
+
+`attachments.cleanup_status` uses the following domain-outcome state machine:
+
+- `pending` — provider cleanup is still outstanding for the soft-deleted chat
+- `done` — provider cleanup finished successfully
+- `failed` — cleanup reached terminal failure after exhausting the configured per-attachment retry budget
+
+Allowed transitions:
+
+- `pending` -> `done`
+- `pending` -> `failed`
+
+Normative rules:
+
+- The `attachments` table MUST enforce the valid state values with a database-level constraint: `CHECK (cleanup_status IN ('pending', 'done', 'failed'))` (nullable column; the constraint applies only when the column is non-NULL). This constraint ensures that the state-machine transitions (`pending` -> `done`, `pending` -> `failed`) are the only transitions expressible at the persistence layer, and that canonical backlog queries (e.g. `WHERE cleanup_status = 'pending'`) and metrics derived from `cleanup_status` are valid regardless of application-layer bugs.
+- `done` and `failed` are terminal states.
+- On retryable provider or infrastructure failure, the handler MUST increment `attachments.cleanup_attempts`, record `last_cleanup_error`, set `cleanup_updated_at = now()`, leave `cleanup_status = 'pending'`, and return control to the shared outbox retry mechanism.
+- On successful provider deletion or provider `404 Not Found`, the handler MUST set `cleanup_status = 'done'` and `cleanup_updated_at = now()`.
+- If `attachments.cleanup_attempts` reaches `chat_deletion_cleanup.max_attempts_per_attachment`, the handler MUST set `cleanup_status = 'failed'`, update `last_cleanup_error`, set `cleanup_updated_at = now()`, and treat the attachment as terminal unresolved provider-file debt.
+- `failed` is terminal for the row lifecycle, but it MUST NOT be treated as equivalent to cleanup completion for chat-level provider purge semantics.
+
+##### Outbox payload and execution semantics
+
+- The soft-delete transaction MUST serialize, at minimum, `tenant_id`, `chat_id`, stable `system_request_id`, `reason = "chat_soft_delete"`, and `chat_deleted_at` in the chat-cleanup outbox payload. (`system_request_id` follows the same stable-identity convention as thread summary payloads — a server-generated UUID v4 persisted at enqueue time and reused unchanged across retries.)
+- The handler MUST use `tenant_id` and `chat_id` from that payload to load the current attachment rows and `chat_vector_stores` row for the soft-deleted chat.
+- Active chats (`chats.deleted_at IS NULL`) MUST NOT be processed by the chat-deletion cleanup handler.
+- The queue SHOULD partition by `chat_id` so that all cleanup messages for the same chat are assigned to the same partition and processed sequentially. This ensures that attachment cleanup and vector-store cleanup for a given chat stay ordered through chat-scoped partitioning plus the persisted `attachments.cleanup_status` and `chat_vector_stores` row state. Different chats MAY be cleaned in parallel across partitions. The partition count (e.g. 8) controls concurrency across chats, not within a single chat; the concrete value is implementation-defined and configured via `chat_deletion_cleanup.partition_count`.
+- Correctness of cleanup does not depend on partition ordering alone — it relies on idempotent provider deletion, per-attachment terminal state tracking, and the vector-store ordering invariant (all attachments terminal before vector-store delete).
+- Mini Chat MUST rely on the shared outbox for retry, backoff, lease/reclaim, dead-letter handling, and reconciliation rather than re-implementing those mechanics in attachment row state.
+
+##### Vector store cleanup ordering
+
+Each chat has at most one vector store (created on first document upload). The `vector_store_id` is an opaque provider-assigned identifier stored in the `chat_vector_stores` table. In P1, the persisted `chat_vector_stores` row is also the durable marker that vector-store cleanup is still outstanding.
+
+Normative rules:
+
+- The chat-deletion cleanup handler exclusively owns vector-store deletion for soft-deleted chats.
+- A vector store is delete-eligible only if every attachment cleanup row for that soft-deleted chat is in a terminal state (`done` or `failed`) and none remain `pending`.
+- Equivalently, the handler MUST NOT delete the vector store while any attachment cleanup row for that chat is `pending`.
+- If the vector store becomes delete-eligible and any attachment row is `failed`, the handler MUST emit `mini_chat_cleanup_vector_store_with_failed_attachments_total` before proceeding with vector-store deletion. The metric signals that provider-side file cleanup debt remains, but the vector store itself is no longer retained as a blocking resource.
+- If a vector store is delete-eligible, the handler MUST attempt provider deletion through OAGW.
+- Provider `404 Not Found` for vector-store deletion MUST be treated as success.
+- On successful delete or `404 Not Found`, the handler MUST delete the corresponding `chat_vector_stores` row. Deleting that row is the durable completion marker for vector-store cleanup.
+- On retryable provider or infrastructure failure, the handler MUST leave the `chat_vector_stores` row unchanged and return control to the shared outbox retry mechanism.
+- P1 does not require a separate vector-store-specific persisted state machine. Recovery is driven by re-running the same durable cleanup message against the current attachment cleanup state and the persisted `chat_vector_stores` row.
+
+##### Additional invariants
+
+1. **Idempotency**: every cleanup step MUST be idempotent. Provider `DELETE` calls that return `404 Not Found` (resource already deleted) MUST be treated as success, not failure. The cleanup handler MUST NOT fail or retry on `404` responses from the provider.
+
+2. **No identifier reuse**: `vector_store_id` and `provider_file_id` are provider-assigned opaque identifiers. Mini Chat MUST NOT assume or rely on any reuse semantics — each provider resource has a unique lifecycle. Since chat IDs are UUIDs, the scenario of "chat recreated with the same ID" does not occur in practice; soft-deleted chat rows are retained for audit and are excluded from active queries by `deleted_at IS NOT NULL`.
+
+3. **Failure tolerance**: if a process crashes or restarts after some attachment rows reach terminal state but before vector-store deletion completes, the remaining `chat_vector_stores` row preserves the outstanding cleanup work and the same durable outbox message remains retryable within the shared outbox framework. A chat is not fully purged from provider storage until both conditions hold: (a) every relevant attachment cleanup row is in a terminal state (`done` or `failed`), and (b) the corresponding `chat_vector_stores` row has been removed after provider delete success or `404 Not Found`. If any attachment row is `failed`, individual provider-file cleanup debt remains unresolved, but vector-store deletion is not blocked — the handler proceeds with vector-store deletion and emits `mini_chat_cleanup_vector_store_with_failed_attachments_total`. Because `failed` rows are terminal in P1 and excluded from automatic re-enqueue, clearing per-file debt requires operator intervention or a future recovery policy outside P1 scope.
+
+4. **Provider-side orphan files (P2)**: if a process crashes after a successful provider Files API upload but before `cas_set_uploaded` persists the `provider_file_id` in the local database, the uploaded file becomes an orphan on the provider side. Mini Chat has no record of its `provider_file_id` and therefore the P1 cleanup handler cannot delete it. This orphan window is narrow (microseconds between provider HTTP response and local DB commit) and the cost is limited to provider storage. P2 SHOULD implement a **provider file reconciliation job** that periodically lists files via the provider Files API (`GET /files?purpose=assistants`), compares with locally-known `provider_file_id` values, and deletes unmatched orphans. Provider-side filenames follow the structured convention `{chat_id}_{attachment_id}.{ext}` (see `structured_filename()`), so the reconciliation job can parse the filename to extract `chat_id` and `attachment_id`, then verify against the local database whether the file is tracked. The reconciliation job MUST be leader-elected (single instance) and MUST NOT delete files younger than a configurable grace period (e.g. 1 hour) to avoid racing with in-progress uploads. Deleting a provider vector store does NOT delete its referenced files — it only removes the index references — so orphan file cleanup cannot rely on vector store deletion alone.
+
+**Cleanup configuration knobs** (deployment config):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `chat_deletion_cleanup.enabled` | bool | true | Enables outbox-driven provider cleanup for soft-deleted chats |
+| `chat_deletion_cleanup.queue_name` | string | implementation-defined | Shared outbox queue used for soft-deleted chat cleanup |
+| `chat_deletion_cleanup.partition_count` | integer | implementation-defined (e.g. 8) | Number of shared outbox partitions for chat cleanup; controls concurrency across chats (all work for a given chat is serialized within its assigned partition) |
+| `chat_deletion_cleanup.max_attempts_per_attachment` | integer | 5 | Max provider delete attempts recorded per attachment before terminal `failed` |
+
+**Observability (P1)**:
+
+- `mini_chat_cleanup_completed_total{resource_type="file|vector_store"}` (counter) — successful cleanup operations
+- `mini_chat_cleanup_failed_total{resource_type="file"}` (counter) — attachment cleanup rows that transition to terminal `failed`
+- `mini_chat_cleanup_retry_total{resource_type="file|vector_store",reason}` (counter) — handler retries delegated to the shared outbox after retryable cleanup attempts
+- `mini_chat_cleanup_backlog{state,resource_type="file"}` (gauge) — canonical cleanup backlog metric for persisted attachment row states only; `state` MUST cover `pending|failed`
+- `mini_chat_cleanup_vector_store_with_failed_attachments_total` (counter) — vector-store deletions executed after attachment cleanup reached terminal outcomes that included at least one `failed` attachment row
+
+Vector-store cleanup does not have an independent persisted state machine in P1. Any vector-store visibility MUST therefore be expressed as counters or shared-outbox/dead-letter visibility plus derived queries over `chat_vector_stores`, not as file-style state backlog metrics.
 
 ### 3.7 Database Schemas & Tables
 
@@ -1482,7 +1828,7 @@ Observability (P2+):
 | id | UUID | Chat identifier |
 | tenant_id | UUID | Owning tenant |
 | user_id | UUID | Owning user |
-| model | VARCHAR(64) | **selected_model**: model chosen at chat creation, immutable for the chat lifetime. Must reference a valid entry in the model catalog. Resolved via the `is_default` premium model algorithm if not specified at creation (see Model Catalog Configuration). |
+| model | TEXT | **selected_model**: model chosen at chat creation, immutable for the chat lifetime. Must reference a valid entry in the model catalog. Resolved via the `is_default` premium model algorithm if not specified at creation (see Model Catalog Configuration). |
 | title | VARCHAR(255) | Chat title (user-set or auto-generated) |
 | is_temporary | BOOLEAN | If true, auto-deleted after 24h (P2; default false at P1) |
 | created_at | TIMESTAMPTZ | Creation time |
@@ -1515,7 +1861,10 @@ Observability (P2+):
 | features_used | JSONB | Feature flags and counters (nullable) |
 | input_tokens | BIGINT | Actual input tokens for assistant messages (nullable) |
 | output_tokens | BIGINT | Actual output tokens for assistant messages (nullable) |
-| model | VARCHAR(64) | **effective_model**: actual model used for this turn after quota/policy evaluation (nullable; set for assistant messages). May differ from `chats.model` (selected_model) when a downgrade occurred. Derived from `chat_turns.effective_model`. |
+| cache_read_input_tokens | BIGINT | Input tokens served from provider cache (default 0). Subset of `input_tokens`, not additive. |
+| cache_write_input_tokens | BIGINT | Input tokens written to provider cache (default 0). Reserved for Anthropic. Subset of `input_tokens`, not additive. |
+| reasoning_tokens | BIGINT | Output tokens consumed by model reasoning/thinking (default 0). Subset of `output_tokens`, not additive. |
+| model | TEXT | **effective_model**: actual model used for this turn after quota/policy evaluation (nullable; set for assistant messages). May differ from `chats.model` (selected_model) when a downgrade occurred. Derived from `chat_turns.effective_model`. |
 | is_compressed | BOOLEAN | True if included in a thread summary |
 | created_at | TIMESTAMPTZ | Creation time |
 | deleted_at | TIMESTAMPTZ | Soft-delete timestamp (nullable). List queries exclude deleted rows. |
@@ -1524,7 +1873,9 @@ Observability (P2+):
 
 **Constraints**: NOT NULL on `chat_id`, `role`, `content`, `content_type`, `created_at`. FK `chat_id` -> `chats.id` ON DELETE CASCADE. UNIQUE on `(chat_id, request_id, role)` WHERE `request_id IS NOT NULL AND deleted_at IS NULL` (allows one user message and one assistant message per request_id; maintains idempotency).
 
-**Indexes**: `(chat_id, created_at) WHERE deleted_at IS NULL` for loading recent messages (partial index excluding soft-deleted rows)
+**Indexes**: `(chat_id, created_at, id) WHERE deleted_at IS NULL` for deterministic chronological scans, latest-N retrieval, and thread summary range selection (partial index excluding soft-deleted rows)
+
+**Ordering note (normative)**: Any server-side message selection that depends on a stable frontier, including thread summary compression, MUST use the strict total order `(created_at ASC, id ASC)` or its exact descending inverse. `created_at` alone is insufficient because multiple messages may share the same timestamp. `id` is used only as a deterministic UUID tie-breaker.
 
 **Secure ORM**: No independent `#[secure]` — accessed through parent chat. Queries are filtered by `chat_id` obtained from a scoped chat query.
 
@@ -1544,18 +1895,19 @@ Tracks idempotency and in-progress generation state for `request_id`. This avoid
 | state | VARCHAR(16) | `running`, `completed`, `failed`, `cancelled` |
 | provider_name | VARCHAR(128) | Provider GTS identifier (nullable until request starts). Same GTS format as `messages.provider_name`. |
 | provider_response_id | VARCHAR(128) | Provider response ID (nullable) |
-| assistant_message_id | UUID | Persisted assistant message ID (nullable until completed) |
+| assistant_message_id | UUID | Persisted assistant message ID (nullable — set for `completed` and `cancelled`-with-content turns) |
 | error_code | VARCHAR(64) | Terminal error code (nullable) |
 | reserve_tokens | BIGINT | Preflight token reserve (`estimated_input_tokens + max_output_tokens_applied`). Persisted at preflight before any outbound provider call. Nullable - NULL only for turns that fail before a reserve is taken (pre-reserve failures). Immutable after insert. Used for deterministic reconciliation under ABORTED and post-provider-start FAILED outcomes (sections 5.7, 5.8, 5.9). |
 | max_output_tokens_applied | INTEGER | The `max_output_tokens` value used at preflight for this turn. Persisted at preflight (same time as `reserve_tokens`). Nullable — NULL only for pre-reserve failures. Immutable after insert. Required for deterministic derivation of `estimated_input_tokens` at settlement time: `estimated_input_tokens = reserve_tokens - max_output_tokens_applied` (sections 5.8, 5.9). |
 | reserved_credits_micro | BIGINT | Worst-case credit reserve computed at preflight: `credits_micro(estimated_input_tokens, max_output_tokens_applied, in_mult, out_mult)` where `estimated_input_tokens = reserve_tokens - max_output_tokens_applied` (section 5.4.1), using multipliers from the policy snapshot identified by `policy_version_applied`. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. Used for reserve release/reconciliation at settlement (section 5.4.4). |
 | policy_version_applied | BIGINT | Monotonic version of the policy snapshot (section 5.2.1) used for this turn's preflight reserve, tier selection, and settlement. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. Required for deterministic credit computation at settlement and for CCM billing reconciliation. |
-| effective_model | VARCHAR(64) | Model resolved at preflight after quota downgrade cascade. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. **Single source of truth** for the model used in this turn. Also recorded on `messages.model` for the assistant message. |
+| effective_model | TEXT | Model resolved at preflight after quota downgrade cascade. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. **Single source of truth** for the model used in this turn. Also recorded on `messages.model` for the assistant message. |
 | minimal_generation_floor_applied | INTEGER | The `minimal_generation_floor` value from MiniChat config (NOT from CCM policy snapshot) captured at preflight. Persisted at preflight (same time as `reserve_tokens` and `policy_version_applied`). Nullable — NULL only for pre-reserve failures. Immutable after insert. Required for deterministic estimated settlement (sections 5.8, 5.9) when provider-reported usage is unavailable (aborted/failed/orphan outcomes). This is the ONLY estimation budget parameter that influences settlement; all other estimation budgets (bytes_per_token_conservative, safety_margin_pct, etc.) are preflight-only and MUST NOT affect settlement. |
 | error_detail | TEXT | Non-sensitive diagnostic information for failed turns (nullable). Not exposed in public API. |
 | deleted_at | TIMESTAMPTZ | Soft-delete timestamp for turn mutations (nullable). Set when a turn is replaced by retry or edit, or explicitly deleted. |
 | replaced_by_request_id | UUID | `request_id` of the new turn that replaced this one via retry or edit (nullable). Stored on the old (soft-deleted) turn to provide audit traceability. Not used by delete. |
 | started_at | TIMESTAMPTZ | DB-assigned turn creation timestamp (set on INSERT). Used for ordering and latest-turn selection in P1. |
+| last_progress_at | TIMESTAMPTZ | Durable liveness timestamp for running turns. MUST be initialized when the turn enters `running` and MUST be updated on meaningful forward progress, including provider chunk receipt, SSE relay progress, tool event progress if such events are durably persisted for the turn, and terminal provider event reception. |
 | completed_at | TIMESTAMPTZ | Completion time (nullable) |
 | updated_at | TIMESTAMPTZ | Last update time |
 
@@ -1567,6 +1919,7 @@ Tracks idempotency and in-progress generation state for `request_id`. This avoid
 - CHECK `requester_type IN ('user', 'system')`
 - CHECK `(state IN ('completed', 'failed', 'cancelled') AND completed_at IS NOT NULL) OR (state NOT IN ('completed', 'failed', 'cancelled'))` — **Prevents half-finalized turns after crashes or partial writes**. Terminal states (completed/failed/cancelled) MUST have `completed_at` timestamp. This guarantees that any terminal state implies finalization timestamp is present, supporting exactly-once settlement/outbox semantics and simplifying crash recovery reasoning.
 - CHECK `(state = 'running' AND completed_at IS NULL) OR (state != 'running')` — **Running turns cannot have `completed_at` timestamp**. Prevents premature completion marking before finalization logic completes.
+- CHECK `(state = 'running' AND last_progress_at IS NOT NULL) OR (state != 'running')` — **Running turns MUST have a durable progress timestamp** so orphan detection can distinguish stalled execution from long-running healthy execution.
 
 **Indexes (P1)**:
 - `(chat_id, started_at DESC) WHERE deleted_at IS NULL`
@@ -1603,14 +1956,16 @@ Soft-delete rules:
 | storage_backend | VARCHAR(32) | Internal storage routing: `azure` (default). Not exposed in public API. Does NOT store URLs. |
 | provider_file_id | VARCHAR(128) | LLM provider file ID - OpenAI `file-*` or Azure OpenAI `assistant-*` (nullable until upload completes). Internal-only; MUST NOT be exposed via any API response. |
 | status | VARCHAR(16) | `pending`, `ready`, `failed` |
-| attachment_kind | VARCHAR(16) | `document` or `image`. Derived from `content_type` on INSERT: MIME types `image/png`, `image/jpeg`, `image/webp` -> `image`; all others -> `document`. Stored explicitly for efficient query filtering. |
+| attachment_kind | VARCHAR(16) | `document` or `image`. Derived from `content_type` on INSERT: MIME types `image/png`, `image/jpeg`, `image/webp`, `image/gif` -> `image`; all others -> `document`. Stored explicitly for efficient query filtering. |
+| for_file_search | BOOLEAN | `true` when the attachment is routed for `file_search` processing. Derived from MIME type on INSERT. Actual indexing state is tracked by `status` and the vector-store linkage. Default `false`. |
+| for_code_interpreter | BOOLEAN | `true` when the attachment is routed for `code_interpreter` usage. Derived from MIME type on INSERT. Default `false`. |
 | doc_summary | TEXT | LLM-generated document summary (nullable; always NULL for `attachment_kind=image`) |
 | img_thumbnail | BYTEA | Server-generated preview thumbnail raw bytes (nullable; always NULL for `attachment_kind=document`). Stored as WebP. Maximum decoded size: `thumbnail_max_bytes` (default 131072 / 128 KiB). Stored only in this database; never uploaded to provider. |
 | img_thumbnail_width | INTEGER | Thumbnail width in pixels (nullable) |
 | img_thumbnail_height | INTEGER | Thumbnail height in pixels (nullable) |
-| summary_model | VARCHAR(64) | Model used to generate the summary (nullable) |
+| summary_model | TEXT | Model used to generate the summary (nullable) |
 | summary_updated_at | TIMESTAMPTZ | When the summary was last generated (nullable) |
-| cleanup_status | VARCHAR(16) | `pending`, `in_progress`, `done`, `failed` (nullable) |
+| cleanup_status | VARCHAR(16) | `pending`, `done`, `failed` (nullable). `pending` means provider cleanup is still outstanding for the soft-deleted chat. For chat-level provider purge semantics, only `done` counts as cleanup complete; `failed` remains unresolved cleanup debt. |
 | cleanup_attempts | INTEGER | Cleanup retry attempts (default 0) |
 | last_cleanup_error | TEXT | Last cleanup error (nullable) |
 | cleanup_updated_at | TIMESTAMPTZ | When cleanup state was last updated (nullable) |
@@ -1619,9 +1974,44 @@ Soft-delete rules:
 
 **PK**: `id`
 
-**Constraints**: NOT NULL on `tenant_id`, `chat_id`, `uploaded_by_user_id`, `filename`, `status`, `attachment_kind`, `storage_backend`, `created_at`. FK `chat_id` -> `chats.id` ON DELETE CASCADE. CHECK `attachment_kind IN ('document', 'image')`.
+**Constraints**: NOT NULL on `tenant_id`, `chat_id`, `uploaded_by_user_id`, `filename`, `status`, `attachment_kind`, `storage_backend`, `created_at`. FK `chat_id` -> `chats.id` ON DELETE CASCADE. CHECK `attachment_kind IN ('document', 'image')`. CHECK `cleanup_status IN ('pending', 'done', 'failed')` (applied only when `cleanup_status IS NOT NULL`).
 
 **Secure ORM**: No independent `#[secure]` — accessed through parent chat. Owner isolation inherited from chat-level scoping (`chat_id` obtained from a scoped chat query).
+
+#### Table: message_attachments
+
+- [ ] `p1` - **ID**: `cpt-cf-mini-chat-dbtable-message-attachments`
+
+M:N join table linking messages to the attachments explicitly referenced on that message. Populated **only** from `attachment_ids` in the `SendMessage` request body (and when a turn is retried or edited, where attachment associations are copied to the new user message). This table is the **single source of truth** for the `attachments` array (`AttachmentSummary` objects) returned in `GET /v1/chats/{id}/messages` responses.
+
+Writers MUST populate `chat_id` from the parent message's `messages.chat_id` (not from user input), and the composite foreign keys enforce that both referenced rows belong to the same chat.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| chat_id | UUID | Owning chat (denormalized for integrity; MUST match both referenced rows) |
+| message_id | UUID | Parent message (FK → messages.id) |
+| attachment_id | UUID | Referenced attachment (FK → attachments.id) |
+| created_at | TIMESTAMPTZ | Association creation time |
+
+**PK**: `(chat_id, message_id, attachment_id)` (composite)
+
+**Constraints**:
+- NOT NULL on `chat_id`, `created_at`
+- Composite FK `(message_id, chat_id)` → `messages(id, chat_id)` ON DELETE CASCADE (enforces the message belongs to the same chat)
+- Composite FK `(attachment_id, chat_id)` → `attachments(id, chat_id)` ON DELETE CASCADE (enforces the attachment belongs to the same chat)
+  - **Implementation note**: this requires `messages` and `attachments` to expose a UNIQUE key on `(id, chat_id)` (in addition to the primary key on `id`) so the composite FKs are valid in Postgres/SQLite.
+
+**Indexes**:
+- `(chat_id)` for chat-scoped cleanup and audits
+- `(attachment_id, chat_id)` (or `(chat_id, attachment_id)`) for reverse lookups (e.g. "which messages in this chat reference this attachment")
+
+**Secure ORM**: No independent `#[secure]` — accessed through parent message/chat. Queries are filtered by `message_id` obtained from a chat-scoped message query.
+
+**Semantics**:
+- One attachment may be referenced by multiple messages (M:N). This occurs when a turn is retried or edited — the new user message re-links the same attachment(s).
+- Attachments remain owned by the **chat** (`attachments.chat_id`). This table adds per-message association for UI rendering without changing attachment lifecycle or vector store ownership.
+- The `attachments` array in the API `Message` object is derived via a lateral join from `message_attachments` to `attachments` in the `listMessages` query, projecting only the `AttachmentSummary` fields (`attachment_id`, `kind`, `filename`, `status`, `img_thumbnail`).
+- For assistant and system messages, the join table will have zero rows (empty `attachments` array in API response).
 
 #### Table: thread_summaries
 
@@ -1632,14 +2022,31 @@ Soft-delete rules:
 | id | UUID | Summary identifier |
 | chat_id | UUID | Parent chat (FK -> chats.id, UNIQUE) |
 | summary_text | TEXT | Compressed conversation summary |
-| summarized_up_to | UUID | Last message ID included in this summary |
+| summarized_up_to_created_at | TIMESTAMPTZ | Inclusive summary frontier `created_at` component |
+| summarized_up_to_message_id | UUID | Inclusive summary frontier `id` component paired with `summarized_up_to_created_at`; together they identify the last message included in `summary_text` |
 | token_estimate | INTEGER | Estimated token count of summary |
 | created_at | TIMESTAMPTZ | Creation time (NOT NULL, DEFAULT now()) |
 | updated_at | TIMESTAMPTZ | Last update time (NOT NULL, DEFAULT now()) |
 
 **PK**: `id`
 
-**Constraints**: UNIQUE on `chat_id`. FK `chat_id` -> `chats.id` ON DELETE CASCADE. NOT NULL on `created_at`, `updated_at`. 1:1 relationship with chat enforced by UNIQUE(chat_id).
+**Constraints**: UNIQUE on `chat_id`. FK `chat_id` -> `chats.id` ON DELETE CASCADE. NOT NULL on `summarized_up_to_created_at`, `summarized_up_to_message_id`, `created_at`, `updated_at`. 1:1 relationship with chat enforced by UNIQUE(chat_id).
+
+**Frontier semantics (normative)**: The pair `(summarized_up_to_created_at, summarized_up_to_message_id)` is the inclusive summary frontier in the per-chat message order `(created_at ASC, id ASC)`. A missing `thread_summaries` row means no messages have been summarized yet.
+
+**Initial state**:
+
+A `thread_summaries` row MUST be created only when the first successful thread summary is committed.
+
+Before that point, the chat has no `thread_summaries` row and its summary frontier is considered empty.
+
+**Committed state only (normative)**:
+
+`thread_summaries` stores only committed summary state for the chat.
+
+It MUST NOT be used as the sole storage for pending or in-flight summary work.
+
+Pending and in-flight automatic summary work MUST be represented by the shared outbox message plus the durable frontier state in `thread_summaries` and `messages`. Mini Chat MUST NOT create a second module-local claim/reclaim table solely to duplicate shared outbox execution semantics.
 
 **Secure ORM**: No independent `#[secure]` — accessed through parent chat.
 
@@ -1661,6 +2068,8 @@ Soft-delete rules:
 
 **Constraints**: UNIQUE on `(tenant_id, chat_id)`. NOT NULL on `provider`, `created_at`. `vector_store_id` is nullable (NULL while provider creation is in progress). One vector store per chat within a tenant.
 
+**Cleanup invariant**: while a soft-deleted chat still has a `chat_vector_stores` row, provider-side vector-store cleanup is considered outstanding; the row MUST be removed only after successful provider deletion or `404 Not Found`.
+
 **Secure ORM**: No independent `#[secure]` — accessed through parent chat. The table has no `user_id` column; owner isolation is inherited from chat-level scoping (`chat_id` obtained from a scoped chat query). All queries MUST include `tenant_id` in the WHERE clause (enforced by the chat-level `AccessScope`).
 
 **Concurrency invariants**:
@@ -1677,7 +2086,7 @@ Soft-delete rules:
 - All queries against `chat_vector_stores` MUST include `tenant_id` in the WHERE clause (enforced by `AccessScope` scoping).
 - The system MUST NOT allow any code path to look up, query, or reference a vector store row belonging to a different tenant.
 
-**Implementation note (normative)**: direct access to `chat_vector_stores` by primary key (`id`) or by `vector_store_id` alone is **forbidden** in request-handling code. All access MUST go through chat-scoped repository methods that enforce `(tenant_id, user_id, chat_id)` via `AccessScope` — typically by first loading the parent chat through a scoped query and then joining or filtering `chat_vector_stores` on `(tenant_id, chat_id)`. Any query against this table that does not include `tenant_id` and a chat-scoped join (or equivalent proven chat-scope guarantee) is a tenant-isolation violation. Background jobs (cleanup worker, orphan reaper) that operate outside a user `AccessScope` MUST still include `tenant_id` in every query.
+**Implementation note (normative)**: direct access to `chat_vector_stores` by primary key (`id`) or by `vector_store_id` alone is **forbidden** in request-handling code. All access MUST go through chat-scoped repository methods that enforce `(tenant_id, user_id, chat_id)` via `AccessScope` — typically by first loading the parent chat through a scoped query and then joining or filtering `chat_vector_stores` on `(tenant_id, chat_id)`. Any query against this table that does not include `tenant_id` and a chat-scoped join (or equivalent proven chat-scope guarantee) is a tenant-isolation violation. Background processes that operate outside a user `AccessScope` MUST still include `tenant_id` in every query.
 
 **Creation protocol (P1, insert-first get-or-create):**
 
@@ -1685,7 +2094,7 @@ The domain service creates the vector store lazily on the first document upload 
 
 1. Begin transaction.
 2. Attempt INSERT:
-   ```
+   ```sql
    INSERT INTO chat_vector_stores (tenant_id, chat_id, vector_store_id, provider, created_at)
    VALUES (:tenant_id, :chat_id, NULL, :provider, now())
    ```
@@ -1715,7 +2124,7 @@ The domain service creates the vector store lazily on the first document upload 
 
 **Deletion race**:
 
-If the chat is soft-deleted before vector store creation completes, the creation transaction MUST fail: the upload handler loads the chat via a scoped query before entering the creation protocol. If the chat is soft-deleted, the scoped query returns not-found and the upload is rejected with 404 before reaching step 1. If deletion occurs after the chat-load check but before transaction commit, the cleanup worker will delete the orphaned row (the cleanup worker treats "not found" / "already deleted" as success).
+If the chat is soft-deleted before vector store creation completes, the creation transaction MUST fail: the upload handler loads the chat via a scoped query before entering the creation protocol. If the chat is soft-deleted, the scoped query returns not-found and the upload is rejected with 404 before reaching step 1. If deletion occurs after the chat-load check but before transaction commit, the outbox-driven chat-deletion cleanup path will delete the orphaned row and MUST treat provider "not found" / "already deleted" as success.
 
 #### Table: quota_usage
 
@@ -1738,6 +2147,7 @@ If the chat is soft-deleted before vector store creation completes, the creation
 | output_tokens | BIGINT | Total output tokens consumed (default 0). Updated only in bucket `total`. Telemetry only — NOT used for enforcement. |
 | file_search_calls | INTEGER | Number of file search tool calls (default 0). Updated only in bucket `total`. |
 | web_search_calls | INTEGER | Number of web search tool calls (P1) (default 0). Updated only in bucket `total`. |
+| code_interpreter_calls | INTEGER | Number of code interpreter tool calls (default 0). Updated only in bucket `total`. |
 | rag_retrieval_calls | INTEGER | Number of internal RAG retrieval calls (P2+) (default 0). Updated only in bucket `total`. |
 | image_inputs | INTEGER | Number of image attachments included in Responses API calls (default 0). Updated only in bucket `total`. |
 | image_upload_bytes | BIGINT | Total bytes of uploaded images (default 0). Updated only in bucket `total`. |
@@ -1745,7 +2155,7 @@ If the chat is soft-deleted before vector store creation completes, the creation
 
 **Bucket model**: each `(tenant_id, user_id, period_type, period_start)` combination has **one row per bucket**. The `total` bucket is the overall cap (all tiers). The `tier:premium` bucket tracks premium-only spend. Enforcement reads at most two rows per period; see section 5.4.2 for the availability algorithm.
 
-**Credit vs. token/call columns**: `spent_credits_micro` and `reserved_credits_micro` are the enforcement counters used by `quota_service` for tier availability checks and period limit enforcement (section 5.4.2). All other counters (`input_tokens`, `output_tokens`, `calls`, `file_search_calls`, `web_search_calls`, `image_inputs`, `image_upload_bytes`) are aggregate telemetry; they are NOT used for quota enforcement decisions.
+**Credit vs. token/call columns**: `spent_credits_micro` and `reserved_credits_micro` are the enforcement counters used by `quota_service` for tier availability checks and period limit enforcement (section 5.4.2). All other counters (`input_tokens`, `output_tokens`, `calls`, `file_search_calls`, `web_search_calls`, `code_interpreter_calls`, `image_inputs`, `image_upload_bytes`) are aggregate telemetry; they are NOT used for quota enforcement decisions.
 
 **Commit semantics**: quota updates MUST be atomic per bucket row. Implementations SHOULD use a transaction with row locking or a single UPDATE statement to avoid race conditions under parallel streams.
 
@@ -1755,7 +2165,7 @@ If the chat is soft-deleted before vector store creation completes, the creation
   - Standard-tier turns do NOT require a `tier:premium` row update.
 
 - **At settlement (commit)**:
-  - Always (bucket `total`): `reserved_credits_micro -= turn_reserved_credits_micro; spent_credits_micro += turn_actual_credits_micro; calls += 1; input_tokens += actual_input_tokens; output_tokens += actual_output_tokens`.
+  - Always (bucket `total`): `reserved_credits_micro -= turn_reserved_credits_micro; spent_credits_micro += turn_actual_credits_micro; calls += 1; input_tokens += actual_input_tokens; output_tokens += actual_output_tokens; file_search_calls += turn_file_search_calls; web_search_calls += turn_web_search_calls; code_interpreter_calls += turn_code_interpreter_calls`.
   - If the turn ran on premium tier (bucket `tier:premium`): `reserved_credits_micro -= turn_reserved_credits_micro; spent_credits_micro += turn_actual_credits_micro; calls += 1`.
   - Token telemetry counters (`input_tokens`, `output_tokens`) are updated only in bucket `total`.
 
@@ -1815,45 +2225,25 @@ Alternative naming (NOT in P1):
 | Column | Type | Description |
 |--------|------|-------------|
 | id | UUID | Reaction identifier |
+| chat_id | UUID | Owning chat (denormalized for integrity; MUST match the parent message's `messages.chat_id`) |
 | message_id | UUID | Parent message (FK → messages.id) |
 | user_id | UUID | Reacting user |
+| tenant_id | UUID | Owning tenant (denormalized for tenant isolation; MUST match the parent chat's `chats.tenant_id`) |
 | reaction | VARCHAR(16) | `like` or `dislike` |
 | created_at | TIMESTAMPTZ | Reaction creation time |
 
 **PK**: `id`
 
-**Constraints**: UNIQUE on `(message_id, user_id)`. NOT NULL on `message_id`, `user_id`, `reaction`, `created_at`. FK `message_id` → `messages.id` ON DELETE CASCADE. CHECK `reaction IN ('like', 'dislike')`.
+**Constraints**:
+- UNIQUE on `(message_id, user_id)`
+- NOT NULL on `chat_id`, `message_id`, `user_id`, `tenant_id`, `reaction`, `created_at`
+- Composite FK `(message_id, chat_id)` → `messages(id, chat_id)` ON DELETE CASCADE (enforces the message belongs to the same chat)
+  - **Implementation note**: this requires `messages` to expose a UNIQUE key on `(id, chat_id)` (in addition to the primary key on `id`) so the composite FK is valid in Postgres/SQLite.
+- CHECK `reaction IN ('like', 'dislike')`
 
-**Indexes**: `(message_id)` for lookups by message
+**Indexes**: `(message_id)` for lookups by message; `(chat_id)` for chat-scoped cleanup
 
-**Secure ORM**: No independent `#[secure]` — accessed through parent chat. The reaction endpoints require the message's parent chat to be loaded via a scoped query first (same pattern as messages, attachments, and chat_turns).
-
-#### Table: user_model_prefs
-
-- [ ] `p1` - **ID**: `cpt-cf-mini-chat-dbtable-user-model-prefs`
-
-Per-user model enable/disable preferences. Used by the Models API visibility algorithm (section 3.3) to filter the policy catalog per user.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| tenant_id | UUID | Owning tenant |
-| user_id | UUID | Owning user |
-| model_id | VARCHAR(64) | References a `model_id` in the policy catalog |
-| is_enabled | BOOLEAN | `false` hides the model from this user. Default semantics: if no row exists, the model is considered enabled (allow-by-default). |
-| overrides | JSONB | Reserved for P2+ per-user model overrides (e.g., custom system prompts, temperature). MUST default to `'{}'` and MUST NOT affect billing, capability enforcement, or quota in P1. |
-| updated_at | TIMESTAMPTZ | Last update time |
-
-**PK**: `(tenant_id, user_id, model_id)` (composite primary key — no surrogate `id` column needed).
-
-**Constraints**: NOT NULL on `tenant_id`, `user_id`, `model_id`, `is_enabled`, `overrides`, `updated_at`.
-
-**Indexes**: `(tenant_id, user_id)` for loading all preferences for a user in one query (used by the visibility algorithm).
-
-**Secure ORM**: `#[secure(tenant_col = "tenant_id", owner_col = "user_id", no_type)]`
-
-**Allow-by-default semantics (P1)**: if no row exists for `(tenant_id, user_id, model_id)`, the model is treated as enabled. A row is only written when a user explicitly disables (or re-enables) a model. This keeps the table sparse and avoids a migration step when new models are added to the catalog.
-
-**P2+ extensibility**: the `overrides` JSONB column is reserved for future per-user model configuration (e.g., custom system prompts, preferred temperature). In P1, this column MUST be ignored by all enforcement and billing paths. No schema migration will be needed to start using it.
+**Secure ORM**: No independent `#[secure]` — accessed through parent chat. The reaction endpoints require the message's parent chat to be loaded via a scoped query first (same pattern as messages, attachments, and chat_turns). Writers MUST populate `chat_id` and `tenant_id` from the parent message's resolved chat (not from user input).
 
 #### Projection Table: tenant_closure
 
@@ -1886,9 +2276,19 @@ The authorized resource is **Chat**. Sub-resources (Message, Attachment, ThreadS
 
 | Attribute | Value                              |
 |-----------|------------------------------------|
-| GTS Type ID | `gts.cf.mini_chat._.chat.v1~`      |
+| GTS Type ID | `gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1`      |
 | Primary table | `chats`                            |
 | Authorization granularity | Chat-level (sub-resources inherit) |
+
+##### Model Resource Type
+
+The authorized resource for the Models API is **Model**. This is a read-only, catalog-sourced resource — it has no database table and no tenant/user scoping columns. Authorization is a pure permission check (`require_constraints=false`).
+
+| Attribute | Value |
+|-----------|-------|
+| GTS Type ID | `gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1` |
+| Primary table | — (sourced from policy catalog) |
+| Authorization granularity | Permission-only (no constraint scoping) |
 
 #### PEP Configuration
 
@@ -1920,20 +2320,24 @@ The authorized resource is **Chat**. Sub-resources (Message, Attachment, ThreadS
 | `POST /v1/chats/{id}:temporary` (P2) | `update` | present | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `GET /v1/chats/{id}/messages` | `list_messages` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `POST /v1/chats/{id}/messages:stream` | `send_message` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
-| `POST /v1/chats/{id}/attachments` | `upload` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `POST /v1/chats/{id}/attachments` | `upload_attachment` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `GET /v1/chats/{id}/attachments/{attachment_id}` | `read_attachment` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `DELETE /v1/chats/{id}/attachments/{attachment_id}` | `delete_attachment` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `GET /v1/chats/{id}/turns/{request_id}` | `read_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
-| `POST /v1/chats/{id}/turns/{request_id}:retry` | `retry_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `POST /v1/chats/{id}/turns/{request_id}/retry` | `retry_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `PATCH /v1/chats/{id}/turns/{request_id}` | `edit_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `DELETE /v1/chats/{id}/turns/{request_id}` | `delete_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
-| `PUT /v1/chats/{id}/messages/{msg_id}/reaction` | `react` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `PUT /v1/chats/{id}/messages/{msg_id}/reaction` | `set_reaction` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `DELETE /v1/chats/{id}/messages/{msg_id}/reaction` | `delete_reaction` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `GET /v1/models` | `list` | absent | `false` | decision only (no constraints) |
+| `GET /v1/models/{model_id}` | `read` | absent | `false` | decision only (no constraints) |
 
 **Notes**:
-- `list_messages`, `send_message`, `upload`, `read_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `react`, and `delete_reaction` are actions on the Chat resource, not on Message or Turn sub-resources. The `resource.id` is the chat's ID.
+- `list_messages`, `send_message`, `upload_attachment`, `read_attachment`, `delete_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, and `delete_reaction` are actions on the Chat resource, not on Message or Turn sub-resources. The `resource.id` is always the chat's ID (`chat_id`). Sub-resource identifiers (`request_id`, `attachment_id`, `msg_id`) are child identifiers used for lookups within the chat but are **not independently protected** — authorization is anchored to the parent chat resource.
 - For streaming (`send_message`, `retry_turn`, `edit_turn`), authorization is evaluated once at SSE connection establishment. The entire streaming session operates under the initial authorization decision. No per-message re-authorization.
 - For `create`, the PEP passes `resource.properties.owner_tenant_id` and `resource.properties.user_id` from the SecurityContext. The PDP validates permission without returning constraints.
 - Turn mutation endpoints (`retry_turn`, `edit_turn`, `delete_turn`) additionally enforce latest-turn and terminal-state checks in the domain service after authorization succeeds (see section 3.9).
+- Model endpoints (`GET /v1/models`, `GET /v1/models/{model_id}`) use the `gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1` resource type. All other endpoints above use the Chat resource type.
 
 #### Evaluation Request/Response Examples
 
@@ -1948,7 +2352,7 @@ PEP -> PDP Request:
     "properties": { "tenant_id": "tenant-xyz-789" }
   },
   "action": { "name": "list" },
-  "resource": { "type": "gts.cf.mini_chat._.chat.v1~" },
+  "resource": { "type": "gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1" },
   "context": {
     "tenant_context": {
       "mode": "root_only",
@@ -2008,7 +2412,7 @@ PEP -> PDP Request:
   },
   "action": { "name": "read" },
   "resource": {
-    "type": "gts.cf.mini_chat._.chat.v1~",
+    "type": "gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1",
     "id": "chat-456"
   },
   "context": {
@@ -2072,7 +2476,7 @@ PEP -> PDP Request:
   },
   "action": { "name": "create" },
   "resource": {
-    "type": "gts.cf.mini_chat._.chat.v1~",
+    "type": "gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1",
     "properties": {
       "owner_tenant_id": "tenant-xyz-789",
       "user_id": "user-abc-123"
@@ -2124,7 +2528,7 @@ Mini Chat recognizes the following token scopes for third-party application narr
 |-------|---------|
 | `ai:mini_chat` | All mini-chat operations (umbrella scope) |
 | `ai:mini_chat:read` | `list`, `read`, `list_messages`, `read_attachment`, `read_turn` actions only |
-| `ai:mini_chat:write` | `create`, `update`, `delete`, `send_message`, `upload`, `retry_turn`, `edit_turn`, `delete_turn`, `react`, `delete_reaction` actions |
+| `ai:mini_chat:write` | `create`, `update`, `delete`, `send_message`, `upload_attachment`, `delete_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, `delete_reaction` actions |
 
 First-party applications (UI) use `token_scopes: ["*"]`. Third-party integrations receive narrowed scopes. Scope enforcement is handled by the PDP - the PEP includes `token_scopes` in the evaluation request context.
 
@@ -2153,8 +2557,8 @@ A turn is a user-message + assistant-response pair identified by `request_id` in
 
 | Operation | Effect |
 |-----------|--------|
-| **Retry** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn. The original user message content and attachment association (`attachment_ids`, if any) are re-submitted to the LLM for a new assistant response. |
-| **Edit** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn with the updated user message content and generates a new assistant response, preserving the attachment association (`attachment_ids`, if any). |
+| **Retry** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn. The original user message content and attachment associations are re-submitted to the LLM for a new assistant response. Attachment associations are **copied** from the old user message to the new user message via new `message_attachments` rows (the old rows remain on the soft-deleted message for audit). **Deleted attachment handling**: attachments that have been deleted since the original turn are silently excluded from the copy — only non-deleted (`deleted_at IS NULL`) attachments are copied to the new message. Retrieval operates over the entire chat vector store (P1). |
+| **Edit** | Soft-deletes the last turn (sets `deleted_at`, sets `replaced_by_request_id` to the new turn's `request_id`). Creates a new turn with the updated user message content and generates a new assistant response. Attachment associations are **copied** from the old user message to the new user message via new `message_attachments` rows (preserving the same attachments). **Deleted attachment handling**: same as retry — deleted attachments are silently excluded from the copy. |
 | **Delete** | Soft-deletes the last turn (sets `deleted_at`). No new turn is created. |
 
 #### Rules
@@ -2164,13 +2568,14 @@ A turn is a user-message + assistant-response pair identified by `request_id` in
 3. Retry, edit, and delete are allowed only if the target turn is in a terminal state (`completed`, `failed`, or `cancelled`). If the turn is `running`, reject with `400 Bad Request` — the client must wait for completion or cancel by disconnecting the SSE stream (see `cpt-cf-mini-chat-seq-cancellation`).
 4. Retry and edit soft-delete the previous turn (set `deleted_at`) and set `replaced_by_request_id` on the old turn pointing to the new turn's `request_id`. Delete sets `deleted_at` only (no replacement turn). Mutation eligibility considers only non-deleted turns, so delete cannot target an already replaced (soft-deleted) turn.
 5. Soft-deleted turns (`deleted_at IS NOT NULL`) are excluded from active conversation history and context assembly but retained in storage for audit traceability.
-6. **Atomicity invariant (normative)**: The "latest turn" identity check (rule 1), the terminal state check (rule 3), the soft-delete of the old turn, and the INSERT of the new `running` turn MUST all execute within a single DB transaction using `SELECT FOR UPDATE` or equivalent serializable isolation. Without this, two concurrent retry/edit requests for the same turn can both pass the validation checks simultaneously, both soft-delete the old turn (the second soft-delete is a no-op since `deleted_at` is already set), and both attempt to INSERT a new running turn — which violates the `UNIQUE(chat_id) WHERE state = 'running' AND deleted_at IS NULL` index. If the new running turn INSERT fails due to this unique constraint (concurrent race condition), the mutation MUST return `409 Conflict` with `code = "generation_in_progress"` (not HTTP 500).
+6. **New request_id invariant (normative)**: Both retry and edit create a new turn with a **new `request_id`** generated by the **server** (`Uuid::new_v4()`). The client does not provide the new `request_id` — the retry endpoint has no request body, and the edit endpoint body contains only `content`. The server-generated `request_id` is returned to the client via the SSE `event: stream_started` event (same contract as `sendMessage`). The old turn's `replaced_by_request_id` is set to the new `request_id` for audit traceability. The old `request_id` is no longer valid for idempotent replay — the soft-deleted turn is excluded from the replay path (replay requires `deleted_at IS NULL`). Audit events include both `original_request_id` and `new_request_id` (see audit event payloads for `turn_retry` and `turn_edit`).
+7. **Atomicity invariant (normative)**: The "latest turn" identity check (rule 1), the terminal state check (rule 3), the soft-delete of the old turn, and the INSERT of the new `running` turn MUST all execute within a single DB transaction using `SELECT FOR UPDATE` or equivalent serializable isolation. Without this, two concurrent retry/edit requests for the same turn can both pass the validation checks simultaneously, both soft-delete the old turn (the second soft-delete is a no-op since `deleted_at` is already set), and both attempt to INSERT a new running turn — which violates the `UNIQUE(chat_id) WHERE state = 'running' AND deleted_at IS NULL` index. If the new running turn INSERT fails due to this unique constraint (concurrent race condition), the mutation MUST return `409 Conflict` with `code = "generation_in_progress"` (not HTTP 500).
 
 #### Turn Mutation API Contracts
 
 ##### Retry Last Turn
 
-**Endpoint**: `POST /v1/chats/{id}/turns/{request_id}:retry`
+**Endpoint**: `POST /v1/chats/{id}/turns/{request_id}/retry`
 
 **Request body**: none
 
@@ -2181,6 +2586,7 @@ A turn is a user-message + assistant-response pair identified by `request_id` in
 | Code | HTTP Status | Condition |
 |------|-------------|-----------|
 | `not_latest_turn` | 409 | Target `request_id` is not the most recent turn |
+| `generation_in_progress` | 409 | Another turn is already running for this chat (including concurrent retry/edit race — see rule 7) |
 | `invalid_turn_state` | 400 | Turn is not in a terminal state |
 | `insufficient_permissions` | 403 | Turn does not belong to the requesting user |
 | `chat_not_found` | 404 | Chat does not exist or not accessible |
@@ -2210,13 +2616,7 @@ PATCH MUST NOT introduce a separate execution path for settlement or outbox emis
 
 **Request body**: none
 
-**Response** (success): `200 OK` with (`chat_id` omitted — already in URL path):
-```json
-{
-  "request_id": "uuid",
-  "deleted": true
-}
-```
+**Response** (success): `204 No Content` (no body).
 
 **Errors**: same as retry (except no streaming).
 
@@ -2247,9 +2647,10 @@ These events are emitted to platform `audit_service` following the same emission
 - Image upload and image-aware chat via multimodal Responses API input (PNG/JPEG/WebP); images stored via Files API, not indexed in vector stores
 - Retry, edit, and delete for the last turn only (tail-only mutation; see section 3.9)
 - Quota enforcement: daily + monthly per user; credit-based rate limits per tier tracked in real-time; credits are computed from provider-reported token usage using model credit multipliers; premium models have stricter limits, standard models have separate, higher limits; when all tiers are exhausted, reject with `quota_exceeded`; image counters enforced separately
-- File Search per-message call limit is configurable per deployment (default: 2 tool calls per message)
-- Web search via provider tooling (Azure Foundry), explicitly enabled per request via `web_search.enabled` parameter; per-message call limit (default: 2) and per-user daily quota (default: 75); global `disable_web_search` kill switch
-- Public Models API (`GET /v1/models`, `GET /v1/models/{model_id}`): read-only; returns only models visible to the authenticated user (globally enabled in the policy catalog AND user-enabled). Per-user model enable/disable via `user_model_prefs` table (allow-by-default semantics). Catalog sourced from `minichat-policy-plugin`.
+- File Search per-turn call limit is configurable per deployment (default: 2 tool calls per turn)
+- Web search via provider tooling (Azure Foundry), explicitly enabled per request via `web_search.enabled` parameter; per-turn call limit (default: 2) and per-user daily quota (default: 75); global `disable_web_search` kill switch
+- Code interpreter via provider tooling, explicitly enabled per request via `code_interpreter.enabled` parameter; per-turn call limit (default: 10) and per-user daily quota (default: 50); global `disable_code_interpreter` kill switch (rejects XLSX-only uploads at upload time; silently omits tool at stream time)
+- Public Models API (`GET /v1/models`, `GET /v1/models/{model_id}`): read-only; returns only globally enabled models from the policy catalog. Catalog sourced from `mini-chat-model-policy-plugin`.
 
 **Deferred to P2+**:
 - Temporary chats with 24h scheduled cleanup
@@ -2260,7 +2661,7 @@ These events are emitted to platform `audit_service` following the same emission
 - Per-workspace vector store aggregation
 - Full conversation history editing (editing/deleting arbitrary historical messages)
 - Thread branching or multi-version conversations
-- Per-user model overrides via `user_model_prefs.overrides` JSONB column (reserved in P1; enforcement deferred)
+- Automatic filename/document-reference resolution from free-form user text (P1 requires explicit `attachment_ids` resolved by the UI)
 
 ### Data Classification and Retention (P1)
 
@@ -2273,7 +2674,7 @@ Chat content may contain PII or sensitive data. Mini Chat treats messages and su
 
 **Retention**:
 - Chats are retained until explicit deletion by default, subject to operator-configured retention policies.
-- Soft-deleted chats (`deleted_at` set) are hard-purged by a periodic cleanup job after a configurable grace period.
+- Soft-deleted chats (`deleted_at` set) are eligible for hard purge by a periodic cleanup job after a configurable grace period, but they MUST NOT be treated as fully provider-purged while any attachment cleanup row remains not `done`.
 - Temporary chat auto-deletion (24h TTL) is deferred to P2.
 
 **Audit content handling (P1)**:
@@ -2308,26 +2709,26 @@ On each user message, the domain service assembles a `ContextPlan` in this norma
 3. **Thread summary** — if exists, replaces older history.
 4. **Document summaries** — short descriptions of attached documents.
 5. **Recent messages** — last N messages not covered by summary (N configurable, default 6-10).
-6. **Retrieval excerpts** — file_search results from the chat's vector store (top-k chunks).
+6. **Retrieval excerpts** — file_search results from the chat's vector store (top-k chunks). Retrieval always covers all documents in the chat vector store (no per-document filtering in P1). `file_search` is only included when the chat has at least one ready document attachment.
 7. **User message** — current turn.
-8. **Image attachments** — if the current request includes `attachment_ids`, include up to N images (configurable, default: 4) in the Responses API input content array. Images are appended to the user message content as `input_image` items with internal `provider_file_id` references (resolved from the `attachments` table; never exposed to clients). Images from previous turns are NOT re-included unless explicitly re-attached via `attachment_ids`.
+8. **Image attachments** — if the current request includes `attachment_ids` with image entries, include up to N images (configurable, default: 4) in the Responses API input content array. Images are appended to the user message content as `input_image` items with internal `provider_file_id` references (resolved from the `attachments` table; never exposed to clients). Images from previous turns are never implicitly reused; previously uploaded image attachments MAY be re-attached on later turns via `attachment_ids`, and only explicit re-attachment includes them in multimodal input. Images are never indexed into the vector store.
 
 **Truncation priority** (when total exceeds `token_budget` — see Context Window Budget constraint): items are dropped in reverse order of priority. Lowest priority is truncated first:
 
 | Priority (highest first) | Item |
 |--------------------------|------|
 | 1 (never truncated) | System prompt + tool guard instructions |
-| 2 (never truncated) | Thread summary |
-| 3 | User message + image attachments (current turn) |
-| 4 | Recent messages |
+| 2 (never truncated) | User message + image attachments (current turn) |
+| 3 (droppable) | Thread summary — dropped if it doesn't fit after mandatory items |
+| 4 | Recent messages (oldest dropped first) |
 | 5 | Document summaries |
 | 6 (truncated first) | Retrieval excerpts |
 
-Image attachments on the current turn are not truncated (they are subject to per-message count limits enforced at upload/preflight, not at context assembly).
+Image attachments on the current turn are not truncated (they are subject to per-turn count limits enforced at upload/preflight, not at context assembly).
 
 **Image context rules** (unchanged): images are referenced by provider file ID, not summarized at P1, not indexed in vector stores. If the effective model does not support image input, the domain service rejects before context assembly (see `cpt-cf-mini-chat-constraint-model-image-capability`).
 
-**Web search tool inclusion**: When `web_search.enabled=true` on the request, the domain service includes the `web_search` tool in the Responses API request alongside `file_search`. The provider decides whether to invoke the tool based on the query. Web search tool inclusion does not affect context assembly order or truncation priority. Web search call limits (per-message and per-day) are enforced by `quota_service` at preflight and committed on turn completion. When the per-user daily web search call quota (`web_search.daily_quota`) is exhausted, `quota_service` MUST reject the request at preflight (before any provider call) with `quota_exceeded` and `quota_scope = "web_search"`. This MUST NOT be reported as `quota_scope = "tokens"`.
+**Web search tool inclusion**: When `web_search.enabled=true` on the request, the domain service includes the `web_search` tool in the Responses API request alongside `file_search`. The provider decides whether to invoke the tool based on the query. Web search tool inclusion does not affect context assembly order or truncation priority. Web search call limits (per-turn and per-day) are enforced by `quota_service` at preflight and committed on turn completion. When the per-user daily web search call quota (`web_search.daily_quota`) is exhausted, `quota_service` MUST reject the request at preflight (before any provider call) with `quota_exceeded` and `quota_scope = "web_search"`. This MUST NOT be reported as `quota_scope = "tokens"`.
 
 #### Context Plan Truncation Algorithm
 
@@ -2341,8 +2742,9 @@ token_budget = min(configured_max_input_tokens, effective_model.context_window -
 
 | Category | Items | Rule |
 |----------|-------|------|
-| Never truncated | System prompt + tool guard instructions, thread summary | Always included. If these alone exceed the budget, the turn is rejected at preflight. |
-| Truncatable | User message + image attachments, recent messages, document summaries, retrieval excerpts | Removed in reverse priority order (lowest priority first, per the table above). |
+| Never truncated | System prompt + tool guard instructions, user message + image attachments | Always included. If these alone exceed the budget, the turn is rejected at preflight. |
+| Droppable | Thread summary | Dropped if it doesn't fit after mandatory items. |
+| Truncatable | Recent messages, document summaries, retrieval excerpts | Removed in reverse priority order (lowest priority first, per the table above). |
 
 **Algorithm** (step by step):
 
@@ -2353,8 +2755,8 @@ token_budget = min(configured_max_input_tokens, effective_model.context_window -
    a. **Retrieval excerpts**: drop lowest-ranked chunks first, then reduce `retrieval_k` until retrieval is empty or budget is met.
    b. **Document summaries**: drop document summaries starting from the least relevant.
    c. **Recent messages**: drop oldest conversation turns first, preserving the most recent turns.
-   d. **User message**: never truncated. If the plan still exceeds the budget after steps a-c, reject at preflight with an oversize error.
-5. Thread summary is never truncated. If the system prompt + thread summary + user message alone exceed the budget, the turn MUST be rejected before any outbound call.
+   d. **Thread summary**: dropped entirely if it doesn't fit after steps a-c.
+   e. **User message**: never truncated. If the plan still exceeds the budget after steps a-d, reject at preflight with an oversize error.
 
 **Determinism note**: given identical inputs (same message history, same retrieval results, same model context window), the truncation algorithm MUST produce the same `ContextPlan`. This property is important for debugging and idempotent retry scenarios. Determinism applies to truncation and ordering logic given identical retrieval inputs. Retrieval results themselves may vary depending on provider behavior.
 
@@ -2394,14 +2796,39 @@ SELECT * FROM messages
 
 The result is reversed to chronological order for ContextPlan assembly. K is a server-side configurable cap (default 6-10) and is not exposed to clients.
 
-### File Search Trigger Heuristics
+### File Search Tool Availability
 
-File Search is invoked when:
-- User explicitly references documents ("in the file", "in section", "according to the document")
-- Documents are attached and the query likely relates to them
-- User requests citations or sources
+The `file_search` tool is only provided to the LLM after at least one document attachment has been uploaded and reached `ready` status in the chat. Before any attachments exist, the backend MUST NOT include `file_search` in Responses API calls because no vector store exists for the chat.
 
-Limits: per-message file_search tool call limit is configurable per deployment (default: 2); max calls per day/user tracked in `quota_usage`.
+Once document attachments exist, the backend includes the `file_search` tool on every model request with the chat vector store ID attached via `tool_resources.file_search.vector_store_ids`. The provider/model decides whether to actually invoke the tool.
+
+**P1 constraint**: the backend MUST NOT infer document references from free-form user text. All attachment association is via `attachment_ids`, resolved to `attachment_id` values by the UI before the request is sent.
+
+Limits: per-turn file_search tool call limit is configurable per deployment (default: 2); max calls per day/user tracked in `quota_usage`.
+
+### Code Interpreter Tool Availability
+
+- [ ] `p1` - **ID**: `cpt-cf-mini-chat-design-code-interpreter`
+
+The `code_interpreter` tool is included in the Responses API request when the chat contains at least one ready attachment with `for_code_interpreter = true`. The backend queries for code interpreter file IDs via `attachments WHERE chat_id = :chat_id AND for_code_interpreter = true AND status = 'ready' AND deleted_at IS NULL` (under normal tenant access scope) and passes them as `tools[].container.file_ids` in the provider request.
+
+**Purpose routing and multi-purpose model**: Each attachment's purpose is derived from its MIME type by the domain-layer `resolve_purposes()` function and persisted as two boolean columns (`for_file_search`, `for_code_interpreter`) on the `attachments` row. Current assignments:
+
+| MIME type | `for_file_search` | `for_code_interpreter` | Vector store | Code interpreter |
+|-----------|-------------------|------------------------|--------------|------------------|
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (XLSX) | `false` | `true` | No | Yes |
+| Other document types | `true` | `false` | Yes | No |
+| Image types | `false` | `false` | No | No |
+
+A single attachment may serve multiple purposes (both flags `true`). The upload flow executes all purpose-specific paths independently: vector store indexing for `for_file_search`, no additional upload step for `for_code_interpreter` (the file is already available to the tool via its `provider_file_id`).
+
+**Kill switch**: `disable_code_interpreter` (see B.2.3 Kill switches). When active:
+
+- Attachments where `for_code_interpreter` would be the only purpose are rejected at upload with a validation error.
+- Attachments with additional purposes have `for_code_interpreter` set to `false`; the upload proceeds with remaining purposes.
+- The `code_interpreter` tool is excluded from Responses API requests regardless of existing ready attachments.
+
+**Model capability gating**: If the effective model's `tool_support.code_interpreter` is `false`, the same filtering applies at upload time. At stream time, the tool is not included in the request.
 
 ### Web Search Configuration
 
@@ -2413,13 +2840,13 @@ Web search is an explicitly-enabled tool available when `web_search.enabled=true
 
 ```yaml
 web_search:
-  max_calls_per_message: 2          # hard limit on web_search tool calls per user turn
+  max_calls_per_turn: 2             # hard limit on web_search tool calls per user turn
   daily_quota: 75                    # per-user daily web search call limit
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_calls_per_message` | integer | `2` | Hard limit on web_search tool calls the provider may make per user turn. Enforced by `quota_service` at preflight. |
+| `max_calls_per_turn` | integer | `2` | Hard limit on web_search tool calls the provider may make per user turn. Enforced by `quota_service` at preflight. |
 | `daily_quota` | integer | `75` | Per-user daily web search call limit. Tracked in `quota_usage.web_search_calls`. |
 
 **Deferred to P2+**: `web_search.provider_parameters` (search_depth, max_results, include_answer, include_raw_content, include_images, auto_parameters). P1 uses provider defaults. When implemented, provider_parameters are passed through opaquely to the web search provider on every search tool call.
@@ -2432,7 +2859,7 @@ web_search:
 
 > Use web_search only if the answer cannot be obtained from the provided context or your training data. Never use it for general knowledge questions. At most one web_search call per request.
 
-This instruction is a **soft guideline** appended to the system prompt only when `web_search.enabled=true`. It is not included when web search is disabled. The model MAY exceed the "at most one" suggestion; the system does not enforce it. The **hard limit** is `max_calls_per_message` (default: 2) enforced by `quota_service` at preflight — this is the enforceable backstop that prevents runaway tool calls regardless of model behavior.
+This instruction is a **soft guideline** appended to the system prompt only when `web_search.enabled=true`. It is not included when web search is disabled. The model MAY exceed the "at most one" suggestion; the system does not enforce it. The **hard limit** is `max_calls_per_turn` (default: 2) enforced by `quota_service` at preflight — this is the enforceable backstop that prevents runaway tool calls regardless of model behavior.
 
 **Citations**: Web search results are mapped to `event: citations` items with `source: "web"`, `url`, `title`, and `snippet` fields via the same provider event translation layer used for file_search.
 
@@ -2458,8 +2885,8 @@ Web search quota enforcement follows deterministic preflight checks with no retr
 
 **Mid-Turn Hard Limit Enforcement**:
 
-3. **Per-Message Tool Call Limit**: During turn execution, track web_search tool calls made by the provider.
-   - Hard limit: `max_calls_per_message` (configurable, default: 2)
+3. **Per-Turn Tool Call Limit**: During turn execution, track web_search tool calls made by the provider.
+   - Hard limit: `max_calls_per_turn` (configurable, default: 2)
    - If exceeded mid-turn:
      - Finalize turn as `failed` with `error_code = "web_search_calls_exceeded"` (not `quota_exceeded`)
      - Settle tokens based on actual/estimated usage at that point
@@ -2471,18 +2898,82 @@ Web search quota enforcement follows deterministic preflight checks with no retr
 **Error Codes Summary**:
 - `web_search_disabled` → HTTP 400 (kill switch active)
 - `quota_exceeded` with quota_scope=`"web_search"` → HTTP 429 (daily quota exhausted)
-- `web_search_calls_exceeded` → HTTP 200 + SSE `event: error` (per-message tool call limit breached mid-turn; not HTTP 429; turn finalized as `failed`)
+- `web_search_calls_exceeded` → HTTP 200 + SSE `event: error` (per-turn tool call limit breached mid-turn; not HTTP 429; turn finalized as `failed`)
+
+### Code Interpreter Configuration
+
+- [ ] `p1` - **ID**: `cpt-cf-mini-chat-design-code-interpreter-config`
+
+Code interpreter is an explicitly-enabled tool available when `code_interpreter.enabled=true` on the send-message request. The backend includes the `code_interpreter` tool in the Responses API request; the provider decides whether to invoke it.
+
+**Code interpreter provider configuration** (deployment config):
+
+```yaml
+code_interpreter:
+  max_calls_per_turn: 10            # hard limit on code_interpreter tool calls per user turn
+  daily_quota: 50                    # per-user daily code interpreter call limit
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_calls_per_turn` | integer | `10` | Hard limit on code_interpreter tool calls the provider may make per user turn. Enforced mid-turn in `stream_service`. |
+| `daily_quota` | integer | `50` | Per-user daily code interpreter call limit. Tracked in `quota_usage.code_interpreter_calls`. |
+
+#### Code Interpreter Quota Enforcement (P1 Determinism Rules)
+
+Code interpreter quota enforcement follows deterministic preflight checks with no retroactive refunds:
+
+**Preflight Checks** (executed BEFORE opening SSE stream):
+
+1. **Kill Switch Check**: If `disable_code_interpreter=true`:
+   - **Upload phase** (attachment_service): XLSX-only uploads are rejected with 422 validation error; multi-purpose attachments have `for_code_interpreter` filtered out
+   - **Stream phase** (stream_service): silently omit the `code_interpreter` tool from the Responses API request; proceed without code_interpreter capability
+   - Skip the daily quota check below (tool is not included)
+
+2. **Daily Quota Check**: If `request.code_interpreter.enabled=true` (and kill switch is not active):
+   - Load user's daily code_interpreter_calls usage from `quota_usage`
+   - If `daily_usage >= daily_quota`:
+     - Reject with HTTP 429
+     - Error code: `"quota_exceeded"`
+     - Error message: "Daily code interpreter quota exceeded"
+     - quota_scope: `"code_interpreter"` (distinguishes from token quota)
+
+**Mid-Turn Hard Limit Enforcement**:
+
+3. **Per-Turn Tool Call Limit**: During turn execution, track code_interpreter tool calls made by the provider.
+   - Hard limit: `max_calls_per_turn` (configurable, default: 10)
+   - If exceeded mid-turn:
+     - Finalize turn as `failed` with `error_code = "code_interpreter_calls_exceeded"` (not `quota_exceeded`)
+     - Settle tokens based on actual/estimated usage at that point
+     - **NO REFUNDS**: Do NOT attempt to refund surcharge tokens
+     - Emit outbox event with `outcome="failed"`, `settlement_method="actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available)
+
+**Error Codes Summary**:
+- `quota_exceeded` with quota_scope=`"code_interpreter"` → HTTP 429 (daily quota exhausted)
+- `code_interpreter_calls_exceeded` → HTTP 200 + SSE `event: error` (per-turn tool call limit breached mid-turn; not HTTP 429; turn finalized as `failed`)
 
 ### File Search Retrieval Scope
 
-**Physical store**: one dedicated vector store per chat (see `chat_vector_stores` table). Created on first document upload to the chat. All document attachments in a chat are indexed in the same physical vector store.
+**Physical store**: one dedicated vector store per chat (see `chat_vector_stores` table). Created on first document upload to the chat. All document attachments in a chat are indexed in the same physical vector store. The backend MUST resolve the provider vector store from `(tenant_id, chat_id)` internally. The client MUST NOT send provider `vector_store_id` values; the public API accepts only internal `attachment_id` UUIDs.
 
-**Retrieval scope (P1)**: file search is inherently scoped to the current chat because each chat has its own vector store. No cross-chat document leakage by design.
+**Retrieval scope**: file search is inherently scoped to the current chat because each chat has its own vector store. No cross-chat document leakage by design. Within a chat, retrieval always covers all documents currently present in the chat vector store (no per-document metadata filtering in P1). Attachment-scoped retrieval via metadata filtering on `attachment_id` is deferred to P2.
+
+### Retrieval Invariants
+
+1. `file_search` MUST NOT be included in Responses API calls before the first document attachment reaches `ready` status in the chat (no vector store exists).
+2. All document attachments are indexed into the chat vector store after upload processing completes.
+3. In P1, `file_search` is always provided without metadata filtering when the chat has ready document attachments. The decision to invoke `file_search` is delegated to the LLM; retrieval searches across all documents in the chat vector store.
+4. Deleting an attachment removes it from both chat metadata and the retrieval corpus.
+5. Image attachments are never indexed into the vector store.
+6. The `attachments` array of a submitted message MUST NOT be modified. An attachment referenced by any submitted message MUST NOT be deleted (see Attachment Mutability and Deletion).
+
+> **P2 (deferred)**: When `attachment_ids` in a user message includes document attachments, retrieval MAY be restricted to those documents via metadata filter on `attachment_id`.
 
 This means:
-- Chat A with documents D1, D2 → file_search queries only D1, D2 (Chat A's vector store)
-- Chat B with documents D3 → file_search queries only D3 (Chat B's vector store)
-- No metadata filtering needed for cross-chat isolation
+- Chat with no attachments → `file_search` is NOT included in the Responses API call
+- Chat A with documents D1, D2; any message → `file_search` queries D1, D2 (full chat vector store)
+- Chat B with documents D3 → `file_search` queries only D3 (Chat B's vector store)
+- Cross-chat isolation: each chat has its own dedicated vector store; no metadata filtering needed for tenant/chat isolation
 
 #### Vector Store Scope (P1)
 
@@ -2495,7 +2986,7 @@ One provider-hosted vector store per chat (see `chat_vector_stores` table). Crea
 | `attachment_id` | `attachments.id` | Cleanup and deduplication |
 | `uploaded_at` | `attachments.created_at` | Recency bias in retrieval |
 
-Physical and logical isolation are both per chat. No metadata filtering needed for cross-chat isolation.
+Physical and logical isolation are both per chat. No metadata filtering is needed — each chat has its own dedicated vector store.
 
 **Tenant isolation invariants (normative)**:
 
@@ -2507,11 +2998,88 @@ Physical and logical isolation are both per chat. No metadata filtering needed f
 
 Retrieved file search excerpts are integrated into the prompt as follows:
 
-1. The domain service invokes the provider `file_search` tool on the chat's vector store (top-k similarity search).
-2. Only the returned chunks are included in the prompt — full file contents are **never** injected by default.
-3. If retrieval returns no relevant chunks, the system proceeds without file context.
-4. Retrieved chunks are subject to the token budget truncation rules in Context Plan Assembly: thread summary and system prompt always have higher priority; retrieval excerpts are truncated first when the budget is exceeded.
-5. Maximum retrieved chunks per turn and maximum retrieved tokens per turn are configurable (see RAG defaults below).
+1. The domain service uses the chat vector store for retrieval without metadata filtering (P1). All documents in the chat vector store are searchable on every turn.
+2. The domain service invokes the provider `file_search` tool on the chat's vector store (top-k similarity search).
+3. Only the returned chunks are included in the prompt — full file contents are **never** injected by default.
+4. If retrieval returns no relevant chunks, the system proceeds without file context.
+5. Retrieved chunks are subject to the token budget truncation rules in Context Plan Assembly: thread summary and system prompt always have higher priority; retrieval excerpts are truncated first when the budget is exceeded.
+6. Maximum retrieved chunks per turn and maximum retrieved tokens per turn are configurable (see RAG defaults below).
+
+#### Citation File ID and Title Resolution
+
+File citations returned by the provider include a provider-specific file identifier (`provider_file_id`) in the annotation payload. Before constructing the client-visible citation object, the backend MUST resolve this provider identifier to the internal `attachment_id` and populate the `title` field with the original uploaded `filename` from the `attachments` table.
+
+Resolution is performed by a lookup in the `attachments` table:
+
+```
+(chat_id, provider_file_id) → (attachment_id, filename)
+```
+
+The lookup MUST be restricted to the current `chat_id` to preserve tenant and chat isolation. Raw `provider_file_id` values MUST NOT be exposed in API responses. The citation payload returned to the client MUST contain the internal `attachment_id` and the human-readable `filename` as the citation `title`.
+
+**Citation resolution rules**:
+
+1. If a matching attachment row is found and the attachment is not soft-deleted (`deleted_at IS NULL`), the citation MUST include the corresponding `attachment_id` and set `title` to the attachment's `filename`.
+2. If no matching attachment is found (e.g., provider returns an unknown file ID), the citation MUST be omitted from the `citations` event. The backend MUST NOT expose the raw `provider_file_id` to the client.
+3. If the attachment exists but is soft-deleted (`deleted_at IS NOT NULL`), the citation MUST be omitted. The raw provider identifier MUST NOT be returned.
+4. The `attachments` table MUST maintain an index on `(chat_id, provider_file_id)` to ensure deterministic and efficient lookup.
+
+**Provider identifier non-exposure invariant**: provider-specific identifiers (such as `provider_file_id`, `vector_store_id`) are internal integration details and MUST NOT appear in any public API payloads, SSE event payloads, or error messages. See also the normative non-exposure invariant in section 3.3 (SSE Events).
+
+#### Attachment Mutability and Deletion
+
+Attachments may be removed while the message they belong to has not yet been submitted.
+
+Once a message is submitted, its `attachments` array and corresponding `message_attachments` associations become immutable and MUST NOT be modified.
+
+An attachment referenced by any submitted message MUST NOT be deleted.
+
+An attachment that is not referenced by any submitted message MAY be deleted via `DELETE /v1/chats/{chat_id}/attachments/{attachment_id}`.
+
+The deletion guard is based on whether the attachment is referenced by any submitted `message_attachments` association, not merely on whether the attachment exists in the chat.
+
+**Attachment Deletion Invariants**:
+
+1. The `attachments` array of a submitted message MUST NOT be modified.
+2. An attachment referenced by any submitted message MUST NOT be deleted.
+3. An attachment not referenced by any submitted message MAY be deleted.
+4. `DELETE /v1/chats/{chat_id}/attachments/{attachment_id}` MUST return HTTP 409 with `error.code = "attachment_locked"` if the attachment is referenced by any submitted message.
+
+**P1 Limitation**: Attachments referenced by submitted messages are immutable and cannot be deleted. This avoids breaking historical message rendering, attachment references, citations, and replay semantics. Corpus-level deletion of attachments referenced by submitted messages is out of scope for P1.
+
+#### Attachment Deletion
+
+`DELETE /v1/chats/{chat_id}/attachments/{attachment_id}`
+
+This operation deletes the attachment only if it is not referenced by any submitted message.
+
+If the attachment is referenced by one or more submitted messages, the operation MUST be rejected with HTTP 409 Conflict and `error.code = "attachment_locked"`.
+
+If the attachment is not referenced by any submitted message, the attachment is soft-deleted locally and immediately excluded from future retrieval and chat metadata. Provider-side cleanup (file deletion via the Files API and document removal from the vector store) is performed asynchronously via the transactional outbox mechanism. The API response MUST NOT wait for external cleanup to complete.
+
+Deletion follows a two-phase approach using the transactional outbox pattern (see section 5.7):
+
+**Phase 1 — Transactional commit (synchronous, within the HTTP request)**:
+
+1. Soft-delete the `attachments` row (`deleted_at = now()`).
+2. Enqueue an `attachment_cleanup` message through `modkit_db::outbox::Outbox::enqueue(...)` (or the equivalent helper) with `provider_file_id` and `vector_store_id` in the serialized payload.
+3. The soft-delete and the outbox enqueue execute in the same DB transaction. The endpoint returns `204 No Content` once the transaction commits.
+
+After Phase 1 commits, the attachment is **immediately invisible** to retrieval: the `file_search` tool inclusion check counts only `status = 'ready' AND deleted_at IS NULL` attachments, and vector store queries are scoped to attachments present in `chat_vector_stores` metadata — the soft-deleted attachment is excluded from both paths.
+
+**Phase 2 — Asynchronous cleanup (decoupled outbox handler)**:
+
+The shared outbox pipeline delivers the `attachment_cleanup` message to the Mini-Chat decoupled handler, which performs provider-side cleanup:
+
+1. Remove the document from the chat vector store (provider Vector Stores API).
+2. Delete the file from the provider Files API.
+
+If either provider call fails transiently, the handler MUST return `Retry` so the shared outbox applies lease-aware retry/backoff. If the message is permanently malformed or unrecoverable, the handler MAY return `Reject`, which moves the message to the shared outbox dead-letter store for operator recovery. Partial failure is safe: the attachment is already soft-deleted and excluded from retrieval. Provider-side orphans are eventually cleaned up by retries, dead-letter replay, or by the outbox-driven chat-deletion cleanup path.
+
+**Invariants**:
+
+- After Phase 1, the attachment MUST NOT appear in `file_search` tool resources or retrieval scope.
+- Deleting an already-deleted attachment is idempotent: returns `204 No Content` without inserting a duplicate outbox event.
 
 #### RAG Quality & Scale Controls (P1)
 
@@ -2519,44 +3087,45 @@ Retrieved file search excerpts are integrated into the prompt as follows:
 
 To prevent retrieval quality degradation on large document sets:
 
-| Control | Default | Description |
-|---------|---------|-------------|
-| `max_documents_per_chat` | 50 | Maximum document attachments per chat. Uploads beyond this limit are rejected. |
-| `max_total_upload_mb_per_chat` | 100 | Maximum total document file size (MB) per chat. |
-| `max_chunks_per_chat` | 10,000 | Maximum indexed chunks per chat. Indexing is blocked beyond this limit. |
-| `max_retrieved_chunks_per_turn` | 5 | Top-k chunks returned by similarity search per file_search call. |
+| Control | Default | Description                                                                                                 |
+|---------|---------|-------------------------------------------------------------------------------------------------------------|
+| `max_documents_per_chat` | 50 | Maximum document attachments per chat. Uploads beyond this limit are rejected.                              |
+| `max_total_upload_mb_per_chat` | 100 | Maximum total document file size (MB) per chat.                                                             |
+| `max_chunks_per_chat` | 10,000 | Maximum indexed chunks per chat. Indexing is blocked beyond this limit. NOT USED now                          |
+| `max_retrieved_chunks_per_turn` | 5 | Top-k chunks returned by similarity search per file_search call.                                            |
 | `max_retrieved_tokens_per_turn` | configurable | Hard limit on total tokens from retrieved chunks added to the prompt. Subject to Context Plan token budget. |
-| `retrieval_k` | 5 | Number of nearest-neighbor results requested from the vector store per search call. |
+| `retrieval_k` | 5 | Number of nearest-neighbor results requested from the vector store per search call. NOT USED now            |
 
 All values are configurable per deployment. The domain service enforces `max_documents_per_chat`, `max_total_upload_mb_per_chat`, and `max_chunks_per_chat` at upload time (reject with HTTP 400 if exceeded). Retrieval-time controls (`max_retrieved_chunks_per_turn`, `max_retrieved_tokens_per_turn`, `retrieval_k`) are enforced during context plan assembly.
 
 Since each chat has a dedicated vector store, these limits directly bound the size of each vector store. The `max_chunks_per_chat` limit (default: 10,000) serves as both a RAG quality control and a vector store growth guardrail. No additional per-user aggregate limit is enforced at P1; operators can monitor total vector store count per user via metrics (`mini_chat_vector_stores_per_user` gauge).
 
-#### File Search Per-Message Call Limit Enforcement (P1)
+#### File Search Per-Turn Call Limit Enforcement (P1)
 
-The file search per-message call limit (`max_calls_per_message`, default: 2) is enforced at **preflight only** in P1.
+The file search per-turn call limit (`max_calls_per_turn`, default: 2) is enforced at **preflight only** in P1.
 
-**Preflight enforcement**: The `file_search_surcharge_tokens` budget included in the reserve estimate covers up to `max_calls_per_message` invocations. No mid-stream monitoring or hard stop is implemented for file_search calls in P1. There is no `file_search_calls_exceeded` error code or mid-turn finalization path for file_search at P1 scope.
+**Preflight enforcement**: The `file_search_surcharge_tokens` budget included in the reserve estimate covers up to `max_calls_per_turn` invocations. No mid-stream monitoring or hard stop is implemented for file_search calls in P1. There is no `file_search_calls_exceeded` error code or mid-turn finalization path for file_search at P1 scope.
 
-**Post-hoc accounting**: After the provider reports actual token usage, the system applies standard commit-vs-reserve settlement regardless of how many file_search calls the provider actually made. If the provider makes fewer calls than budgeted, actual token usage is lower and any underspend is released. If the provider makes more calls than `max_calls_per_message`, the additional token cost is subject to the standard `overshoot_tolerance_factor` cap — overruns beyond tolerance are capped at `reserve_tokens` per §5.4.5. No separate mid-stream enforcement, error_code, or settlement exception applies.
+**Post-hoc accounting**: After the provider reports actual token usage, the system applies standard commit-vs-reserve settlement regardless of how many file_search calls the provider actually made. If the provider makes fewer calls than budgeted, actual token usage is lower and any underspend is released. If the provider makes more calls than `max_calls_per_turn`, the additional token cost is subject to the standard `overshoot_tolerance_factor` cap — overruns beyond tolerance are capped at `reserve_tokens` per §5.4.5. No separate mid-stream enforcement, error_code, or settlement exception applies.
 
-**Rationale**: Unlike web search (which incurs discrete per-call surcharges tracked in a daily quota bucket requiring mid-turn enforcement), file_search surcharge tokens are a fixed per-turn budget estimate baked into the reserve. Enforcement at preflight by sizing the reserve to cover `max_calls_per_message` calls provides sufficient cost bounding without requiring SSE event monitoring. Mid-stream abort on file_search call count exceed (analogous to web search's Mid-Turn Hard Limit Enforcement) is deferred to P2+.
+**Rationale**: Unlike web search (which incurs discrete per-call surcharges tracked in a daily quota bucket requiring mid-turn enforcement), file_search surcharge tokens are a fixed per-turn budget estimate baked into the reserve. Enforcement at preflight by sizing the reserve to cover `max_calls_per_turn` calls provides sufficient cost bounding without requiring SSE event monitoring. Mid-stream abort on file_search call count exceed (analogous to web search's Mid-Turn Hard Limit Enforcement) is deferred to P2+.
 
-**Scope note**: Operators can detect excessive file_search call usage via audit logs. Per-message mid-stream file_search call count enforcement is explicitly out of P1 scope.
+**Scope note**: Operators can detect excessive file_search call usage via audit logs. Per-turn mid-stream file_search call count enforcement is explicitly out of P1 scope.
 
 ### Model Catalog Configuration
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-design-model-catalog`
 
-The canonical model catalog is provided by `minichat-policy-plugin` (section 5.2) as part of the policy snapshot. Mini Chat fetches the catalog at startup and caches it in memory. The catalog is refreshed via the existing policy snapshot delivery mechanism (section 5.2.3: CCM push-notify + pull, with a periodic reconciliation fallback). No new subsystem or refresh mechanism is introduced.
+The canonical model catalog is provided by `mini-chat-model-policy-plugin` (section 5.2) as part of the policy snapshot. Mini Chat fetches the catalog at startup and caches it in memory. The catalog is refreshed via the existing policy snapshot delivery mechanism (section 5.2.3: CCM push-notify + pull, with a periodic reconciliation fallback). No new subsystem or refresh mechanism is introduced.
 
 Each entry specifies the model identifier, provider, tier, capability flags, and UI metadata. The domain service uses the catalog to resolve model selection, validate user requests, execute the downgrade cascade, and serve the Models API (section 3.3).
 
-**Catalog structure** (as delivered by `minichat-policy-plugin` in the policy snapshot; shown in YAML for readability):
+**Catalog structure** (as delivered by `mini-chat-model-policy-plugin` in the policy snapshot; shown in YAML for readability):
 
 ```yaml
 model_catalog:
   - model_id: "gpt-5.2"
+    provider_model_id: "gpt-5.2"
     display_name: "GPT-5.2"
     provider: "openai"
     tier: premium
@@ -2567,6 +3136,7 @@ model_catalog:
     max_output: 4096
     is_default: true
   - model_id: "gpt-5-mini"
+    provider_model_id: "gpt-5-mini"
     display_name: "GPT-5 Mini"
     provider: "openai"
     tier: standard
@@ -2582,7 +3152,8 @@ model_catalog:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `model_id` | string | yes | Internal model identifier passed to the provider (e.g., `gpt-5.2`). |
+| `model_id` | string | yes | Stable internal model identifier used in the REST API, stored in the database, and referenced in billing/quota. Format is not prescribed — may be a UUID, slug, or any unique string. |
+| `provider_model_id` | string | yes | The name that identifies the model on the provider side (e.g., `"gpt-5.2"` for OpenAI, `"claude-opus-4-6"` for Anthropic). This is the value sent in LLM API requests. |
 | `display_name` | string | yes | User-facing name shown in model selector UI (e.g., "GPT-5.2"). |
 | `provider` | string | yes | Internal provider routing identifier. P1 values: `"openai"`, `"azure_openai"`. |
 | `tier` | `premium` \| `standard` | yes | Determines rate limiting behavior and downgrade cascade order. |
@@ -2602,7 +3173,7 @@ model_catalog:
 - When a user selects a model at chat creation, the domain service MUST validate: (a) the `model_id` exists in the catalog, and (b) its `status` is `enabled`. Unknown or disabled models MUST be rejected with HTTP 400.
 - Image capability is resolved from `capabilities`: a model supports image input if `"VISION_INPUT"` is in its capabilities array. P1 invariant: all catalog models MUST include `VISION_INPUT`, so image-bearing turns are never rejected due to a downgrade to a non-vision model in P1. If a future catalog entry lacks `VISION_INPUT`, the existing 415 `unsupported_media` rejection logic applies.
 - `context_window` replaces the previous `context_limit` field in credit budget computation.
-- The catalog is fetched from `minichat-policy-plugin` at startup and refreshed via the existing snapshot delivery mechanism (section 5.2.3). Runtime model resolution and the Models API both use the in-memory cached catalog (only globally enabled models are candidates for visibility).
+- The catalog is fetched from `mini-chat-model-policy-plugin` at startup and refreshed via the existing snapshot delivery mechanism (section 5.2.3). Runtime model resolution and the Models API both use the in-memory cached catalog (only globally enabled models are candidates for visibility).
 
 Operational configuration of rate limits, quota allocations, and model catalog is managed by Product Operations. Configuration management processes are external to this design document; the configuration owner and change management workflow are defined by the platform operations team.
 
@@ -2611,6 +3182,7 @@ Operational configuration of rate limits, quota allocations, and model catalog i
 | Property | Rule |
 |----------|------|
 | `model_id` | Non-empty string, unique across catalog |
+| `provider_model_id` | Non-empty string |
 | `display_name` | Non-empty string |
 | `provider` | One of: `"openai"`, `"azure_openai"` |
 | `tier` | One of: `premium`, `standard` |
@@ -2622,7 +3194,7 @@ Operational configuration of rate limits, quota allocations, and model catalog i
 | Credit limit (per tier per period) | Positive integer > 0 |
 | `period_type` | One of: `daily`, `monthly` (P2+: `4h`, `weekly`) |
 | Period status | `enabled` or `disabled` (disabled periods are skipped during tier availability check) |
-| `web_search.max_calls_per_message` | Positive integer > 0 |
+| `web_search.max_calls_per_turn` | Positive integer > 0 |
 | `web_search.daily_quota` | Positive integer > 0 |
 
 Invalid configuration MUST be rejected at startup with a descriptive error. Runtime config reloads that fail validation MUST be rejected without affecting the running configuration.
@@ -2830,7 +3402,7 @@ Every request sent to the LLM provider via `llm_provider` MUST include two ident
     "user_id": "{user_id}",
     "chat_id": "{chat_id}",
     "request_type": "chat|summary|doc_summary",
-    "feature": "file_search|web_search|file_search+web_search|none"
+    "feature": "none|file_search|web_search|code_interpreter|file_search+web_search|file_search+code_interpreter|…"
   }
 }
 ```
@@ -2853,7 +3425,7 @@ When image attachments are included in a chat turn, `llm_provider` constructs th
 }
 ```
 
-Multiple images are appended as additional `input_image` items (up to the per-message limit). The `file_id` in this payload is the provider-issued `provider_file_id` resolved internally from the `attachments` table. This identifier is used only in internal provider API calls and MUST NOT be exposed to clients.
+Multiple images are appended as additional `input_image` items (up to the per-turn limit). The `file_id` in this payload is the provider-issued `provider_file_id` resolved internally from the `attachments` table. This identifier is used only in internal provider API calls and MUST NOT be exposed to clients.
 
 This is the normalized internal representation; provider-specific request shaping (if any) is handled by `llm_provider` / OAGW.
 
@@ -2895,6 +3467,7 @@ The following metric series MUST be exposed (types and label sets shown). These 
 
 - `mini_chat_stream_started_total{provider,model}` (counter)
 - `mini_chat_stream_completed_total{provider,model}` (counter)
+- `mini_chat_stream_incomplete_total{provider,model,reason}` (counter; `reason` MUST be from the normative `CompletionSignalReason` enum; see §5.7 "Completion signal reason enum")
 - `mini_chat_stream_failed_total{provider,model,error_code}` (counter; `error_code` matches stable SSE `event: error` codes)
 - `mini_chat_stream_disconnected_total{stage}` (counter; `stage`: `before_first_token|mid_stream|after_done`)
 - `mini_chat_stream_replay_total{reason}` (counter; `reason`: `idempotent_completed`)
@@ -2913,6 +3486,12 @@ The following metric series MUST be exposed (types and label sets shown). These 
 - `mini_chat_cancel_orphan_total` (counter; a turn remained `running` longer than a configured timeout after cancellation)
 - `mini_chat_streams_aborted_total{trigger}` (counter; turn transitioned to `ABORTED` billing state; `trigger`: `client_disconnect|pod_crash|orphan_timeout|internal_abort`)
 
+##### Orphan watchdog
+
+- `mini_chat_orphan_detected_total{reason}` (counter; increments when the watchdog identifies an orphan candidate by the stale-progress rule; `reason`: `stale_progress`)
+- `mini_chat_orphan_finalized_total{reason}` (counter; increments only when the watchdog wins the CAS finalization and transitions the turn to terminal orphan outcome; `reason`: `stale_progress`)
+- `mini_chat_orphan_scan_duration_seconds` (histogram; watchdog scan execution duration)
+
 ##### Quota and cost control
 
 - `mini_chat_quota_preflight_total{decision,model,tier}` (counter; `decision`: `allow|downgrade|reject`; `tier`: `premium|standard`)
@@ -2930,11 +3509,12 @@ The following metric series MUST be exposed (types and label sets shown). These 
 
 ##### Tools and retrieval
 
-- `mini_chat_tool_calls_total{tool,phase}` (counter; `tool`: `file_search|web_search`; `phase`: `start|done|error`)
-- `mini_chat_tool_call_limited_total{tool}` (counter; `tool`: `file_search|web_search`)
+- `mini_chat_tool_calls_total{tool,phase}` (counter; `tool`: `file_search|web_search|code_interpreter`; `phase`: `start|done|error`)
+- `mini_chat_tool_call_limited_total{tool}` (counter; `tool`: `file_search|web_search|code_interpreter`)
 - `mini_chat_file_search_latency_ms{provider,model}` (histogram)
 - `mini_chat_web_search_latency_ms{provider,model}` (histogram)
 - `mini_chat_web_search_disabled_total` (counter; requests rejected due to `disable_web_search` kill switch)
+- `mini_chat_code_interpreter_disabled_total` (counter; events where `disable_code_interpreter` kill switch was active — includes both upload rejections and stream-time tool omissions)
 - `mini_chat_citations_count` (histogram; number of items in `event: citations`)
 - `mini_chat_citations_by_source_total{source}` (counter; `source`: `file|web`)
 
@@ -2950,7 +3530,9 @@ The following metric series MUST be exposed (types and label sets shown). These 
 
 ##### Thread summary health
 
-- `mini_chat_summary_regen_total{reason}` (counter; `reason` MUST be from a bounded allowlist)
+- `mini_chat_thread_summary_trigger_total{result}` (counter; `result`: `scheduled|not_needed`)
+- `mini_chat_thread_summary_execution_total{result}` (counter; `result`: `success|provider_error|timeout|retry`)
+- `mini_chat_thread_summary_cas_conflicts_total` (counter)
 - `mini_chat_summary_fallback_total` (counter)
 
 ##### Turn mutations
@@ -2990,33 +3572,31 @@ The following metric series MUST be exposed (types and label sets shown). These 
 
 ##### Cleanup and drift
 
-- `mini_chat_cleanup_job_runs_total{kind}` (counter; `kind`: `delete_chat|reconcile`; `temporary_cleanup` deferred to P2)
-- `mini_chat_cleanup_attempts_total{op,result}` (counter; `op`: `vs_remove|file_delete`; `result`: `ok|not_found_ok|retryable_fail|fatal_fail`)
-- `mini_chat_cleanup_orphan_found_total{kind}` (counter; `kind`: `provider_file|vs_entry`)
-- `mini_chat_cleanup_orphan_fixed_total{kind}` (counter)
-- `mini_chat_cleanup_backlog{state}` (gauge; `state`: `pending|in_progress|failed`)
+- `mini_chat_cleanup_completed_total{resource_type}` (counter; `resource_type`: `file|vector_store`)
+- `mini_chat_cleanup_failed_total{resource_type}` (counter; `resource_type`: `file`)
+- `mini_chat_cleanup_retry_total{resource_type,reason}` (counter; `resource_type`: `file|vector_store`)
+- `mini_chat_cleanup_backlog{state,resource_type="file"}` (gauge; canonical cleanup backlog family for persisted attachment row states only. `state`: `pending|failed`)
+- `mini_chat_cleanup_vector_store_with_failed_attachments_total` (counter)
 - `mini_chat_cleanup_latency_ms{op}` (histogram)
 
 ##### Audit emission health
 
 - `mini_chat_audit_emit_total{result}` (counter; `result`: `ok|failed|dropped`)
 - `mini_chat_audit_redaction_hits_total{pattern}` (counter; `pattern` MUST be from a bounded allowlist)
-- `mini_chat_audit_emit_latency_ms` (histogram)
+- `mini_chat_finalization_latency_ms` (histogram)
 
-##### Outbox health and monitoring (P1)
+##### Outbox integration health and monitoring (P1)
 
-- `mini_chat_outbox_dead_total` (counter; total outbox events that reached `dead` status after max retry attempts)
-- `mini_chat_outbox_pending_age_seconds` (histogram; age of pending outbox events in seconds; measured from `created_at` to `now()`)
-- `mini_chat_outbox_dead_rows` (gauge; current count of dead outbox rows with `namespace='mini-chat'` and `status='dead'`)
-- `mini_chat_outbox_oldest_pending_age_seconds` (gauge; age of oldest pending row in seconds)
-- `mini_chat_outbox_enqueue_total{result}` (counter; `result`: `ok|dedupe`)
-- `mini_chat_outbox_dispatch_total{result}` (counter; `result`: `delivered|retryable_error|dead`)
+- `mini_chat_outbox_enqueue_total{kind,result}` (counter; `kind`: `usage|attachment_cleanup|chat_cleanup|thread_summary`; `result`: `ok|error`)
+- `mini_chat_outbox_handler_total{kind,result}` (counter; `kind`: `usage|attachment_cleanup|chat_cleanup|thread_summary`; `result`: `success|retry|reject`)
+- `mini_chat_outbox_dead_letter_backlog{kind}` (gauge; current pending dead-letter count for Mini-Chat messages filtered by queue/payload_type)
+- `mini_chat_outbox_dead_letter_oldest_age_seconds{kind}` (gauge; age of oldest pending dead letter for Mini-Chat messages)
 
 **Health degradation rules**:
-- If `mini_chat_outbox_dead_rows > 100` (configurable threshold): health status SHOULD be `degraded` with reason "Outbox has N dead rows (threshold: M)"
-- If `mini_chat_outbox_oldest_pending_age_seconds > 3600` (1 hour): health status SHOULD be `degraded` with reason "Oldest pending outbox event is N seconds old"
+- If `mini_chat_outbox_dead_letter_backlog{kind="usage"} > 0`: health status SHOULD be `degraded` with reason "Mini-Chat usage outbox has pending dead letters"
+- If `mini_chat_outbox_dead_letter_oldest_age_seconds{kind="usage"} > 3600` (1 hour): health status SHOULD be `degraded` with reason "Oldest Mini-Chat usage dead letter is N seconds old"
 
-**Periodic collector**: A background task MUST periodically (recommended: every 60 seconds) query `modkit_outbox_events` table to update gauge metrics (`mini_chat_outbox_dead_rows`, `mini_chat_outbox_oldest_pending_age_seconds`).
+**Ownership note**: queue depth, claim/reclaim, lease, sequencer, and vacuum internals are owned by the shared `modkit-db::outbox` subsystem and SHOULD be consumed from its infrastructure metrics surface rather than re-specified as Mini-Chat row-state metrics.
 
 ##### DB health (infra/storage)
 
@@ -3029,7 +3609,12 @@ The following metric series MUST be exposed (types and label sets shown). These 
 - `mini_chat_time_to_abort_ms` p99 > 200 ms
 - `mini_chat_active_streams` approaching configured concurrency cap
 - Provider error spikes: elevated `mini_chat_provider_errors_total{status=~"429|5.."}`
-- Cleanup backlog growth: rising `mini_chat_cleanup_backlog{state="pending"}` or sustained `failed`
+- Summary execution failures: sustained increase in `mini_chat_thread_summary_execution_total{result=~"provider_error|timeout"}` or `mini_chat_summary_fallback_total`
+- Summary CAS churn: sustained increase in `mini_chat_thread_summary_cas_conflicts_total`
+- Orphan watchdog activity: sustained increase in `mini_chat_orphan_detected_total{reason="stale_progress"}` without a corresponding increase in `mini_chat_orphan_finalized_total{reason="stale_progress"}`
+- Cleanup backlog growth: rising `mini_chat_cleanup_backlog{state="pending",resource_type="file"}` or sustained `mini_chat_cleanup_backlog{state="failed",resource_type="file"}`
+- Summary or cleanup dead letters: `mini_chat_outbox_dead_letter_backlog{kind=~"thread_summary|chat_cleanup"}` > 0
+- Mini-Chat usage dead letters: `mini_chat_outbox_dead_letter_backlog{kind="usage"}` > 0
 - Audit emission failures: sustained `mini_chat_audit_emit_total{result="failed"}`
 - Quota anomalies: sustained increase in `mini_chat_quota_negative_total`
 
@@ -3047,8 +3632,15 @@ Alerts (P1) are defined as explicit condition -> window -> severity mappings:
 | `mini_chat_time_to_abort_ms` p99 > 200 ms | 5m | critical |
 | `mini_chat_audit_emit_total{result="failed"}` > 0 | 5m | critical |
 | Provider failure rate `rate(mini_chat_provider_errors_total[5m]) / rate(mini_chat_provider_requests_total[5m])` exceeds configured threshold | 5m | critical |
-| `mini_chat_cleanup_backlog{state="pending"}` grows monotonically | 60m | warning |
-| `mini_chat_cleanup_backlog{state="failed"}` > 0 | 15m | critical |
+| `rate(mini_chat_thread_summary_execution_total{result=~"provider_error\|timeout"}[15m])` sustained above configured threshold | 15m | warning |
+| `mini_chat_outbox_dead_letter_backlog{kind="thread_summary"}` > 0 | 15m | critical |
+| `mini_chat_thread_summary_cas_conflicts_total` increases above configured background threshold | 15m | warning |
+| `rate(mini_chat_orphan_detected_total{reason="stale_progress"}[15m]) > 0` AND `rate(mini_chat_orphan_finalized_total{reason="stale_progress"}[15m]) = 0` | 15m | critical |
+| `mini_chat_cleanup_backlog{state="pending",resource_type="file"}` grows monotonically | 60m | warning |
+| `mini_chat_cleanup_backlog{state="failed",resource_type="file"}` > 0 | 15m | critical |
+| `mini_chat_outbox_dead_letter_backlog{kind="chat_cleanup"}` > 0 | 15m | critical |
+| `mini_chat_outbox_dead_letter_backlog{kind="usage"}` > 0 | 15m | critical |
+| `mini_chat_outbox_dead_letter_oldest_age_seconds{kind="usage"}` > 3600 | 15m | warning |
 
 ### Operational Traceability and Debugging (P1)
 
@@ -3116,11 +3708,15 @@ Operators MUST be able to reconstruct the full request lifecycle using logs, tra
 4. Query `audit_service` for the corresponding audit event(s) and confirm:
   - prompt/response were emitted
   - redaction rules applied
-  - usage (tokens, `selected_model`, `effective_model`) was recorded
-5. Consult operational dashboards/alerts:
+5. Verify usage was recorded for the turn:
+  - `input_tokens` and `output_tokens` are non-null on the assistant message and/or `chat_turns` row
+  - `selected_model` (from `chats.model`) and `effective_model` (from `chat_turns.effective_model`) are both present and consistent with expected downgrade behavior
+  - if a downgrade occurred, confirm `effective_model` differs from `selected_model` and the turn metadata reflects the downgrade reason
+6. Consult operational dashboards/alerts:
   - streaming health (`mini_chat_stream_failed_total`, `mini_chat_provider_errors_total`)
   - cancellation health (`mini_chat_time_to_abort_ms`, `mini_chat_cancel_orphan_total`)
-  - summary health (`mini_chat_summary_regen_total`, `mini_chat_summary_fallback_total`)
+  - orphan watchdog health (`mini_chat_orphan_detected_total{reason="stale_progress"}`, `mini_chat_orphan_finalized_total{reason="stale_progress"}`, `mini_chat_orphan_scan_duration_seconds`)
+  - summary health (`mini_chat_summary_fallback_total`, `mini_chat_thread_summary_trigger_total`, `mini_chat_thread_summary_execution_total`, `mini_chat_thread_summary_cas_conflicts_total`)
   - cleanup/audit health (`mini_chat_cleanup_backlog`, `mini_chat_audit_emit_total`)
 
 ### SSE Infrastructure Requirements
@@ -3147,7 +3743,7 @@ Every user-initiated streaming turn that reaches preflight reserve creation inse
 | State | Meaning | Terminal? |
 |-------|---------|-----------|
 | `running` | Generation in progress; SSE stream active | No |
-| `completed` | Provider returned terminal `response.completed`; assistant message persisted | Yes |
+| `completed` | Provider returned terminal `response.completed` **or** `response.incomplete`; assistant message persisted | Yes |
 | `failed` | Provider error, post-reserve preflight rejection, or orphan watchdog timeout | Yes |
 | `cancelled` | Client disconnected and cancellation propagated | Yes |
 
@@ -3159,10 +3755,10 @@ Allowed transitions: `running` → `completed` | `failed` | `cancelled`. No tran
 stateDiagram-v2
     [*] --> running: POST /messages:stream<br/>(creates chat_turns row)
 
-    running --> completed: Provider terminal done event<br/>(CAS: WHERE state='running')
+    running --> completed: Provider terminal done/incomplete event<br/>(response.completed or response.incomplete)<br/>(CAS: WHERE state='running')
     running --> failed: Provider terminal error<br/>(CAS: WHERE state='running')
     running --> cancelled: Client disconnect<br/>(CAS: WHERE state='running')
-    running --> failed: Orphan watchdog timeout<br/>(error_code='orphan_timeout')<br/>(CAS: WHERE state='running')
+    running --> failed: Orphan watchdog timeout<br/>(error_code='orphan_timeout')<br/>(CAS: WHERE state='running' AND deleted_at IS NULL AND last_progress_at <= now() - orphan_timeout)
 
     completed --> [*]: Terminal state<br/>(immutable)
     failed --> [*]: Terminal state<br/>(immutable)
@@ -3219,24 +3815,44 @@ The system does NOT attempt to resume, reconnect, or hand off the stream to anot
 
 A periodic background job detects and cleans up turns abandoned by crashed pods.
 
-**Condition**: `chat_turns.state = 'running' AND chat_turns.started_at < now() - :orphan_timeout`
+**Condition**: `chat_turns.state = 'running' AND chat_turns.deleted_at IS NULL AND chat_turns.last_progress_at <= now() - :orphan_timeout`
 
 **Timeout**: configurable per deployment; default: 5 minutes.
 
 > Where:
 >
-> * `:orphan_timeout` — interval duration in seconds. **Configuration source (P1)**: read from MiniChat ConfigMap key `orphan_watchdog.timeout_seconds` (integer). Default value: `300` (5 minutes). MUST be validated at startup: `60 <= timeout_seconds <= 3600`. Values outside this range MUST be rejected as invalid configuration.
-> * `started_at` — persisted timestamp from `chat_turns.started_at` (TIMESTAMPTZ, immutable after insert, set at turn creation)
+> * `:orphan_timeout` — interval duration in seconds. **Configuration source (P1)**: read from MiniChat ConfigMap key `orphan_watchdog.timeout_secs` (integer). Default value: `300` (5 minutes). MUST be validated at startup: `60 <= timeout_secs <= 3600`. Values outside this range MUST be rejected as invalid configuration.
+> * `last_progress_at` — persisted timestamp from `chat_turns.last_progress_at` (TIMESTAMPTZ). It MUST be initialized when the turn enters `running` and MUST be updated on meaningful forward progress, including provider chunk receipt, SSE relay progress, tool event progress if such events are durably persisted for the turn, and terminal provider event reception.
 > * `now()` — current database server time (UTC). The watchdog query MUST use `now()` (Postgres server time) for monotonic clock consistency, not application-side timestamps.
-> * **Configuration change semantics**: changes to `orphan_watchdog.timeout_seconds` take effect at the next watchdog poll cycle. In-flight turns are subject to the timeout value active at the time the watchdog evaluates them. This means a ConfigMap change can immediately affect which turns are classified as orphaned (operational note; deterministic per evaluation instant).
+> * **Configuration change semantics**: changes to `orphan_watchdog.timeout_secs` take effect at the next watchdog poll cycle. In-flight turns are subject to the timeout value active at the time the watchdog evaluates them. This means a ConfigMap change can immediately affect which turns are classified as orphaned (operational note; deterministic per evaluation instant).
 
-**Action** (all steps in a single DB transaction, using the finalization CAS guard defined in section 5.7):
-1. Execute: `UPDATE chat_turns SET state = 'failed', error_code = 'orphan_timeout', completed_at = now() WHERE id = :turn_id AND state = 'running'`. If `rows_affected = 0`, another finalizer already completed this turn — skip to step 4 (metric only).
-2. Commit a bounded best-effort quota debit for the turn (same rule as cancel/disconnect: debit the reserved estimate).
-3. Insert a `modkit_outbox_events` row with `outcome = "aborted"`, `settlement_method = "estimated"` (see section 5.7 turn finalization contract). The orphan watchdog uses billing outcome `"aborted"` (not `"failed"`) because the stream ended without a provider-issued terminal event — consistent with the ABORTED billing state (section 5.8).
-4. Emit metric: `mini_chat_orphan_turn_total` (counter, labeled by `chat_id` excluded — use only low-cardinality labels such as `{reason}` where `reason` = `timeout`).
+A running turn is an orphan candidate only if its state is still `running`, `deleted_at IS NULL`, and its `last_progress_at` is older than the configured orphan timeout.
+
+Long-running turns with recent `last_progress_at` updates MUST NOT be classified as orphaned solely because `started_at` is old.
+
+**Action** (all steps in a single DB transaction, using the orphan-specific finalization CAS guard):
+1. The watchdog MAY discover orphan candidates using any equivalent stale-progress scan. Candidate discovery is advisory only and MUST NOT by itself authorize finalization.
+2. When the watchdog identifies a row as an orphan candidate by the stale-progress rule, emit `mini_chat_orphan_detected_total{reason="stale_progress"}`.
+3. Execute:
+   ```sql
+   UPDATE chat_turns
+      SET state = 'failed',
+          error_code = 'orphan_timeout',
+          completed_at = now(),
+          updated_at = now()
+    WHERE id = :turn_id
+      AND state = 'running'
+      AND deleted_at IS NULL
+      AND last_progress_at <= now() - interval '1 second' * :orphan_timeout_secs
+   ```
+4. If `rows_affected = 0`, the row is no longer orphan-finalizable (already finalized, soft-deleted, or progress was refreshed). The watchdog MUST skip quota settlement, outbox emission, and orphan-finalized metrics for that row.
+5. Only if `rows_affected = 1`, commit the bounded best-effort quota debit for the turn (same rule as cancel/disconnect: debit the reserved estimate).
+6. Only if `rows_affected = 1`, enqueue the corresponding Mini-Chat usage message with `outcome = "aborted"` and `settlement_method = "estimated"` (see section 5.7 turn finalization contract). The orphan watchdog uses billing outcome `"aborted"` (not `"failed"`) because the stream ended without a provider-issued terminal event — consistent with the ABORTED billing state (section 5.8).
+7. `mini_chat_orphan_finalized_total{reason="stale_progress"}` MUST be emitted only after this conditional update succeeds.
 
 **Scheduling**: the watchdog runs as a periodic task within the module (e.g. every 60 seconds). It MUST use leader election to ensure exactly one active watchdog instance per environment.
+
+Each watchdog scan SHOULD record `mini_chat_orphan_scan_duration_seconds`.
 
 ##### Watchdog Single-Actor Guarantee (P1 Mandatory)
 
@@ -3250,25 +3866,30 @@ The orphan watchdog MUST use ModKit's leader election primitive (or equivalent d
 orphan_watchdog:
   enabled: true
   scan_interval_secs: 60
-  timeout_threshold_secs: 300
+  timeout_secs: 300
 ```
 
 **Watchdog Invariants (P1 Mandatory MUST statements)**:
 
-1. **CAS Finalization Guard**: The watchdog MUST use the identical CAS finalization pattern as all other terminal paths:
+1. **Orphan Finalization Guard**: The watchdog MUST NOT finalize a turn solely because it matched an earlier scan. The terminal update itself MUST re-check all orphan-finalization predicates:
    ```sql
-   UPDATE chat_turns SET state = 'failed', error_code = 'orphan_timeout', completed_at = now()
-   WHERE id = :turn_id AND state = 'running'
+   UPDATE chat_turns SET state = 'failed', error_code = 'orphan_timeout', completed_at = now(), updated_at = now()
+   WHERE id = :turn_id
+     AND state = 'running'
+     AND deleted_at IS NULL
+     AND last_progress_at <= now() - interval '1 second' * :orphan_timeout_secs
    ```
-   If `rows_affected = 0`, the turn was already finalized by another path; the watchdog MUST skip it (no quota settlement, no outbox emission).
+   If `rows_affected = 0`, the turn was already finalized, soft-deleted, or made progress after candidate discovery; the watchdog MUST skip it (no quota settlement, no outbox emission, no orphan-finalized metric).
 
-2. **Idempotency**: The watchdog MUST be safe under retries and duplicate scans. The CAS guard ensures at-most-once finalization per turn. The outbox `dedupe_key` ensures at-most-once event emission.
+2. **Idempotency**: The watchdog MUST be safe under retries and duplicate scans. The CAS guard ensures at-most-once finalization per turn. The serialized usage payload MUST carry the stable billing idempotency key so downstream consumers can absorb duplicate deliveries produced by at-least-once outbox processing.
 
-3. **No Duplicate Outbox Rows**: The watchdog MUST rely on the outbox `dedupe_key` uniqueness constraint (`{tenant_id}/{turn_id}/{request_id}`) to prevent duplicate billing events. It MUST NOT implement separate deduplication logic.
+3. **No Duplicate Logical Billing Outcomes**: The watchdog MUST rely on the full orphan finalization guard — not just `state = 'running'` — to ensure that only one still-stale running turn can enqueue the logical billing event for that row. It MUST NOT implement a second, divergent finalization path.
 
-4. **No Terminal State Overwrites**: The watchdog MUST NOT transition a turn that is already in a terminal state (`completed`, `failed`, `cancelled`). The CAS guard (`WHERE state = 'running'`) enforces this; any watchdog logic that bypasses this guard is a correctness violation.
+4. **No False Orphan Finalization After Renewed Progress**: A turn whose `last_progress_at` was refreshed after candidate discovery MUST NOT be finalized by the watchdog. Any implementation that evaluates stale-progress only during scan, but not in the terminal conditional update, is a correctness violation.
 
-5. **Billing Outcome Consistency**: The watchdog MUST derive the outbox `outcome` field using the normative mapping in section 5.8 (Normative Billing Outcome Derivation). For orphan timeout, the mapping is: `state = 'failed'` + `error_code = 'orphan_timeout'` → billing outcome `ABORTED` → outbox `outcome = "aborted"`, `settlement_method = "estimated"`.
+5. **Billing Outcome Consistency**: The watchdog MUST derive the outbox payload `outcome` field using the normative mapping in section 5.8 (Normative Billing Outcome Derivation). For orphan timeout, the mapping is: `state = 'failed'` + `error_code = 'orphan_timeout'` → billing outcome `ABORTED` → outbox payload `outcome = "aborted"`, `settlement_method = "estimated"`.
+
+6. **Progress-Based Detection**: The watchdog MUST use durable stale-progress detection (`last_progress_at`) rather than raw age-from-start. That stale-progress predicate MUST participate both in candidate discovery and in the final conditional update. This timeout represents an infrastructure/liveness failure mode, not a provider-issued terminal failure.
 
 **Failure Mode**:
 - **Leader election failure**: Automatic re-election ensures continuity. Temporary scan delays (bounded by re-election time + orphan timeout) are acceptable; the system remains correct.
@@ -3284,7 +3905,7 @@ When a `POST /v1/chats/{id}/messages:stream` request arrives with a `(chat_id, r
 | `failed` | Reject with `409 Conflict` — client MUST use a new `request_id` to retry |
 | `cancelled` | Reject with `409 Conflict` — client MUST use a new `request_id` to retry |
 
-A new `request_id` is required for every retry attempt. The system never overwrites or reuses a turn record.
+A new `request_id` is required for every retry or edit attempt. The client MUST NOT reuse the `request_id` of an existing completed turn — a completed `(chat_id, request_id)` pair is replay-only and will return the previously generated result instead of starting a new generation. The system never overwrites or reuses a turn record.
 
 **Replay Side-Effect-Free Invariant (P1)**:
 
@@ -3293,11 +3914,13 @@ When replaying a `completed` turn for an existing `(chat_id, request_id)`, the s
 - Stream it back to the client as SSE events (delta + done)
 - **MUST NOT** take a new quota reserve
 - **MUST NOT** update `quota_usage` or debit tokens/credits
-- **MUST NOT** insert a new `modkit_outbox_events` row
+- **MUST NOT** enqueue a new outbox message
 - **MUST NOT** emit audit or billing events
 - **MUST NOT** call the LLM provider
 
 Replay is a pure read-and-relay operation. Only the original CAS-winning finalizer writes settlement and outbox (section 5.7). Replays and CAS-losers MUST never perform quota settlement or outbox emission.
+
+**Replay `done` payload immutability invariant**: the replay SSE `done` event MUST contain the original `effective_model`, `selected_model`, `quota_decision` (and `downgrade_from`, `downgrade_reason` if present), and `usage` (`input_tokens`, `output_tokens`, `model`) values read from the stored `chat_turns` row and assistant `messages` row. These values MUST NOT be recomputed from the current policy snapshot, model catalog, or quota state. Even if the catalog or policy has changed since the original turn, replay returns the outcome exactly as it was originally finalized. This guarantees that replay is observationally identical to the original `done` event (modulo network-level differences).
 
 **Implementation requirement**: Replay MUST use a separate code path from normal turn execution. The replay handler MUST NOT have access to functions that perform quota reservation, settlement, or outbox enqueue. This separation prevents accidental side effects during replay.
 
@@ -3345,7 +3968,7 @@ Orphan watchdog timeout MUST be bounded to prevent indefinite user-visible lock 
 
 The following are explicitly out of scope for P1 crash recovery:
 
-- **No partial delta persistence**: streamed deltas are not persisted incrementally during normal streaming operation. If the pod crashes mid-stream, partial text is lost. On user-initiated cancellation, the accumulated in-memory content up to the cancel point MAY be persisted as a single final partial message (see cancellation sequence above); this is a one-time snapshot, not incremental delta persistence. No replay or resume from partial content is supported.
+- **No partial delta persistence**: streamed deltas are not persisted incrementally during normal streaming operation. If the pod crashes mid-stream, partial text is lost. On user-initiated cancellation, the accumulated in-memory content up to the cancel point is persisted as a single final partial message when non-empty (see cancellation sequence above); this is a one-time snapshot, not incremental delta persistence. The persisted partial message participates in conversation history and context assembly for subsequent turns. No replay or resume from partial content is supported.
 - **No resume-from-delta**: the system does not resume generation from the last streamed token after a crash.
 - **No event sourcing**: turn state is a simple row update, not an append-only event log.
 - **No cross-pod streaming recovery**: a stream cannot be handed off from a crashed pod to a surviving pod. Recovery is client-driven via the turn status API.
@@ -3354,25 +3977,18 @@ The following are explicitly out of scope for P1 crash recovery:
 
 When a chat is deleted:
 1. Soft-delete the chat record (`deleted_at` set)
-2. Mark all attachments for cleanup (`cleanup_status=pending`) and return immediately (no synchronous provider cleanup in the HTTP request)
-3. A background cleanup worker performs idempotent retries:
-  - Delete the chat's entire vector store via OAGW (single API call — simpler than per-file removal since the store is dedicated to the chat)
-  - For each document attachment: delete provider file via OAGW
-  - For image attachments: delete provider file via OAGW (no vector store involvement)
-  - Cleanup worker rules:
-    - Cleanup worker MUST treat "not found" / "already deleted" for vector store deletion as success
-    - Cleanup worker MUST treat "already deleted" / "not found" for provider file deletion as success
-    - Recommended order: delete vector store first, then delete individual provider files
-    - If vector store deletion fails, proceed to delete provider files individually (best-effort)
-4. Partial failures are recorded per attachment (`cleanup_attempts`, `last_cleanup_error`) and retried with backoff
+2. Mark all attachments for cleanup (`cleanup_status=pending`), persist the soft-delete transition, and enqueue a durable chat-cleanup outbox message in the same transaction
+3. The shared outbox invokes the chat-cleanup handler asynchronously:
+  - For each attachment (documents and images) still owned by the soft-deleted chat and still in `cleanup_status=pending`, delete the provider file via OAGW using the internal `provider_file_id`
+  - Treat provider `404` / `not found` for file deletion as successful idempotent cleanup
+  - Record per-attachment terminal outcome in Mini Chat (`done` or `failed`) using `cleanup_attempts`, `last_cleanup_error`, and `cleanup_updated_at`
+  - Only after all attachments for the chat have reached terminal cleanup outcomes (`done` or `failed`), delete the chat's vector store via OAGW
+  - Treat provider `404` / `not found` for vector-store deletion as success and then delete the `chat_vector_stores` row
+  - If some attachments are terminal `failed`, vector-store deletion is NOT blocked; the chat MUST NOT be treated as fully purged from provider file storage until that per-file cleanup debt is resolved, but the vector store resource is released
+4. Retry, backoff, lease/reclaim, dead-letter handling, and reconciliation for this asynchronous flow are owned by the shared outbox infrastructure, not by a Mini-Chat-specific polling worker
 5. (P2) Temporary chats will follow the same flow, triggered by a scheduled job after 24h
 
-**Vector store cleanup**: when a chat is deleted, the cleanup worker deletes the chat's entire vector store via OAGW (single API call). This is simpler than per-file removal since the store is dedicated to the chat. If the vector store has already been deleted (e.g., by the orphan reaper), treat as success.
-
-P1 operational requirement: run a periodic reconcile job (for example nightly) to reduce provider drift and manual cleanup.
-
-- Re-enqueue attachment cleanup for rows stuck in `cleanup_status=pending|failed` beyond a configured age.
-- Emit cleanup drift metrics (`mini_chat_cleanup_orphan_found_total`, `mini_chat_cleanup_orphan_fixed_total`) based on what can be detected from DB state and provider responses.
+**Vector store cleanup**: when a chat is deleted, the outbox-driven cleanup path deletes the chat's entire vector store via OAGW (single API call). This is simpler than per-file removal since the store is dedicated to the chat. If the vector store has already been deleted, treat as success.
 
 ## 5. Quota Enforcement and Billing Integration
 
@@ -3389,8 +4005,8 @@ The overall scheme:
 - CCM publishes versioned policy snapshots: models (credit multipliers), per-user limits in credits for day/month (P1).
 - Mini-chat applies the snapshot at the turn boundary and stores `policy_version` in `chat_turn`.
 - Mini-chat reserves worst-case credits and checks day/month limits locally, without CCM RPC.
-- After the response, mini-chat commits actual credits and writes a usage event to the transactional outbox.
-- A background dispatcher publishes usage events via the selected `minichat-policy-plugin` plugin (`publish_usage(payload)`).
+- After the response, mini-chat commits actual credits and enqueues a usage message through the transactional outbox.
+- A decoupled outbox handler publishes usage messages via the selected `mini-chat-model-policy-plugin` plugin (`publish_usage(payload)`).
 - CCM consumes usage events and updates the balance.
 
 The user has **a single wallet of credits specifically for chat**. Per-tier limits are nested caps, enforced via bucket rows in `quota_usage` (section 3.7):
@@ -3402,9 +4018,9 @@ The user has **a single wallet of credits specifically for chat**. Per-tier limi
 
 Usage events MUST be idempotent (keyed by `turn_id` / `request_id`) and MUST include the debited credits (plus provider token usage as telemetry).
 
-### 5.2 Policy Plugin (`minichat-policy-plugin`)
+### 5.2 Policy Plugin (`mini-chat-model-policy-plugin`)
 
-The `minichat-policy-plugin` plugin capability provides:
+The `mini-chat-model-policy-plugin` plugin capability provides:
 
 - versioned policy snapshots (model catalog + multipliers + per-user limits)
 - usage publication via `publish_usage(payload)`
@@ -3425,7 +4041,7 @@ Why the version matters:
 Minimum places to persist the applied version (P1):
 
 - `chat_turn.policy_version_applied`
-- `modkit_outbox_events.payload.policy_version_applied` (as part of the outbox payload/event)
+- serialized Mini-Chat outbox usage payload `policy_version_applied`
 
 Contents (logically):
 
@@ -3433,6 +4049,7 @@ Contents (logically):
 - `model_catalog`:
 
   - `model_id`
+  - `provider_model_id` (the name that identifies the model on the provider side, e.g. `"gpt-5.2"`, `"claude-opus-4-6"`; sent in LLM API requests)
   - `display_name` (user-facing name; used by Models API)
   - `provider_display_name` (user-facing display name, e.g. `"OpenAI"`, `"Azure OpenAI"`; used by Models API — MUST NOT be a deployment handle, routing identifier, or internal provider key)
   - `tier` (premium/standard)
@@ -3440,8 +4057,8 @@ Contents (logically):
   - `description` (user-facing help text; used by Models API)
   - `multimodal_capabilities` (array of capability flags, e.g. `["VISION_INPUT", "RAG"]`; used by Models API)
   - `context_window` (integer; max context tokens; used by Models API and token budget computation)
-  - `input_tokens_credit_multiplier` (micro-credits per 1K tokens; > 0 always)
-  - `output_tokens_credit_multiplier` (micro-credits per 1K tokens; > 0 always)
+  - `input_tokens_credit_multiplier_micro` (micro-credits per 1K tokens; > 0 always)
+  - `output_tokens_credit_multiplier_micro` (micro-credits per 1K tokens; > 0 always)
   - `multiplier_display` (human-readable, e.g. `"1x"`, `"2x"`; used by Models API)
 
 - `estimation_budgets` (fixed surcharge token budgets for preflight reserve estimation):
@@ -3456,9 +4073,9 @@ Contents (logically):
 
 **Estimation Budgets Source (P1)**:
 
-In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are configured **locally in MiniChat** via Kubernetes ConfigMap (or equivalent deployment configuration file). CCM PolicySnapshot in P1 does NOT include `estimation_budgets`.
+In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are embedded **per-model** in the policy snapshot catalog (each `ModelCatalogEntry` carries its own `estimation_budgets`). This allows per-model tuning of estimation parameters.
 
-These budgets are used ONLY for preflight reserve estimation and admission control. They MUST be loaded at MiniChat startup and validated (non-negative values, sane bounds, `minimal_generation_floor <= max_output_tokens`). ConfigMap/config changes are operationally expected to be rolled out consistently across MiniChat pods (best-effort operational note; config drift detection is out of scope for P1).
+These budgets are used ONLY for preflight reserve estimation and admission control. Values are delivered as part of the policy plugin configuration and are validated at startup (non-negative values, sane bounds, `minimal_generation_floor <= max_output_tokens`). Because they are part of the model catalog entry, changes to `estimation_budgets` for a model constitute a catalog change and trigger a policy version bump.
 
 - `user_limits` (per user allocation; delivered/derived per-user, but tied to `policy_version`):
 
@@ -3494,9 +4111,9 @@ The usage payload MUST include the debited credits (`actual_credits_micro`) and 
 Push scheme:
 
 1. CCM publishes a new snapshot (version = V+1) in its storage.
-2. CCM calls mini-chat: `POST /internal/policy:notify { policy_version: V+1 }`
-3. mini-chat fetches that snapshot version (pull) and applies it atomically.
-4. mini-chat keeps `current_policy_version` in memory.
+2. CCM calls mini-chat: `POST /internal/policy:notify { tenant_id, policy_version: V+1 }`
+3. mini-chat schedules a refresh for that tenant. It SHOULD fetch that snapshot version (pull) and apply it atomically as soon as feasible. Because policy snapshots are tenant-wide, any `user_id` belonging to that tenant is acceptable for the user-keyed CCM pull APIs.
+4. mini-chat keeps `current_policy_version` per tenant in memory.
 
 A fallback reconcile job every N minutes is still useful, but it is not in the hot path.
 
@@ -3524,7 +4141,7 @@ A PolicySnapshot is a versioned, immutable configuration object published by CCM
 - `policy_version` (monotonic identifier)
 - `model_catalog` (model entries with credit multipliers, capabilities, tier, display metadata)
 - `estimation_budgets` (fixed surcharge token budgets for preflight reserve estimation). **Source split (normative)**: the fields `bytes_per_token_conservative`, `fixed_overhead_tokens`, `safety_margin_pct`, `image_token_budget`, `tool_surcharge_tokens`, and `web_search_surcharge_tokens` are part of this PolicySnapshot and versioned by `policy_version`. The field `minimal_generation_floor` is sourced from the MiniChat ConfigMap (NOT from this PolicySnapshot) and is captured per-turn into `chat_turns.minimal_generation_floor_applied` at preflight. PolicySnapshot-sourced values take effect when CCM publishes a new `policy_version`. ConfigMap-sourced values take effect on the next preflight after the ConfigMap is reloaded.
-- global kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`)
+- global kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`, `disable_code_interpreter`, `disable_file_search`, `disable_images`)
 
 PolicySnapshot rules:
 
@@ -3562,19 +4179,22 @@ Code MUST NOT conflate PolicySnapshot with UserLimits. References to "snapshot" 
 
 **Startup bootstrap**:
 
-1. On startup, Mini Chat MUST call `GetCurrentPolicyVersion(tenant_id)` via the `minichat-policy-plugin`.
-2. If a local PolicySnapshot for that version does not exist (neither in-memory nor in DB), Mini Chat MUST call `GetPolicySnapshot(policy_version)` and persist the result.
-3. Mini Chat MUST set `current_policy_version` in memory to the fetched version.
+1. On first request per user after cold start (or during background reconciliation), Mini Chat MUST call `GetCurrentPolicyVersion(user_id)` via the `mini-chat-model-policy-plugin`.
+2. If a local PolicySnapshot for that version does not exist (neither in-memory nor in DB), Mini Chat MUST call `GetPolicySnapshot(user_id, policy_version)` and persist the result.
+3. Mini Chat MUST set `current_policy_version` in memory for that tenant to the fetched version.
+
+`user_id` and `tenant_id` are obtained from the request security context. CCM API requests are keyed by `user_id`, while MiniChat persistence and caches remain tenant-scoped (`tenant_id`).
 
 **Push-based notification**:
 
-Mini Chat MUST support push-based policy notification via `POST /internal/policy:notify { policy_version }` (see section 5.2.3).
+Mini Chat MUST support push-based policy notification via `POST /internal/policy:notify { tenant_id, policy_version }` (see section 5.2.3).
 
-On receiving a notify with a `policy_version` newer than `current_policy_version`:
+On receiving a notify for a `tenant_id` with a `policy_version` newer than `current_policy_version` for that tenant:
 
-1. Mini Chat MUST fetch the PolicySnapshot for that version via `GetPolicySnapshot(policy_version)`.
-2. Mini Chat MUST persist the fetched snapshot in DB keyed by `policy_version`.
-3. Mini Chat MUST atomically switch `current_policy_version` in memory to the new version.
+1. Mini Chat MUST mark the tenant policy state as stale and schedule a refresh.
+2. Mini Chat SHOULD fetch the PolicySnapshot for that version via `GetPolicySnapshot(user_id, policy_version)` when a suitable `user_id` for that tenant is available (for example, on the next user request handled for that tenant).
+3. Mini Chat MUST persist the fetched snapshot in DB keyed by `(tenant_id, policy_version)`.
+4. Mini Chat MUST atomically switch `current_policy_version` in memory to the new version.
 
 **Hot-path invariant**:
 
@@ -3685,10 +4305,10 @@ Where:
 
 **Rounding rule (normative)**: `ceil_div` is applied **per-component** (input and output separately), NOT to the sum. This ensures deterministic results regardless of the ratio between input and output tokens. `ceil_div(a, 1000) + ceil_div(b, 1000)` may differ from `ceil_div(a + b, 1000)` by up to 1 micro-credit — this is intentional and consistent.
 
-**Note on zero multipliers**: if a model had `input_tokens_credit_multiplier = 0` and `output_tokens_credit_multiplier = 0`, then the system would not debit credits and a credit-based quota would not be consumed, which effectively creates unlimited usage. Therefore, in a credit-based enforcement model:
+**Note on zero multipliers**: if a model had `input_tokens_credit_multiplier_micro = 0` and `output_tokens_credit_multiplier_micro = 0`, then the system would not debit credits and a credit-based quota would not be consumed, which effectively creates unlimited usage. Therefore, in a credit-based enforcement model:
 
-- `input_tokens_credit_multiplier > 0` always
-- `output_tokens_credit_multiplier > 0` always
+- `input_tokens_credit_multiplier_micro > 0` always
+- `output_tokens_credit_multiplier_micro > 0` always
 
 #### Overflow Protection (Normative)
 
@@ -3829,7 +4449,7 @@ In all cases `settlement_method` and (for capped overshoot) `overshoot_capped: t
 
 For each turn, the quota enforcement flow proceeds in five steps:
 
-1. Resolve current policy snapshot via `minichat-policy-plugin` (section 5.2)
+1. Resolve current policy snapshot via `mini-chat-model-policy-plugin` (section 5.2)
 2. Assemble request context and estimate worst-case usage
 3. Reserve credits and persist `policy_version_applied`
 4. Call provider with `max_output_tokens_applied` as hard cap
@@ -3860,7 +4480,7 @@ The following terms are used throughout sections 5.4–5.9:
 >
 > **P2 Enhancement Option**: Add `chat_turns.provider_request_started_at TIMESTAMPTZ` column for perfect crash recovery if operational metrics show meaningful impact.
 
-- **Usage known**: the provider returned actual token counts (`usage.input_tokens`, `usage.output_tokens`) — either via a terminal `response.completed` event or via error metadata. Settlement uses `settlement_method = "actual"`.
+- **Usage known**: the provider returned actual token counts (`usage.input_tokens`, `usage.output_tokens`) — either via a terminal `response.completed` / `response.incomplete` event or via error metadata. Settlement uses `settlement_method = "actual"`.
 
 > **Canonical provider usage fields (normative)**: the authoritative usage metadata is read from the provider's terminal response event. The canonical field names are `usage.input_tokens` (integer, non-negative) and `usage.output_tokens` (integer, non-negative). These field names are part of the Mini-Chat ↔ OAGW contract. If a provider uses different field names (e.g., `prompt_tokens`, `completion_tokens`), OAGW MUST normalize them to `usage.input_tokens` / `usage.output_tokens` before returning the response to Mini-Chat. Mini-Chat MUST NOT implement provider-specific usage field mapping. If `usage` object is present but either field is missing, treat the missing field as `0`. If the `usage` object is absent entirely, usage is "unknown" (estimated settlement path).
 
@@ -3873,8 +4493,8 @@ mini-chat selects `effective_model` (with downgrade if needed) based on the curr
 
 Then it computes:
 
-- `estimated_text_tokens` — sum of text content, metadata, and retrieved chunks (see ConfigMap `estimation_budgets`, line 3194)
-- `image_surcharge_tokens` — if images present, apply `estimation_budgets.image_token_budget` per image (ConfigMap-defined conservative estimate, line 3195)
+- `estimated_text_tokens` — sum of text content, metadata, and retrieved chunks (see `estimation_budgets` from the selected model's catalog entry, section 5.2.1)
+- `image_surcharge_tokens` — if images present, apply `estimation_budgets.image_token_budget` per image (per-model conservative estimate from catalog entry, section 5.2.1)
 - `tool_surcharge_tokens` — apply `estimation_budgets.tool_surcharge_tokens` if tool use enabled (line 3196)
 - `web_search_surcharge_tokens` — apply `estimation_budgets.web_search_surcharge_tokens` if web search enabled (line 3197)
 - `max_output_tokens_applied` — the `max_output_tokens` value used for this turn; persisted on `chat_turns.max_output_tokens_applied` (immutable after insert)
@@ -4100,6 +4720,7 @@ Then mini-chat performs atomically, in a single transaction (CAS on `chat_turn.s
   - effective_model
   - policy_version_applied
   - actual_input_tokens, actual_output_tokens
+  - file_search_calls, web_search_calls, code_interpreter_calls
   - reserved_credits_micro, actual_credits_micro
   - timestamps
 
@@ -4111,7 +4732,7 @@ If the LLM crashed or was cancelled:
   - if the provider was called and usage was returned — debit actual, `settlement_method = "actual"`
   - if unknown (orphan, disconnect, crash) — debit bounded estimate using `min(reserve_tokens, estimated_input_tokens + minimal_generation_floor_applied)`, `settlement_method = "estimated"`
 
-- The orphan watchdog (P1 mandatory) MUST detect turns stuck in `running` state beyond a configurable timeout (default: 5 min) and finalize them using the same CAS guard and the deterministic formula above. The watchdog MUST write the quota settlement and the `modkit_outbox_events` row in the same DB transaction.
+- The orphan watchdog (P1 mandatory) MUST detect turns stuck in `running` state beyond a configurable timeout (default: 5 min) and finalize them using the same CAS guard and the deterministic formula above. The watchdog MUST write the quota settlement and enqueue the corresponding Mini-Chat usage message in the same DB transaction.
 
 Important: this MUST be deterministic, recorded, and use the identical CAS-guarded finalization path as all other terminal triggers.
 
@@ -4422,8 +5043,8 @@ reserved_credits_micro =
 
 Where:
 
-- `in_mult` = `input_tokens_credit_multiplier` > 0 (always)
-- `out_mult` = `output_tokens_credit_multiplier` > 0 (always)
+- `in_mult` = `input_tokens_credit_multiplier_micro` > 0 (always)
+- `out_mult` = `output_tokens_credit_multiplier_micro` > 0 (always)
 - `max_output_tokens_applied` = the `max_output_tokens` value persisted on `chat_turns` for this turn
 
 #### 5.5.8 Limit Checks and max_output_tokens
@@ -4468,7 +5089,14 @@ Settlement (per bucket row — see section 5.4.4):
 
 The authoritative source of actual token usage in P1 is the **provider-reported usage metadata** (`usage.input_tokens`, `usage.output_tokens`) returned by the provider in the terminal response event. If provider usage is present, MiniChat MUST use those values for credit computation. MiniChat MUST NOT attempt to recompute actual token usage independently (e.g., by re-tokenizing the response body or summing estimated component costs).
 
-**Scope of provider-reported usage**: the provider's `input_tokens` and `output_tokens` values reflect the provider's own accounting. Tools, web_search, or RAG internal operations (retrieval passes, reranks, sub-queries) are NOT included in provider token usage unless explicitly reported by the provider in those fields. P1 does NOT rely on provider-specific cost breakdown fields beyond `input_tokens` and `output_tokens`.
+**Scope of provider-reported usage**: the provider's `input_tokens` and `output_tokens` values reflect the provider's own accounting. Tools, web_search, or RAG internal operations (retrieval passes, reranks, sub-queries) are NOT included in provider token usage unless explicitly reported by the provider in those fields.
+
+**Detailed token breakdown**: In addition to total `input_tokens` and `output_tokens`, providers may report detailed breakdowns:
+- `cache_read_input_tokens` — input tokens served from the provider's prompt cache (OpenAI: `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`; Anthropic: `cache_read_input_tokens`). These are a subset of `input_tokens`, not additive.
+- `cache_write_input_tokens` — input tokens written to the provider's prompt cache (reserved for Anthropic: `cache_creation_input_tokens`). These are a subset of `input_tokens`, not additive.
+- `reasoning_tokens` — output tokens consumed by model reasoning/thinking (OpenAI: `completion_tokens_details.reasoning_tokens` / `output_tokens_details.reasoning_tokens`). These are a subset of `output_tokens`, not additive.
+
+These breakdown fields are captured and propagated through audit events and usage events for observability. **Credit computation in P1 uses only total `input_tokens` and `output_tokens`** — cached/reasoning token discounts are not applied. Future phases may introduce differentiated multipliers for cached tokens.
 
 **"Actual spend" in P1** refers strictly to **token-usage-based credits** computed via the canonical `credits_micro()` formula (section 5.3) applied to provider-reported token counts. No separate runtime billing signal is expected for tool execution, web search invocations, or RAG operations in P1. 
 Settlement in P1 is strictly based on provider-reported `input_tokens` and `output_tokens`. 
@@ -4515,8 +5143,8 @@ Thus we achieve:
 4. Reserve is computed in credits.
 5. Reserve > Settlement never produces negative limits.
 6. policy_version is fixed on the turn.
-7. **Replay is side-effect-free**: when a completed turn is replayed for the same `(chat_id, request_id)`, the system MUST NOT take a new quota reserve, MUST NOT update `quota_usage` or debit credits, MUST NOT insert a new outbox row, and MUST NOT emit audit or billing events. Replay is a pure read-and-relay operation.
-8. **Outbox emission is atomic with settlement**: the CAS-guarded finalization transaction MUST include the outbox row insert (`modkit_outbox_events`) in the same DB transaction as quota settlement. It MUST be impossible for quota to be debited without a corresponding outbox row.
+7. **Replay is side-effect-free**: when a completed turn is replayed for the same `(chat_id, request_id)`, the system MUST NOT take a new quota reserve, MUST NOT update `quota_usage` or debit credits, MUST NOT enqueue a new outbox message, and MUST NOT emit audit or billing events. Replay is a pure read-and-relay operation.
+8. **Outbox emission is atomic with settlement**: the CAS-guarded finalization transaction MUST include the Mini-Chat outbox enqueue in the same DB transaction as quota settlement. It MUST be impossible for quota to be debited without a corresponding outbox message being durably enqueued.
 9. **Orphan watchdog is P1 mandatory**: a periodic background job MUST detect turns stuck in `running` state beyond a configurable timeout (default: 5 min) and finalize them with a bounded best-effort debit using the same CAS guard, quota settlement, and outbox emission as all other finalization paths. The watchdog ensures no turn can permanently evade billing. See `cpt-cf-mini-chat-component-orphan-watchdog`.
 
 #### 5.5.13 Deterministic Reserve and Settlement Model
@@ -4590,12 +5218,18 @@ Where `in_mult` and `out_mult` are read from the policy snapshot identified by `
 
 **Solution**: use a transactional outbox to guarantee at-least-once event delivery without introducing synchronous billing calls in the hot path.
 
-**Outbox storage**: Mini-Chat usage events are stored in the shared infrastructure table `modkit_outbox_events` owned by `modkit-db`. See [outbox-pattern.md](features/outbox-pattern.md) section 1.6 for the canonical table schema, column definitions, and indexes.
+**Shared outbox implementation**: Mini-Chat uses the shared `modkit_db::outbox` subsystem implemented in `libs/modkit-db/src/outbox`. The authoritative integration surface is:
 
-Mini-Chat usage events use:
-- `namespace = "mini-chat"`
-- `topic = "usage_snapshot"`
-- `dedupe_key` — **canonical format (normative)**: `"{tenant_id}/{turn_id}/{request_id}"` where all three components are UUID hex strings (32 lowercase hexadecimal characters, no hyphens or braces). This is the sole stable idempotency key for Mini-Chat outbox events. No other format is permitted.
+- `Outbox::enqueue(...)` / `Outbox::enqueue_batch(...)` for producers
+- `OutboxBuilder` / `QueueBuilder` for queue registration and worker startup
+- `HandlerResult::{Success, Retry, Reject}` for decoupled processing outcomes
+- `dead_letter_*` operations for operator recovery of rejected messages
+
+Mini-Chat usage publication uses:
+- a dedicated Mini-Chat usage queue registered at startup (exact queue name is implementation-defined in P1)
+- a stable `payload_type` identifying the usage payload schema/version
+- `event_type = "usage_snapshot"` inside the serialized payload
+- `dedupe_key` — **canonical format (normative)**: `"{tenant_id}/{turn_id}/{request_id}"` where all three components are UUID hex strings (32 lowercase hexadecimal characters, no hyphens or braces). This is the sole stable idempotency key for Mini-Chat usage payloads. No other format is permitted.
 
 > Where:
 >
@@ -4631,134 +5265,51 @@ fn construct_dedupe_key(tenant_id: Uuid, turn_id: Uuid, request_id: Uuid) -> Str
 ```
 
 **Application points:**
-- MUST be applied when constructing `dedupe_key` for outbox events
-- MUST be applied when extracting tenant_id from dedupe_key for downstream idempotency checks
+- MUST be applied when constructing `dedupe_key` for Mini-Chat usage payloads
+- MUST be applied when extracting tenant_id from `dedupe_key` for downstream idempotency checks
 - MUST NOT be applied to API request/response serialization (use hyphenated RFC 4122 format)
 - MUST NOT be applied to database queries (Postgres uses native UUID type)
 
 **Rationale:** The 32-char hex format eliminates parsing ambiguity and reduces dedupe_key length (96 chars vs 114 chars for three hyphenated UUIDs + two slashes).
 
-- `payload` (JSONB): contains all mini-chat-specific fields (`tenant_id`, `user_id`, `chat_id`, `turn_id`, `request_id`, `effective_model`, `selected_model`, `policy_version_applied`, `usage`, `outcome`, `settlement_method`, etc.)
+- the serialized JSON payload, which contains all Mini-Chat-specific fields (`tenant_id`, `user_id`, `chat_id`, `turn_id`, `request_id`, `effective_model`, `selected_model`, `policy_version_applied`, `usage`, `outcome`, `settlement_method`, etc.)
 
-**Dedupe / unique constraint**: the partial unique index `(namespace, topic, dedupe_key) WHERE dedupe_key IS NOT NULL` on `modkit_outbox_events` enforces at most one outbox event per turn invocation at the database level. All finalizers MUST insert the outbox row within the same transaction as the guarded state transition (CAS on `chat_turns.state = 'running'`, section 5.7) and quota settlement.
+**Producer-side uniqueness (normative)**: the shared outbox library treats payloads as opaque bytes and does not enforce a Mini-Chat-specific `(namespace, topic, dedupe_key)` uniqueness rule. Exactly one logical enqueue per turn MUST therefore be achieved by the domain-side CAS winner in `chat_turns` finalization (section 5.7) or by the authoritative system-task terminal transition for background work. The serialized payload MUST still carry stable dedupe identifiers so downstream consumers can absorb duplicate deliveries caused by at-least-once processing.
 
-**Initial row state (normative)**: outbox rows MUST be inserted with `status = 'pending'`, `attempts = 0`, `next_attempt_at = now()` (eligible for immediate dispatch), `locked_by = NULL`, `locked_until = NULL`. The `attempts` column MUST start at `0` so that the first claim increment produces `attempts = 1` and the first retry backoff is `min(2^1 * base_delay, max_delay)`. Inserting with `attempts = 1` would shift the entire backoff curve by one step and is incorrect.
+**Transactional rule**: the quota usage commit (updating `quota_usage` bucket rows) and the outbox enqueue MUST happen in the same database transaction. If either fails, the entire transaction rolls back. `Outbox::transaction(...)` MAY be used as a helper, but it is not semantically required. This guarantees that every committed quota change has a corresponding durably enqueued message.
 
-**Conflict semantics (normative)**: the outbox INSERT MUST use `INSERT ... ON CONFLICT (namespace, topic, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING` (or the equivalent ORM upsert-ignore). If the INSERT returns zero rows affected (dedupe conflict), the finalizer MUST treat the event as already emitted and MUST NOT re-emit. The finalizer MUST NOT raise an error to the caller on dedupe conflict — the duplicate is a normal idempotency outcome, not an error condition.
+#### Shared Outbox Processing Model (P1)
 
-**Transactional rule**: the quota usage commit (updating `quota_usage` bucket rows) and the outbox row insert MUST happen in the same database transaction. If either fails, the entire transaction rolls back. This guarantees that every committed quota change has a corresponding pending event.
+Mini-Chat MUST use the shared outbox pipeline rather than implementing its own SQL dispatcher over the shared outbox storage.
 
-**Dispatcher worker**: a background dispatcher (ModKit `stateful` lifecycle task) polls `modkit_outbox_events` rows where `status = 'pending'` and `next_attempt_at <= now()`, filtered by `namespace = 'mini-chat'`, ordered by `created_at`. For each row:
+**Usage publication handler**:
 
-1. Publish the event to the selected `minichat-policy-plugin` plugin via `publish_usage(payload)`.
-2. On success, set `status = 'delivered'` and update `updated_at`.
-3. On transient failure, increment `attempts`, set `next_attempt_at` with exponential backoff: `now() + min(2^attempts * base_delay, max_delay)`, keep `status = 'pending'`.
+1. Mini-Chat registers a decoupled outbox handler for usage-publication messages. External plugin calls such as `publish_usage(payload)` MUST use `decoupled` mode, not `transactional`, because the side effect happens outside the database.
+2. The handler receives `OutboxMessage { payload, payload_type, attempts, ... }` from the shared outbox queue.
+3. On success, the handler returns `HandlerResult::Success`.
+4. On transient failure, the handler returns `HandlerResult::Retry { reason }`. Retry backoff, lease handling, reclaim, partition concurrency, sequencer wake-up, and vacuum are then handled by `modkit-db::outbox` using the queue registration settings.
+5. On permanent poison-message failure, the handler returns `HandlerResult::Reject { reason }`. The shared outbox moves the message to its dead-letter store. Operators recover via `dead_letter_*` APIs; Mini-Chat does not define a separate `dead` row state.
 
-> Where:
->
-> * `base_delay` — base retry delay in seconds. **Configuration source (P1)**: read from MiniChat ConfigMap key `outbox_dispatcher.base_delay_seconds` (integer). Default value: `2`. MUST be validated at startup: `1 <= base_delay_seconds <= 60`.
-> * `max_delay` — maximum retry delay cap in seconds. **Configuration source (P1)**: read from MiniChat ConfigMap key `outbox_dispatcher.max_delay_seconds` (integer). Default value: `300` (5 minutes). MUST be validated at startup: `base_delay_seconds <= max_delay_seconds <= 3600`.
-> * `now()` — current database server time (UTC)
-> * **Transient failure classification (P1 normative)**: The following error classes MUST be treated as transient (retried with exponential backoff):
->   - Connection-level: TCP timeout, connection refused, DNS resolution failure
->   - HTTP 408 (Request Timeout), HTTP 429 (Too Many Requests), HTTP 5xx (all server-side errors)
->
->   The following MUST be treated as immediately permanent (skip retry backoff, transition directly to `status = 'dead'`):
->   - HTTP 400, 401, 403, 404, 410, 422 — client errors indicating the request is structurally invalid or permanently rejected by the plugin; retrying will not succeed.
->
->   All other error classes default to transient until `max_attempts` is exhausted.
+**Queue configuration ownership**:
 
-4. On permanent failure (attempts exceed configured max), set `status = 'dead'` and emit an alert metric.
+- Retry/lease semantics are controlled by the shared outbox queue configuration (`lease_duration`, `backoff_base`, `backoff_max`, `max_concurrent_partitions`, `msg_batch_size`) at queue-registration time.
+- Global sequencer/vacuum cadence is controlled by the shared outbox builder configuration (`sequencer_batch_size`, `poll_interval`, `vacuum_cooldown`).
+- Mini-Chat MUST NOT re-specify those mechanics as per-row status transitions in this document.
 
-> Where:
->
-> * `configured max` — maximum retry attempts before dead-lettering. **Configuration source (P1)**: read from MiniChat ConfigMap key `outbox_dispatcher.max_attempts` (integer). Default value: `10`. MUST be validated at startup: `3 <= max_attempts <= 100`.
-> * **Permanent failure classification (P1)**: `attempts > max_attempts` (retry exhaustion). Additional permanent error codes (e.g., HTTP 4xx indicating client error, explicit plugin rejection) MAY be added in future revisions but are not required in P1. When `status = 'dead'`, emit metric `mini_chat_outbox_dead_total` (counter, labels: `{namespace, topic}`).
+**Idempotency rule**: consumers (CyberChatManager) MUST deduplicate usage events by the stable logical identity carried in the serialized payload:
 
-#### Outbox Dispatcher Concurrency and Row Claiming (P1)
+- user turns: `(tenant_id, turn_id, request_id)` or the equivalent `dedupe_key`
+- system tasks: `(tenant_id, system_task_type, system_request_id)` or the equivalent `dedupe_key`
 
-At-least-once delivery is allowed; duplicates are possible (see Idempotency rule below). However, dispatchers MUST implement a row-claiming mechanism to minimize duplicate publishes under multi-pod concurrency. A dispatcher MUST NOT publish an outbox row unless it has atomically claimed it.
-
-**Row-claiming algorithm (Postgres)**:
-
-1. **Claim transaction** — within a single DB transaction:
-
-   ```sql
-   -- Step 1: select and lock unclaimed pending rows
-   SELECT id, payload, namespace, topic, tenant_id, dedupe_key
-   FROM modkit_outbox_events
-   WHERE namespace = 'mini-chat'
-     AND status = 'pending'
-     AND next_attempt_at <= now()
-   ORDER BY created_at
-   LIMIT :batch_size
-   FOR UPDATE SKIP LOCKED;
-
-   -- Step 2: atomically mark selected rows as processing
-   UPDATE modkit_outbox_events
-   SET status = 'processing',
-       locked_by = :worker_id,
-       locked_until = now() + :lease_duration,
-       attempts = attempts + 1,
-       updated_at = now()
-   WHERE id = ANY(:selected_ids);
-   ```
-
-   `FOR UPDATE SKIP LOCKED` ensures that concurrent dispatchers never select the same rows. Commit the claim transaction before proceeding to publish.
-
-2. **Publish** — outside the claim transaction, publish each claimed event to the selected `minichat-policy-plugin` plugin.
-
-3. **On success** — update the row:
-
-   ```sql
-   UPDATE modkit_outbox_events
-   SET status = 'delivered',
-       updated_at = now()
-   WHERE id = :row_id AND status = 'processing';
-   ```
-
-   `delivered` is a terminal status; the row MUST NOT be modified further by any dispatcher.
-
-4. **On failure** — update the row:
-
-   ```sql
-   UPDATE modkit_outbox_events
-   SET status = 'pending',
-       locked_by = NULL,
-       locked_until = NULL,
-       next_attempt_at = now() + least(2 ^ attempts * :base_delay, :max_delay),
-       last_error = :sanitized_error,
-       updated_at = now()
-   WHERE id = :row_id AND status = 'processing';
-   ```
-
-   `last_error` MUST be sanitized to avoid provider identifier leakage (same redaction rules as audit events).
-
-**Lease expiry reclaim rule**: if `now() > locked_until` and `status = 'processing'`, any dispatcher MAY reclaim the row by transitioning it back to `pending` (setting `locked_by = NULL`, `locked_until = NULL`). This handles the case where the claiming dispatcher crashes after the claim transaction but before publishing. **`attempts` MUST NOT be incremented during reclaim** — the count was already incremented when the row was originally claimed in step 2 above. Incrementing again on reclaim would over-count attempts and apply more aggressive exponential backoff than intended, risking premature dead-lettering on rows where the original dispatcher silently crashed.
-
-**State transition invariant**: a row transitions `pending → processing → delivered` monotonically. `delivered` is terminal. The only non-forward transition is `processing → pending` on publish failure or lease expiry, which allows retry. A row MUST NOT transition from `delivered` to any other status. Rows that exhaust `max_attempts` transition to `dead` (terminal).
-
-**Crash safety**: the dispatcher MUST be safe under crashes at any point:
-
-- **Crash before claim commit**: no row is claimed; no side effects.
-- **Crash after claim commit but before publish**: the row remains `processing` until `locked_until` expires, then becomes reclaimable by another dispatcher.
-- **Crash after publish but before marking `delivered`**: the row remains `processing`, expires, and may be re-published. Consumer deduplication by `(tenant_id, turn_id, request_id)` absorbs the duplicate.
-
-**Operational guidance (P1 minimum)**:
-
-- Dispatchers MUST use bounded retries: after `max_attempts` (configurable, default: 10) consecutive failures, set `status = 'dead'` and emit the `mini_chat_outbox_dead_total` alert metric.
-- Dispatchers MUST expose observability counters: `mini_chat_outbox_claimed_total`, `mini_chat_outbox_sent_total`, `mini_chat_outbox_dead_total`, `mini_chat_outbox_lease_expired_total`.
-- Batch size, retry base delay, max delay, and lease duration are deployment-configurable. Specific default values are deferred to P2+ operational runbooks.
-
-**Idempotency rule**: consumers (CyberChatManager) MUST deduplicate events by `(tenant_id, turn_id, request_id)`. At-least-once delivery means duplicates are possible; the consumer is responsible for ignoring replayed events.
+At-least-once delivery means duplicates are possible; the consumer is responsible for ignoring replayed deliveries of the same logical event.
 
 **Failure modes**:
 
-- **Plugin unavailable**: outbox rows accumulate in `pending` status. The dispatcher retries with backoff. No data is lost; delivery resumes when the plugin recovers.
-- **Duplicate publish**: the dispatcher may re-publish a row if it crashes after sending but before marking `delivered`. The consumer deduplicates using the idempotency key `(tenant_id, turn_id, request_id)` from the `dedupe_key`.
-- **Permanent failures**: rows in `dead` status trigger an alert via `mini_chat_outbox_dead_total` metric. Operators investigate and may replay manually or fix the root cause.
+- **Plugin unavailable**: the decoupled handler returns `Retry`; the shared outbox re-delivers according to queue backoff/lease semantics. No committed quota data is lost.
+- **Duplicate publish**: the handler may publish twice if the worker crashes after the external side effect but before the shared outbox records success. Downstream deduplication by the serialized idempotency key absorbs the duplicate.
+- **Permanent failures**: rejected messages accumulate in the shared outbox dead-letter store and MUST trigger Mini-Chat operational alerts.
 
-**Scope**: the outbox mechanism is P1 mandatory — it is required for billing event completeness and MUST be implemented before any production deployment that processes quota-bearing turns. It is an internal reliability pattern that does not change any external API contract or introduce synchronous billing calls. The canonical outbox table schema and API are defined in [outbox-pattern.md](features/outbox-pattern.md). Detailed event payload schemas and envelope definitions remain deferred to P2+ (see section 5.6).
+**Scope**: the outbox mechanism is P1 mandatory — it is required for billing event completeness and MUST be implemented before any production deployment that processes quota-bearing turns. It is an internal reliability pattern that does not change any external API contract or introduce synchronous billing calls.
 
 ### 5.7 Turn Finalization Contract (P1): Quota Settlement and Outbox Emission
 
@@ -4768,7 +5319,7 @@ Every turn MUST eventually settle into exactly one persisted finalization outcom
 
 | Outcome | Internal state | SSE terminal event | Description |
 |---------|---------------|-------------------|-------------|
-| `completed` | `completed` | `done` | Normal completion. Provider returned a full response and the full assistant message content is durably persisted (see content durability invariant below). |
+| `completed` | `completed` | `done` | Provider returned terminal `response.completed` or `response.incomplete`; assistant message content is durably persisted (see content durability invariant below). |
 | `failed` | `failed` | `error` | Terminal error (pre-provider or post-provider-start). |
 | `cancelled` | `cancelled` | _(none; stream already disconnected)_ | Server-side cancellation triggered by client disconnect or internal abort. |
 
@@ -4782,10 +5333,10 @@ Note: "disconnected" is not a separate internal state. Client disconnects are de
 
 #### Settlement transaction invariant
 
-For any outcome where the server applies a quota debit (actual or estimated), the system MUST write the corresponding outbox row in the same DB transaction as the quota settlement. This is the core invariant that prevents billing drift.
+For any outcome where the server applies a quota debit (actual or estimated), the system MUST enqueue the corresponding Mini-Chat outbox message in the same DB transaction as the quota settlement. This is the core invariant that prevents billing drift.
 
-- Quota settlement (reserve release or commit of actual/estimated usage) and outbox INSERT MUST be atomic within one DB transaction.
-- Outbox uniqueness is enforced via `dedupe_key = "{tenant_id}/{turn_id}/{request_id}"` within `(namespace, topic, dedupe_key)` partial unique index on `modkit_outbox_events`.
+- Quota settlement (reserve release or commit of actual/estimated usage) and outbox enqueue MUST be atomic within one DB transaction.
+- The serialized usage payload MUST carry `dedupe_key = "{tenant_id}/{turn_id}/{request_id}"`.
 - Consumer deduplication remains by `(tenant_id, turn_id, request_id)`.
 
 #### Reserve persistence prerequisite
@@ -4801,13 +5352,18 @@ Deterministic reconciliation for `ABORTED` and post-provider-start `FAILED` outc
 2. Quota settlement (actual or estimated)
 3. Outbox enqueue (in same transaction)
 
+**Clarification (normative):** “Single shared function” does NOT require a single DB update shape. The function MAY branch internally by terminal outcome:
+- For `completed` (including provider `response.incomplete`): finalize via the “completed” CAS path that sets `assistant_message_id` and MUST keep `chat_turns.error_code = NULL`. Any incomplete/truncation reason MUST be recorded only as `completion_signal` in audit/outbox payloads and the `mini_chat_stream_incomplete_total{reason}` metric.
+- For `cancelled` with non-empty accumulated text: persist the partial assistant message and set `assistant_message_id` (same INSERT + SET sequence as completed), but do NOT retry-as-failed on persistence failure — best-effort only, log at `warn` and finalize as `cancelled` with `assistant_message_id = NULL`.
+- For `failed` / `cancelled` with empty text: finalize via the “terminal state” CAS path that may set `error_code` / `error_detail` as specified elsewhere in this section.
+
 #### Dedupe Key Requirement for Quota-Bearing Events (Normative)
 
-**Problem:** The generic outbox library allows `dedupe_key` to be NULL (enforced only by partial unique index), but billing/quota-bearing events MUST be idempotent and MUST have non-null `dedupe_key` for at-least-once delivery semantics without duplicate charges.
+**Problem:** The shared outbox library provides at-least-once delivery and treats Mini-Chat payloads as opaque bytes. Billing/quota-bearing events therefore MUST carry a stable, non-null domain-level `dedupe_key` inside the serialized payload so downstream consumers can suppress duplicate deliveries without duplicate charges.
 
 **Rule:**
 
-- **Quota-bearing events** (all events in `usage_snapshot` topic that result in quota debit or credit) MUST have non-null `dedupe_key`
+- **Quota-bearing events** (all `usage_snapshot` messages that result in quota debit or credit) MUST have non-null `dedupe_key`
 - **Non-quota-bearing events** (e.g., informational telemetry, system notifications) MAY have NULL `dedupe_key` if idempotency is not required
 
 **Mini-Chat application:**
@@ -4825,10 +5381,10 @@ Where:
 
 **Enforcement layers:**
 
-1. **Generic outbox library (`modkit_db::outbox`):**
-   - Accepts NULL `dedupe_key` (backward compatible with non-billing use cases)
-   - Enforces at-most-once for non-NULL dedupe_key via partial unique index
-   - DOES NOT validate Mini-Chat-specific format
+1. **Shared outbox library (`modkit_db::outbox`):**
+   - Treats Mini-Chat payloads as opaque bytes
+   - Delivers them at-least-once through the configured queue/handler pipeline
+   - DOES NOT validate Mini-Chat-specific `dedupe_key` format
 
 2. **Mini-Chat domain layer (quota settlement code):**
    - MUST validate that `dedupe_key` is non-null and well-formed BEFORE calling `enqueue`
@@ -4838,11 +5394,10 @@ Where:
 **Rationale:**
 
 Billing correctness depends on idempotent event delivery. If `dedupe_key` is NULL:
-- The partial unique index does not prevent duplicate inserts
 - Downstream consumers cannot deduplicate based on turn identity
 - Retry/replay scenarios could result in double-charging
 
-By requiring non-null `dedupe_key` for quota-bearing events at the domain layer, we enforce billing idempotency while keeping the generic outbox library flexible for other use cases.
+By requiring non-null `dedupe_key` for quota-bearing events at the domain layer, we enforce billing idempotency while keeping the shared outbox library generic.
 
 **Error handling:**
 
@@ -4860,7 +5415,7 @@ This error MUST be logged as CRITICAL and MUST prevent the transaction from comm
 
 #### Outbox Enqueue Validation (Mini-Chat Domain Layer)
 
-When Mini-Chat code calls `modkit_db::outbox::enqueue`, it MUST validate the consistency of `tenant_id` and `dedupe_key` BEFORE the call:
+When Mini-Chat code calls `modkit_db::outbox::enqueue`, it MUST validate the consistency of `tenant_id` and `dedupe_key` BEFORE serializing and enqueuing the message:
 
 ```rust
 fn validate_outbox_message(tenant_id: Uuid, dedupe_key: &str) -> Result<()> {
@@ -4885,7 +5440,7 @@ Exactly one finalizer may transition a turn from `IN_PROGRESS` (`running`) to a 
 
 **Covered terminal triggers** (exhaustive list — every trigger below MUST use the identical CAS pattern):
 
-1. **Provider done** — normal `response.completed` terminal event
+1. **Provider done** — terminal `response.completed` or `response.incomplete` event
 2. **Provider terminal error** — `provider_error`, `provider_timeout`, or any other terminal error from the provider
 3. **Client disconnect** — SSE stream closes before provider completes → abort path
 4. **Watchdog/orphan timeout** — turn remains `running` beyond the configured threshold (default: 5 minutes)
@@ -4905,9 +5460,9 @@ WHERE id = :turn_id AND state = 'running'
 
 - **`rows_affected = 1`**: this finalizer won the CAS race. It is the ONLY actor allowed to:
   (a) settle quota (release unused reserve or commit actual/estimated usage),
-  (b) insert the `modkit_outbox_events` row, and
+  (b) enqueue the corresponding Mini-Chat outbox message, and
   (c) persist the final assistant message content (if the outcome is `completed`).
-  All three operations — CAS state transition, quota settlement, and outbox insert — MUST be within one DB transaction.
+  All three operations — CAS state transition, quota settlement, and outbox enqueue — MUST be within one DB transaction.
 - **`rows_affected = 0`**: another finalizer already transitioned the turn. This finalizer MUST treat the turn as already finalized, MUST NOT debit quota, MUST NOT emit an outbox event, and MUST stop processing. It is an idempotent no-op.
 
 No finalization path is exempt from this guard. The orphan watchdog uses the identical CAS pattern (`WHERE state = 'running'`) and cannot "finalize late" if the stream already completed or was already finalized by another path.
@@ -4931,7 +5486,7 @@ When the provider returns terminal data (`done` or `error` event):
    ```
 3. **Check `rows_affected` and gate SSE emission**:
    - **If `rows_affected = 1`** (CAS winner):
-     - Proceed with quota settlement and outbox insertion within the same transaction
+     - Proceed with quota settlement and outbox enqueue within the same transaction
      - Commit the transaction
      - **Only after successful commit**: emit the terminal SSE event (`done` or `error`) to the client
      - Flush and close the SSE stream
@@ -4972,8 +5527,20 @@ Without this guard, the SSE stream and the database state can become inconsisten
 The following patterns are explicitly prohibited. Any implementation that matches these patterns is a correctness violation:
 
 1. **"Update messages first, update turn state later"** — FORBIDDEN. The assistant message persistence and the turn state transition MUST be ordered such that a `completed` state is never observable without the corresponding durable message content.
-2. **"Outbox insert outside the finalization transaction"** — FORBIDDEN. The outbox row MUST be inserted within the same DB transaction as the CAS state transition and quota settlement. A separate transaction risks duplicate or orphaned billing events.
+2. **"Outbox enqueue outside the finalization transaction"** — FORBIDDEN. The outbox message MUST be enqueued within the same DB transaction as the CAS state transition and quota settlement. A separate transaction risks duplicate or orphaned billing events.
 3. **"Watchdog finalizes without checking running state"** — FORBIDDEN. The watchdog MUST use the identical `WHERE state = 'running'` CAS guard. A watchdog that unconditionally overwrites terminal states corrupts already-settled turns.
+
+#### User message persistence invariant (preflight prerequisite)
+
+**INVARIANT: user message MUST be durably persisted before the `chat_turns` row enters `running` state and before any outbound provider call.**
+
+The user message (`messages` row with `role = 'user'`) and the `message_attachments` associations (from `attachment_ids`) MUST be committed to the database as part of the preflight transaction — the same transaction that inserts the `chat_turns` row with `state = 'running'` and records the quota reserve. This ordering guarantees:
+
+- The user message is always available for ContextPlan assembly and replay, even after crash recovery.
+- If the preflight transaction fails (e.g. DB write error), neither the user message nor the turn record exists — the system is in a clean state and the client can retry with a new `request_id`.
+- The orphan watchdog can always reconstruct the conversation state (including the user message) when finalizing stuck turns.
+
+**Consequence**: it is impossible for a `chat_turns` row with `state = 'running'` to exist without the corresponding user message being durably persisted. Any code path that creates a `chat_turns` row before persisting the user message is a correctness violation.
 
 #### Content durability invariant (completed ⇒ replayable)
 
@@ -4994,15 +5561,32 @@ A turn MUST NOT transition to `completed` unless the full assistant message cont
 - Settle using actual provider usage (`response.usage.input_tokens` + `response.usage.output_tokens`).
 - Release unused reserve, commit actual usage to `quota_usage` bucket rows (bucket `total` always; bucket `tier:premium` if premium turn).
 - If actual exceeds estimate (overshoot), commit the overshoot; never retroactively cancel a completed response.
+- If the provider returns terminal `response.incomplete` (e.g. due to `max_tokens`), the turn is still treated as `completed` (assistant message persisted, settle on actual usage). The incomplete reason is a **non-fatal completion signal**: it MUST be recorded in the audit/outbox payload and metrics, and it MUST NOT be written to `chat_turns.error_code`.
 - Emit usage settlement outbox event with `payload_json` that MUST include:
   - `outcome`: `"completed"`
   - `settlement_method`: `"actual"`
   - `effective_model`, `selected_model`, `quota_decision` (and `downgrade_from`, `downgrade_reason` if present)
   - `policy_version_applied` (from `chat_turns.policy_version_applied`)
+  - `completion_signal` (nullable object): `null` for normal `response.completed`; for `response.incomplete`, set to `{ "kind": "incomplete", "reason": "<reason>" }` where `reason` is from the normative `CompletionSignalReason` enum (see "Completion signal reason enum" below)
+    - The corresponding turn audit event emitted to `audit_service` MUST include the same `completion_signal` object for correlation.
   - `usage`: `{ input_tokens, output_tokens }` (token-denominated; provider-reported actuals; telemetry)
   - `actual_credits_micro` (credit-denominated; **authoritative for CCM billing debit**; computed via `credits_micro()` formula in section 5.3 using the model multipliers from the policy snapshot identified by `policy_version_applied`)
   - `reserved_credits_micro` (credit-denominated; the preflight reserve from `chat_turns.reserved_credits_micro`; informational for delta/reconciliation)
   - `turn_id`, `request_id`, `chat_id`, `tenant_id`, `user_id`
+
+**Completion signal reason enum (normative)**:
+
+`completion_signal.reason` and the `reason` label on `mini_chat_stream_incomplete_total{reason}` MUST use this canonical allowlist:
+
+| `CompletionSignalReason` | Meaning | Provider mapping rule |
+|--------------------------|---------|------------------------|
+| `max_tokens` | Output truncated because the model hit the configured output token cap | Map provider finish reasons such as `max_tokens`, `length`, or equivalent “ran out of tokens” signals to `max_tokens` |
+| `content_filter` | Output truncated or stopped due to safety/content filtering | Map provider reasons indicating safety/content filtering to `content_filter` |
+| `other` | Any other incomplete reason not covered above | **Fallback**: any unknown/unmapped provider reason MUST be collapsed to `other` (no raw provider strings) |
+
+**Drift prevention rule (normative)**: implementations MUST NOT emit raw provider reason strings into audit/outbox payloads or metrics. The translation layer MUST normalize to the enum above.
+
+**Implementation note (non-normative):** service-internal stream summaries may still carry richer strings for logging/debugging (for example, an internal field like `StreamOutcome.error_code = "incomplete:<provider_reason>"`). These internal strings MUST NOT be persisted to `chat_turns.error_code` for `completed` turns and MUST NOT be used as the `reason` label value; only the normalized `CompletionSignalReason` enum may cross the audit/outbox and metrics boundaries.
 
 **Outbox payload unit convention (normative for all outcomes)**: every usage outbox event MUST include both `usage` (token-denominated, for telemetry and cost reporting) and `actual_credits_micro` (credit-denominated, authoritative for CCM debit). CCM MUST use `actual_credits_micro` as the amount to debit from the user's chat wallet. CCM MUST NOT independently recompute credits from token counts — `actual_credits_micro` is the source of truth.
 
@@ -5010,15 +5594,15 @@ A turn MUST NOT transition to `completed` unless the full assistant message cont
 
 Three subcases:
 
-- **failed_pre_reserve**: error before a quota reserve is taken (validation error, authorization denial, quota preflight rejection — no `chat_turns` row with a reserve exists). No settlement occurs and no quota debit applies. Emitting a `modkit_outbox_events` row is OPTIONAL (the "exactly one event per reserve" invariant does not apply because no reserve was created). If the system does emit one for observability, the row MUST use `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }`.
-- **failed_post_reserve_pre_provider**: a quota reserve was taken (the `chat_turns` row entered `IN_PROGRESS`) but the provider request was NOT issued (e.g., context assembly error, internal timeout, transient infrastructure failure between successful preflight and the outbound call). The reserve MUST be fully released (`charged_tokens = 0`). A `modkit_outbox_events` row MUST be emitted with `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }` to satisfy the exactly-once billing event invariant. The reserve release, `chat_turns` state transition to `failed`, and outbox insertion MUST occur in a single atomic DB transaction.
-- **failed_post_provider_start**: provider call started (stream may have begun), then a terminal error occurs (`provider_error`, `provider_timeout`, or internal error). If the provider reported usage, settle on actual usage. Otherwise settle using a bounded estimate: `charged_tokens = min(reserve_tokens, estimated_input_tokens + minimal_generation_floor_applied)` where `minimal_generation_floor_applied` is read from `chat_turns.minimal_generation_floor_applied`. Emit outbox event with `outcome = "failed"`, `settlement_method = "actual"` or `"estimated"`, and `usage` reflecting the settled amount.
+- **failed_pre_reserve**: error before a quota reserve is taken (validation error, authorization denial, quota preflight rejection — no `chat_turns` row with a reserve exists). No settlement occurs and no quota debit applies. Emitting an outbox message is OPTIONAL (the "exactly one event per reserve" invariant does not apply because no reserve was created). If the system does emit one for observability, the payload MUST use `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }`.
+- **failed_post_reserve_pre_provider**: a quota reserve was taken (the `chat_turns` row entered `IN_PROGRESS`) but the provider request was NOT issued (e.g., context assembly error, internal timeout, transient infrastructure failure between successful preflight and the outbound call). The reserve MUST be fully released (`charged_tokens = 0`). A Mini-Chat outbox message MUST be emitted with `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }` to satisfy the exactly-once billing event invariant. The reserve release, `chat_turns` state transition to `failed`, and outbox enqueue MUST occur in a single atomic DB transaction.
+- **failed_post_provider_start**: provider call started (stream may have begun), then a terminal error occurs (`provider_error`, `provider_timeout`, or internal error). If the provider reported usage, settle on actual usage. Otherwise settle using a bounded estimate: `charged_tokens = min(reserve_tokens, estimated_input_tokens + minimal_generation_floor_applied)` where `minimal_generation_floor_applied` is read from `chat_turns.minimal_generation_floor_applied`. Emit the outbox message with `outcome = "failed"`, `settlement_method = "actual"` or `"estimated"`, and `usage` reflecting the settled amount.
 
 **3) aborted** (client disconnect / pod crash / orphan watchdog / internal abort):
 
 - If provider usage is known (provider sent a partial usage report before the stream ended), settle on actual usage. **"Usage known" requires a `usage` object with at least one non-zero field** (`input_tokens > 0` OR `output_tokens > 0`). A `usage` object present with both fields equal to zero (or missing) is treated as "usage unknown" and MUST follow the estimated path — not the actual path. This prevents zero-charge exploitation: the no-free-cancel rule (§5.4 Settlement Definitions) mandates a non-zero debit whenever the provider request started; the estimated path enforces this via `minimal_generation_floor_applied`.
 - Otherwise settle using the deterministic charged token formula: `charged_tokens = min(reserve_tokens, estimated_input_tokens + minimal_generation_floor_applied)` where `minimal_generation_floor_applied` is read from `chat_turns.minimal_generation_floor_applied` (persisted at preflight from MiniChat ConfigMap, immutable after insert), consistent with the cancel/disconnect rule (see section 3.2) and the aborted-stream reconciliation (section 5.8).
-- Emit outbox event with `outcome = "aborted"`, `settlement_method = "actual"` or `"estimated"`.
+- Emit the outbox message with `outcome = "aborted"`, `settlement_method = "actual"` or `"estimated"`.
 
 #### Reconciliation backstop
 
@@ -5047,7 +5631,7 @@ When a provider request is issued (after preflight passes and before the first o
 
 | From | To | Trigger |
 |------|-----|---------|
-| `IN_PROGRESS` | `COMPLETED` | Provider returned terminal `response.completed` (`done` event) |
+| `IN_PROGRESS` | `COMPLETED` | Provider returned terminal `response.completed` **or** `response.incomplete` (both map to SSE `event: done`) |
 | `IN_PROGRESS` | `FAILED` | Provider returned a terminal error, or a pre-provider error occurred after reserve was taken |
 | `IN_PROGRESS` | `ABORTED` | Stream ended without `done` or `error`: client disconnect, pod crash, cancellation without terminal provider event, or orphan watchdog timeout |
 
@@ -5059,7 +5643,7 @@ Each turn MUST reach exactly one terminal billing state. Terminal states are imm
 stateDiagram-v2
     [*] --> IN_PROGRESS: Quota reserve taken<br/>(chat_turns.state = 'running')
 
-    IN_PROGRESS --> COMPLETED: Provider terminal done event<br/>(response.completed)
+    IN_PROGRESS --> COMPLETED: Provider terminal done/incomplete event<br/>(response.completed or response.incomplete)
     IN_PROGRESS --> FAILED: Provider terminal error<br/>OR pre-provider error after reserve
     IN_PROGRESS --> ABORTED: No provider terminal event<br/>(client disconnect, pod crash,<br/>orphan timeout, internal abort)
 
@@ -5188,7 +5772,7 @@ impl TurnErrorCode {
 |------------------------------|-----------------|------------------|---------------------------|-------|
 | `state = 'completed'` | `COMPLETED` | `"completed"` | `"actual"` | Normal success; provider reported full usage |
 | `state = 'failed'` AND `error_code IN ('provider_error', 'provider_timeout', 'rate_limited')` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Provider terminal error after streaming started |
-| `state = 'failed'` AND `error_code = 'web_search_calls_exceeded'` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Per-message tool call limit breached mid-turn; turn was post-provider-start; mirrors `provider_error` settlement. MUST NOT use `"released"` even if partial usage is unavailable — the provider was already called. |
+| `state = 'failed'` AND `error_code = 'web_search_calls_exceeded'` | `FAILED` | `"failed"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (if no usage available) | Per-turn tool call limit breached mid-turn; turn was post-provider-start; mirrors `provider_error` settlement. MUST NOT use `"released"` even if partial usage is unavailable — the provider was already called. |
 | `state = 'failed'` AND `error_code IN ('context_length_exceeded', 'validation_error')` AND reserve was taken | `FAILED` | `"failed"` | `"released"` | Pre-provider failure after reserve; zero charge |
 | `state = 'cancelled'` (client disconnect) | `ABORTED` | `"aborted"` | `"actual"` (if provider reported partial usage) OR `"estimated"` (use deterministic formula) | Stream ended without provider terminal event |
 | `state = 'failed'` AND `error_code = 'orphan_timeout'` (watchdog) | `ABORTED` | `"aborted"` | `"estimated"` (MUST use deterministic formula from section 5.8) | Watchdog cleanup; no provider terminal event received |
@@ -5213,10 +5797,10 @@ The mapping table uses `error_code` values as predicates to classify pre-provide
 
 **Enforcement**:
 - This mapping MUST be implemented in a **single shared function** used by ALL finalization code paths: normal completion handler, error handler, disconnect/cancellation handler, and orphan watchdog.
-- EVERY terminal code path MUST call this function to derive the outbox payload; no path may construct outbox rows using ad-hoc logic.
+- EVERY terminal code path MUST call this function to derive the outbox payload; no path may construct ad-hoc billing messages with divergent semantics.
 - Unit tests MUST verify that each internal condition row in the table above produces the exact `outcome` and `settlement_method` specified.
 
-**Watchdog determinism rule**: the orphan turn watchdog (section 3, `cpt-cf-mini-chat-component-orphan-watchdog`) MUST use the exact same deterministic charged token formula defined below for `ABORTED` streams — no separate estimation path. The watchdog MUST perform (1) quota settlement using the formula, (2) `chat_turns` state transition, and (3) `modkit_outbox_events` insertion in a single atomic DB transaction. It MUST be impossible for a turn to remain in `IN_PROGRESS` indefinitely; the watchdog timeout (default: 5 minutes) is the hard upper bound on turn duration without a terminal provider event.
+**Watchdog determinism rule**: the orphan turn watchdog (section 3, `cpt-cf-mini-chat-component-orphan-watchdog`) MUST use the exact same deterministic charged token formula defined below for `ABORTED` streams — no separate estimation path. The watchdog MUST perform (1) quota settlement using the formula, (2) `chat_turns` state transition, and (3) outbox enqueue in a single atomic DB transaction. It MUST be impossible for a turn to remain in `IN_PROGRESS` indefinitely; the watchdog timeout (default: 5 minutes) is the hard upper bound on turn duration without a terminal provider event.
 
 #### Deterministic Charged Token Formula (Aborted Streams)
 
@@ -5249,7 +5833,7 @@ The formula is deliberately conservative (charges less than or equal to the rese
 
 #### Outbox Emission Requirement (Aborted Streams)
 
-When a turn transitions to `ABORTED`, the system MUST emit a `modkit_outbox_events` row with:
+When a turn transitions to `ABORTED`, the system MUST emit a Mini-Chat outbox message whose serialized payload contains:
 
 | Field | Value |
 |-------|-------|
@@ -5266,7 +5850,7 @@ When a turn transitions to `ABORTED`, the system MUST emit a `modkit_outbox_even
 | `quota_decision`, `downgrade_from`, `downgrade_reason` | If applicable |
 | `turn_id`, `request_id`, `chat_id`, `tenant_id`, `user_id` | Standard identifiers |
 
-This outbox row MUST be written in the **same DB transaction** as the quota settlement and `chat_turns` state transition (consistent with the settlement transaction invariant in section 5.7).
+This outbox message MUST be enqueued in the **same DB transaction** as the quota settlement and `chat_turns` state transition (consistent with the settlement transaction invariant in section 5.7).
 
 #### Billing Event Completeness Invariant
 
@@ -5284,7 +5868,7 @@ CyberChatManager MUST receive exactly one usage event for every turn that took a
 - `outcome`: `"completed"`, `"failed"`, `"aborted"`
 - `settlement_method`: `"actual"`, `"estimated"`, `"released"`
 
-**Invariant**: it MUST be impossible for `quota_usage` to be debited without a corresponding `modkit_outbox_events` row. The transactional atomicity guarantee (sections 5.6 and 5.7) applies to all billing states that hold a reserve (COMPLETED, FAILED post-reserve, ABORTED). If the transaction fails, neither the quota debit nor the outbox row is committed.
+**Invariant**: it MUST be impossible for `quota_usage` to be debited without a corresponding Mini-Chat outbox message being durably enqueued. The transactional atomicity guarantee (sections 5.6 and 5.7) applies to all billing states that hold a reserve (COMPLETED, FAILED post-reserve, ABORTED). If the transaction fails, neither the quota debit nor the outbox message is committed.
 
 #### Pre-Provider Failure Handling
 
@@ -5292,8 +5876,8 @@ If a failure occurs AFTER a quota reserve was taken but BEFORE the provider requ
 
 - The reserve MUST be fully released (`charged_tokens = 0`).
 - `settlement_method` MUST be `"released"`.
-- A `modkit_outbox_events` row MUST still be emitted with `outcome = "failed"` and `usage = { input_tokens: 0, output_tokens: 0 }` to preserve the exactly-once billing event invariant. CyberChatManager receives a zero-charge event rather than no event.
-- The reserve release, `chat_turns` state transition to `failed`, and outbox insertion MUST occur in a single atomic DB transaction.
+- A Mini-Chat outbox message MUST still be emitted with `outcome = "failed"` and `usage = { input_tokens: 0, output_tokens: 0 }` to preserve the exactly-once billing event invariant. CyberChatManager receives a zero-charge event rather than no event.
+- The reserve release, `chat_turns` state transition to `failed`, and outbox enqueue MUST occur in a single atomic DB transaction.
 
 This eliminates the ambiguity between "reserve taken, provider not called" and "reserve taken, provider called, stream aborted". The former always settles at zero with `settlement_method = "released"`; the latter uses the deterministic charged token formula with `settlement_method = "estimated"`.
 
@@ -5319,7 +5903,7 @@ Section 5.7 defines the `failed` outcome taxonomy (pre-provider vs. post-provide
 **A) Failure before reserve is taken** (validation error, authorization denial, quota preflight rejection — i.e., the failure occurs before or during preflight, so no `chat_turns` row with a reserve exists):
 
 - No quota settlement occurs (there is no reserve to release).
-- Emitting a `modkit_outbox_events` row is OPTIONAL. The "exactly one event per reserve" invariant does not apply because no reserve was created. If the system does emit one for observability, the row MUST use `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }`, and MUST use a stable `dedupe_key` derived from `(tenant_id, turn_id, request_id)` so that consumers can safely ignore duplicates.
+- Emitting an outbox message is OPTIONAL. The "exactly one event per reserve" invariant does not apply because no reserve was created. If the system does emit one for observability, the payload MUST use `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }`, and MUST use a stable `dedupe_key` derived from `(tenant_id, turn_id, request_id)` so that consumers can safely ignore duplicates.
 
 > **turn_id generation for pre-reserve failures**: if no `chat_turns` row exists (failure during validation or authorization before INSERT), the implementation MUST either (1) not emit an outbox event (OPTIONAL branch) or (2) use the **all-zeros sentinel UUID** (`00000000-0000-0000-0000-000000000000`) as the `turn_id` component of the dedupe_key. Using a per-invocation random UUID v4 as `turn_id` is **PROHIBITED**: client retries generate new random UUIDs per attempt, producing a different `dedupe_key` for each retry of the same logical request — defeating idempotency and allowing duplicate pre-reserve events. The sentinel `turn_id` is stable across retries of the same `request_id`. Dedupe key format: `{tenant_id_hex}/00000000000000000000000000000000/{request_id_hex}` (all UUIDs normalized to lowercase 32-char hex). The `request_id` is always available (client-provided or server-generated per standard turn semantics). The `tenant_id` is available from the authenticated request context.
 
@@ -5336,8 +5920,8 @@ Section 5.7 defines the `failed` outcome taxonomy (pre-provider vs. post-provide
 **B) Failure after reserve is taken but before provider invocation** (context assembly error, internal timeout, or transient infrastructure failure between successful preflight and the outbound provider call):
 
 - The reserve MUST be fully released (`charged_tokens = 0`).
-- A `modkit_outbox_events` row MUST be emitted with `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }` to satisfy the exactly-once billing event invariant (section 5.7). CyberChatManager receives a zero-charge event rather than no event.
-- The reserve release, `chat_turns` state transition to `failed`, and outbox insertion MUST occur in a single atomic DB transaction (consistent with section 5.8, "Pre-Provider Failure Handling").
+- A Mini-Chat outbox message MUST be emitted with `outcome = "failed"`, `settlement_method = "released"`, `usage = { input_tokens: 0, output_tokens: 0 }` to satisfy the exactly-once billing event invariant (section 5.7). CyberChatManager receives a zero-charge event rather than no event.
+- The reserve release, `chat_turns` state transition to `failed`, and outbox enqueue MUST occur in a single atomic DB transaction (consistent with section 5.8, "Pre-Provider Failure Handling").
 
 This distinction eliminates ambiguity: case (A) never holds a reserve and has no settlement obligation; case (B) holds a reserve that MUST be released with a mandatory outbox event (`settlement_method = "released"`). Both cases result in zero charges. The provider is never called in either case.
 
@@ -5379,7 +5963,7 @@ This maps to `chat_turns.state` transitioning from `running` to `failed`. The tr
 
 #### Outbox Emission Requirement
 
-When a post-stream terminal error is finalized, the system MUST emit a `modkit_outbox_events` row in the **same DB transaction** as the quota settlement and `chat_turns` state transition:
+When a post-stream terminal error is finalized, the system MUST emit a Mini-Chat outbox message in the **same DB transaction** as the quota settlement and `chat_turns` state transition:
 
 | Field | Value |
 |-------|-------|
@@ -5415,23 +5999,23 @@ Multiple terminal signals may arrive concurrently or in rapid succession for the
 
 **State transition enforcement**: the domain service MUST enforce the first-terminal-wins rule via a compare-and-set (CAS) guard on the `chat_turns.state` column. The finalization transaction MUST include a precondition that `state = 'running'` (or equivalently, use an `UPDATE ... WHERE state = 'running'` that affects exactly one row). If the CAS check yields zero affected rows, the signal arrived after another terminal transition already committed, and the service MUST treat this as a no-op: no quota settlement, no outbox insertion, no state change.
 
-**Outbox uniqueness backstop**: the partial unique index `(namespace, topic, dedupe_key)` on `modkit_outbox_events` serves as a secondary defense against duplicate billing events. However, the system MUST NOT rely on the unique constraint as the primary idempotency mechanism. The CAS guard at the state-transition level MUST prevent the duplicate outbox INSERT from being attempted in the first place. The unique constraint exists as a backstop for defensive integrity, not as a control-flow mechanism.
+**Outbox idempotency boundary**: the shared outbox pipeline does not provide a Mini-Chat-specific producer-side uniqueness backstop. Duplicate billing events MUST therefore be prevented before enqueue by the CAS guard at the state-transition level. The serialized usage payload still carries a stable `dedupe_key`, but that key exists for downstream idempotent consumption rather than as a storage-level control-flow mechanism inside Mini-Chat.
 
-**Combined guarantee**: for any turn that took a quota reserve, exactly one finalization transaction succeeds — performing the state transition, quota settlement, and outbox insertion atomically. All competing terminal signals either lose the CAS race (and become no-ops) or are blocked by the outbox dedupe constraint. It MUST be impossible for a single turn to produce more than one `modkit_outbox_events` row or to have its quota debited more than once.
+**Combined guarantee**: for any turn that took a quota reserve, exactly one finalization transaction succeeds — performing the state transition, quota settlement, and outbox enqueue atomically. All competing terminal signals lose the CAS race and become no-ops. Duplicate delivery after enqueue remains possible under at-least-once processing, but it MUST be impossible for a single turn to have its quota debited more than once or for more than one CAS-winning finalization path to emit distinct logical billing outcomes.
 
 **Race resolution rule**: both the terminal-error path and the disconnect/abort path attempt finalization using the same DB CAS guard (`WHERE state = 'running'`). Whichever commits first wins and emits the single outbox event. The loser observes `rows_affected = 0` and MUST NOT emit anything and MUST NOT debit quota. No advisory locks or in-memory coordination are required — the DB CAS guard is the sole arbitration mechanism.
 
 **Scenario 1 — Disconnect after terminal error**: the provider returns a terminal `event: error`, and the client subsequently disconnects (or the disconnect signal arrives after the error is processed):
 
-1. The error-handling path begins a finalization transaction: `UPDATE chat_turns SET state = 'failed' WHERE id = :turn_id AND state = 'running'` — affects 1 row. The transaction proceeds to settle quota using the post-stream terminal error reconciliation rule (section 5.9), inserts a `modkit_outbox_events` row with `outcome = "failed"`, and commits atomically. The turn is now finalized as `FAILED`.
-2. The disconnect/cancellation path attempts its own finalization: `UPDATE chat_turns SET state = 'cancelled' WHERE id = :turn_id AND state = 'running'` — affects 0 rows (state is already `failed`). The cancellation path MUST treat this as a no-op: no quota settlement, no outbox insertion, no further action on this turn.
+1. The error-handling path begins a finalization transaction: `UPDATE chat_turns SET state = 'failed' WHERE id = :turn_id AND state = 'running'` — affects 1 row. The transaction proceeds to settle quota using the post-stream terminal error reconciliation rule (section 5.9), enqueues the corresponding Mini-Chat usage message with `outcome = "failed"`, and commits atomically. The turn is now finalized as `FAILED`.
+2. The disconnect/cancellation path attempts its own finalization: `UPDATE chat_turns SET state = 'cancelled' WHERE id = :turn_id AND state = 'running'` — affects 0 rows (state is already `failed`). The cancellation path MUST treat this as a no-op: no quota settlement, no outbox enqueue, no further action on this turn.
 3. The orphan watchdog, if it later scans this turn, observes `state = 'failed'` (not `running`) and skips it.
 
 The disconnect after a terminal error is **irrelevant** — the terminal error already finalized the turn. The recorded outcome is `FAILED` with the settlement computed by the error path. No double settlement occurs.
 
 **Scenario 2 — Terminal error after disconnect** (disconnect arrives first, terminal error signal is delayed or arrives during abort processing):
 
-1. The disconnect/abort path begins a finalization transaction: `UPDATE chat_turns SET state = 'cancelled' WHERE id = :turn_id AND state = 'running'` — affects 1 row. The transaction proceeds to settle quota using the ABORTED reconciliation formula (section 5.8), inserts a `modkit_outbox_events` row with `outcome = "aborted"`, and commits atomically. The turn is now finalized as `ABORTED`.
+1. The disconnect/abort path begins a finalization transaction: `UPDATE chat_turns SET state = 'cancelled' WHERE id = :turn_id AND state = 'running'` — affects 1 row. The transaction proceeds to settle quota using the ABORTED reconciliation formula (section 5.8), enqueues the corresponding Mini-Chat usage message with `outcome = "aborted"`, and commits atomically. The turn is now finalized as `ABORTED`.
 2. The terminal error signal arrives. The error-handling path attempts: `UPDATE chat_turns SET state = 'failed' WHERE id = :turn_id AND state = 'running'` — affects 0 rows (state is already `cancelled`). The error path MUST treat this as a no-op.
 3. If the disconnect path did NOT succeed (e.g., the pod crashed before committing), the turn remains in `running` state. The orphan watchdog will eventually finalize it as `failed` with `error_code = 'orphan_timeout'` — but only if the turn is still `IN_PROGRESS` (`running`). If another finalizer committed in the interim, the watchdog's CAS also returns 0 rows and it skips the turn.
 
@@ -5636,14 +6220,14 @@ The system **MUST** finalize turns using CAS on `chat_turn.state` and MUST emit 
 - [ ] If no tier is available, the system rejects at preflight with `quota_exceeded` and does not call the provider.
 - [ ] The system persists `policy_version_applied` per turn and uses the same version for settlement and outbox emission.
 - [ ] The system enforces a hard cap on `max_output_tokens` to prevent overshoot beyond reserved worst-case.
-- [ ] Replaying a completed turn for the same `(chat_id, request_id)` MUST NOT take a new quota reserve, debit credits, or emit a new outbox row (replay is side-effect-free).
+- [ ] Replaying a completed turn for the same `(chat_id, request_id)` MUST NOT take a new quota reserve, debit credits, or emit a new outbox message (replay is side-effect-free).
 - [ ] The orphan watchdog MUST finalize turns stuck in `running` state beyond the configured timeout using the same CAS guard, quota settlement, and outbox emission as all other finalization paths (P1 mandatory).
-- [ ] For any committed quota debit, there MUST exist exactly one corresponding `modkit_outbox_events` row (written in the same DB transaction as the settlement).
+- [ ] For any committed quota debit, there MUST exist exactly one corresponding Mini-Chat outbox message enqueue in the same DB transaction as the settlement.
 - [ ] Quota enforcement uses `quota_usage` bucket rows: `total` for overall cap, `tier:premium` for premium subcap. Standard-tier availability checks only bucket `total`; premium-tier checks both.
 
 ### 5.13 Deferred to P2+
 
-**Clarification**: the transactional outbox mechanism (`modkit_outbox_events`), the CAS-guarded finalization contract, and the orphan watchdog are all P1 mandatory (sections 5.6–5.9). The following billing integration details are deferred to P2+:
+**Clarification**: the transactional outbox mechanism, the CAS-guarded finalization contract, and the orphan watchdog are all P1 mandatory (sections 5.6–5.9). The following billing integration details are deferred to P2+:
 
 - Detailed usage event payload schemas and formal envelope definitions (P1 uses the payload structure defined inline in sections 5.7–5.9)
 - `MiniChat.TurnCompleted` / `MiniChat.TurnCancelled` event envelope definitions
@@ -5674,7 +6258,9 @@ The system **MUST** finalize turns using CAS on `chat_turn.state` and MUST emit 
 
 # Appendix A — CCM Policy & Usage API Contract (P1)
 
-This appendix reproduces the CCM Policy & Usage API contract as defined in the official CCM specification (see referenced document). It is consumed by `mini-chat-policy-plugin` and governs policy distribution and usage ingestion for P1. This appendix does not redefine MiniChat internal algorithms.
+This appendix reproduces the CCM Policy & Usage API contract as defined in the official CCM specification (see referenced document). It is consumed by `mini-chat-model-policy-plugin` and governs policy distribution and usage ingestion for P1. This appendix does not redefine MiniChat internal algorithms.
+
+All CCM endpoints in this appendix are user-centric: request payloads are keyed by `user_id`.CCM derives `tenant_id` internally from the user's ownership/auth context. MiniChat retains `tenant_id` in its internal entities and persistence. The policy change notification endpoint is the only exception: it remains tenant-scoped.
 
 ## A.1 Policy Distribution API
 
@@ -5682,20 +6268,20 @@ This appendix reproduces the CCM Policy & Usage API contract as defined in the o
 
 A monotonic, strictly increasing integer that identifies a specific immutable policy snapshot.
 
-**Core Principle**: For a fixed `(tenant_id, policy_version)`, CCM must return exactly the same snapshot forever.
+**Core Principle**: For a fixed `(user_id, policy_version)`, CCM must return exactly the same snapshot forever.
 
 **Bump Triggers**:
 - Changes to model catalog
-- Changes to credit multipliers (`input_tokens_credit_multiplier`, `output_tokens_credit_multiplier`)
-- Changes to kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`)
+- Changes to credit multipliers (`input_tokens_credit_multiplier_micro`, `output_tokens_credit_multiplier_micro`)
+- Changes to kill switches (`disable_premium_tier`, `force_standard_tier`, `disable_web_search`, `disable_code_interpreter`, `disable_file_search`, `disable_images`)
 - User allocation logic changes affecting `GetUserLimits` output
 - User entitlements/plan changes
 
-**Note (P1)**: Estimation budgets (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, etc.) are configured **locally in MiniChat ConfigMap**, NOT in CCM PolicySnapshot. Changes to estimation budgets do NOT trigger CCM policy version bumps. See section 5.2.1 "Estimation Budgets Source (P1)" for details.
+**Note (P1)**: Estimation budgets (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, etc.) are embedded **per-model in the policy snapshot catalog** (each `ModelCatalogEntry` carries its own `estimation_budgets`). Changes to `estimation_budgets` for a model constitute a catalog change and MUST trigger a policy version bump. See section 5.2.1 "Estimation Budgets Source (P1)" for details.
 
 **MiniChat Integration**:
-- MiniChat caches snapshots keyed by `(tenant_id, policy_version)`.
-- MiniChat caches user limits keyed by `(tenant_id, user_id, policy_version)`.
+- MiniChat caches snapshots keyed by `(user_id, policy_version)`.
+- MiniChat caches user limits keyed by `(user_id, policy_version)`.
 - CCM is NOT on the per-turn hot path.
 
 ### GetCurrentPolicyVersion
@@ -5705,14 +6291,13 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 **Request**:
 ```json
 {
-  "tenant_id": "uuid"
+  "user_id": "uuid"
 }
 ```
 
 **Response**:
 ```json
 {
-  "tenant_id": "uuid",
   "policy_version": 12345,
   "generated_at": "2026-02-27T13:00:00Z"
 }
@@ -5727,7 +6312,7 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 **Request**:
 ```json
 {
-  "tenant_id": "uuid",
+  "user_id": "uuid",
   "policy_version": 12345
 }
 ```
@@ -5735,16 +6320,18 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 **Response**:
 ```json
 {
-  "tenant_id": "uuid",
   "policy_version": 12345,
   "snapshot": {
     "model_catalog": [
       {
         "model_id": "gpt-5.2",
+        "provider_model_id": "gpt-5.2",
         "display_name": "GPT-5.2",
         "provider_display_name": "Azure OpenAI",
+        "provider_id": "azure_openai",
         "tier": "premium",
         "global_enabled": true,
+        "is_default": false,
         "description": "Best for complex reasoning tasks",
         "multimodal_capabilities": [
           "VISION_INPUT",
@@ -5761,22 +6348,24 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
     ],
     "kill_switches": {
       "disable_web_search": false,
-      "disable_file_search": false
+      "disable_file_search": false,
+      "disable_images": false,
+      "disable_code_interpreter": false
     }
   }
 }
 ```
 
 **Critical constraints**:
-- For a fixed `(tenant_id, policy_version)`, CCM must return exactly the same snapshot forever.
+- For a fixed `(user_id, policy_version)`, CCM must return exactly the same snapshot forever.
 - Multipliers represent micro-credits per 1,000 tokens and must be positive integers.
 - `provider_display_name` is UI-only and MUST NOT be a routing key, deployment handle, or internal provider identifier.
 
 **P1 Note — Estimation Budgets**:
-- In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are NOT supplied by CCM.
-- `estimation_budgets` are configured locally in MiniChat via Kubernetes ConfigMap (or equivalent deployment config file).
-- MiniChat persists `minimal_generation_floor_applied` per turn (on `chat_turns` table) for deterministic estimated settlement independent of ConfigMap changes.
-- CCM PolicySnapshot in P1 MUST NOT include `estimation_budgets` fields. The snapshot example above omits them intentionally.
+- In P1, `estimation_budgets` (image_token_budget, tool_surcharge_tokens, web_search_surcharge_tokens, bytes_per_token_conservative, fixed_overhead_tokens, safety_margin_pct, minimal_generation_floor) are embedded **per-model** in each `ModelCatalogEntry` within the PolicySnapshot.
+- This enables per-model tuning of estimation parameters (e.g. different `bytes_per_token_conservative` for different model families).
+- MiniChat persists `minimal_generation_floor_applied` per turn (on `chat_turns` table) for deterministic estimated settlement independent of future policy changes.
+- CCM PolicySnapshot MUST include `estimation_budgets` on each model catalog entry.
 
 **Multimodal Capability Flags**: Enumerated values include:
 - `VISION_INPUT`
@@ -5796,7 +6385,6 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 **Request**:
 ```json
 {
-  "tenant_id": "uuid",
   "user_id": "uuid",
   "policy_version": 12345
 }
@@ -5805,7 +6393,6 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
 **Response**:
 ```json
 {
-  "tenant_id": "uuid",
   "user_id": "uuid",
   "policy_version": 12345,
   "user_limits": {
@@ -5878,7 +6465,6 @@ This endpoint accepts usage settlement events from MiniChat for finalized turn o
 **Payload**:
 ```json
 {
-  "tenant_id": "uuid",
   "user_id": "uuid",
   "chat_id": "uuid",
   "turn_id": "uuid",
@@ -5887,10 +6473,14 @@ This endpoint accepts usage settlement events from MiniChat for finalized turn o
   "selected_model": "string",
   "effective_model": "string",
   "outcome": "completed | failed | aborted",
-  "settlement_method": "actual | estimated",
+  "settlement_method": "actual | estimated | released",
+  "completion_signal": null,
   "usage": {
     "input_tokens": 123,
-    "output_tokens": 456
+    "output_tokens": 456,
+    "cache_read_input_tokens": 80,
+    "cache_write_input_tokens": 0,
+    "reasoning_tokens": 20
   },
   "actual_credits_micro": 3750000,
   "reserved_credits_micro": 4000000,
@@ -5898,9 +6488,11 @@ This endpoint accepts usage settlement events from MiniChat for finalized turn o
 }
 ```
 
+`completion_signal` is a nullable non-fatal completion signal. It MUST be `null` for normal completed turns and MUST be populated only when the provider returns `response.incomplete`, e.g. `{ "kind": "incomplete", "reason": "max_tokens" }` where `reason` is from the canonical `CompletionSignalReason` enum (see §5.7 "Completion signal reason enum"). It MUST NOT be used as an error indicator and MUST NOT imply `outcome != "completed"`.
+
 **Authority model**: MiniChat is the settlement authority: it computes `actual_credits_micro`. CCM is the ledger and balance authority.
 
-**Idempotency requirement**: CCM MUST ensure idempotency using the composite key `(tenant_id, turn_id, request_id)`.
+**Idempotency requirement**: CCM MUST ensure idempotency using the composite key `(user_id, turn_id, request_id)`.
 
 **Success Response**:
 ```json
@@ -5911,16 +6503,16 @@ This endpoint accepts usage settlement events from MiniChat for finalized turn o
 
 **MiniChat Delivery Guarantees**:
 - Delivery is at-least-once (due to outbox pattern).
-- CCM MUST implement idempotency on `(tenant_id, turn_id, request_id)`.
+- CCM MUST implement idempotency on `(user_id, turn_id, request_id)`.
 - 200 OK MUST be returned for idempotent duplicate events.
 
 ## A.4 Policy Version Retention
 
-CCM MUST retain immutable snapshots per `(tenant_id, policy_version)` for at least the billing/audit retention window. Snapshots must remain retrievable during that period. This preserves deterministic replay and auditability.
+CCM MUST retain immutable snapshots per `(user_id, policy_version)` for at least the billing/audit retention window. Snapshots must remain retrievable during that period. This preserves deterministic replay and auditability.
 
 **MiniChat caching strategy**:
-- Policy snapshots: Persist by `(tenant_id, policy_version)`; bounded LRU memory cache.
-- User limits: Bounded LRU cache with 60–300 second TTL; key by `(tenant_id, user_id, policy_version)`.
+- Policy snapshots: Persist by `(user_id, policy_version)`; bounded LRU memory cache.
+- User limits: Bounded LRU cache with 60–300 second TTL; key by `(user_id, policy_version)`.
 
 ## A.5 Separation of Concerns
 
@@ -5935,3 +6527,413 @@ CCM MUST retain immutable snapshots per `(tenant_id, policy_version)` for at lea
 
 **P1 Scope Exclusions**:
 The specification explicitly excludes per-user model multipliers, pricing overrides, provider interaction details, token estimation algorithms, and billing/payment processing from P1 scope.
+
+---
+
+# Appendix B — Mini Chat Parameter Source Map
+
+Legend:
+- **CCM API** — parameter is available from a CCM REST endpoint
+- **ConfigMap** — deployment-time configuration (Kubernetes ConfigMap / config file)
+- **Request** — per-request parameter (query param or body field)
+- **Hardcoded** — compile-time constant or framework default
+- **n/a** — no known external source; must be defined at deployment time or is not yet materialised
+
+## B.1 Module config (ModKit config)
+
+| Parameter | Type | Default | Source | Notes |
+|-----------|------|---------|--------|-------|
+| `mini-chat.url_prefix` | `string` | `/mini-chat` | ConfigMap | ModKit module config, no CCM API equivalent |
+
+## B.2 Policy / Models / Limits (via `mini-chat-model-policy-plugin`)
+
+### B.2.1 Policy version
+
+| Parameter | Type | Default | Source | Notes |
+|-----------|------|---------|--------|-------|
+| `policy_version` | `integer` | — | **CCM API**: `GET /policies/latest` | `PolicyLatestResponse.policy_version`; monotonic, used for snapshot binding |
+
+### B.2.2 `PolicySnapshot.model_catalog`
+
+All fields below are per-model entries inside the catalog.
+
+| Parameter | Type | Source | CCM API field |
+|-----------|------|--------|---------------|
+| `model_id` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].model_id` |
+| `provider_model_id` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].provider_model_id` |
+| `display_name` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].display_name` |
+| `provider` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].provider_id` + `provider_display_name` |
+| `tier` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].tier` |
+| `status` (enabled/disabled) | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].global_enabled` (boolean, not enum) |
+| `description` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].description` |
+| `capabilities` | `string[]` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].multimodal_capabilities` |
+| `context_window` | `integer` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].context_window` |
+| `max_output` | `integer` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].max_output_tokens` |
+| `is_default` | `bool` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].is_default` |
+| `input_tokens_credit_multiplier` | `number` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].input_tokens_credit_multiplier_micro` |
+| `output_tokens_credit_multiplier` | `number` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].output_tokens_credit_multiplier_micro` |
+| `api_params.*` | object | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].general_config.api_params` |
+| `features.*` | object | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].general_config.features` |
+| `tool_support.*` | object | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].general_config.tool_support` |
+| `sort_order` | `integer` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].preference.sort_order` |
+
+### B.2.3 Kill switches / emergency flags
+
+| Parameter | Type | Default | Source | CCM API field |
+|-----------|------|---------|--------|---------------|
+| `disable_web_search` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_web_search` |
+| `disable_file_search` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_file_search` |
+| `disable_images` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_images` |
+| `disable_code_interpreter` | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_code_interpreter` |
+| `disable_premium_tier` | `bool` | — | **n/a** | Not present in current CCM API; design-only |
+| `force_standard_tier` | `bool` | — | **n/a** | Not present in current CCM API; design-only |
+
+### B.2.4 `UserLimits` (per-tier credit allocations)
+
+| Parameter | Type | Source | CCM API field |
+|-----------|------|--------|---------------|
+| `user_limits.standard.limit_daily_credits_micro` | `integer` | **CCM API**: `GET /users/{userId}/limits` or `GET /policies/{v}` | `user_limits[].limit_daily_credits_micro` (tier_id = `...standard...`) |
+| `user_limits.standard.limit_monthly_credits_micro` | `integer` | **CCM API**: `GET /users/{userId}/limits` or `GET /policies/{v}` | `user_limits[].limit_monthly_credits_micro` (tier_id = `...standard...`) |
+| `user_limits.premium.limit_daily_credits_micro` | `integer` | **CCM API**: `GET /users/{userId}/limits` or `GET /policies/{v}` | `user_limits[].limit_daily_credits_micro` (tier_id = `...premium...`) |
+| `user_limits.premium.limit_monthly_credits_micro` | `integer` | **CCM API**: `GET /users/{userId}/limits` or `GET /policies/{v}` | `user_limits[].limit_monthly_credits_micro` (tier_id = `...premium...`) |
+
+### B.2.5 Model tiers
+
+| Parameter | Type | Source | CCM API field |
+|-----------|------|--------|---------------|
+| Tier definitions (`id`, `name`, `description`, `downgrade_to`) | object | **CCM API**: `GET /tiers` | `ModelTier[]` |
+
+## B.3 Local caching (snapshots + limits)
+
+| Parameter | Type | Default | Source | Notes |
+|-----------|------|---------|--------|-------|
+| PolicySnapshot memory cache capacity | — | — | **ConfigMap** | n/a in CCM API |
+| UserLimits memory cache capacity | — | — | **ConfigMap** | n/a in CCM API |
+| UserLimits cache TTL | — | `60–300s` | **ConfigMap** | n/a in CCM API |
+| Cache invalidation trigger | — | — | **CCM API**: `GET /policies/latest` | Compare `policy_version`; if changed, invalidate stale entries |
+
+## B.4 Streaming (SSE)
+
+| Parameter | Type | Default | Valid range | Source |
+|-----------|------|---------|-------------|--------|
+| `sse_ping_interval_seconds` | `integer` | `15` | `5..=60` | **ConfigMap** |
+| Internal mpsc channel capacity | `integer` | — | `16–64` | **ConfigMap** |
+
+## B.5 Token budgets / quota knobs
+
+### B.5.1 Hard caps
+
+| Parameter | Type | Default | Source | Notes |
+|-----------|------|---------|--------|-------|
+| `max_input_tokens` | `integer` | — | **ConfigMap** | Deployment config; combined with model's `context_window` from CCM API |
+| `max_output_tokens` | `integer` | — | **ConfigMap** + **CCM API** | Deployment override; model default from `snapshot.model_catalog[].max_output_tokens` |
+
+### B.5.2 Estimation budgets (preflight reserve)
+
+Estimation budgets are embedded **per-model** in the policy snapshot catalog. Each `ModelCatalogEntry` carries its own `estimation_budgets`, allowing per-model tuning.
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| `estimation_budgets.bytes_per_token_conservative` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.fixed_overhead_tokens` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.safety_margin_pct` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.image_token_budget` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.tool_surcharge_tokens` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.web_search_surcharge_tokens` | — | — | **PolicySnapshot** (per-model catalog entry) |
+| `estimation_budgets.minimal_generation_floor` | — | — | **PolicySnapshot** (per-model catalog entry) |
+
+### B.5.3 Overshoot tolerance
+
+| Parameter | Type | Default | Valid range | Source |
+|-----------|------|---------|-------------|--------|
+| `quota.overshoot_tolerance_factor` | `float` | `1.10` | `1.00..=1.50` | **ConfigMap** |
+| `quota.warning_threshold_pct` | `integer` | `80` | `1..=99` | **ConfigMap** |
+
+### B.5.4 Quota downgrade negative threshold
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| Negative threshold for tier downgrade | — | — | **ConfigMap** |
+
+## B.6 Web search configuration
+
+| Parameter | Type | Default | Source | Notes |
+|-----------|------|---------|--------|-------|
+| `web_search.enabled` | `bool` | `false` | **Request** | Per-request body field |
+| `web_search.max_calls_per_turn` | `integer` | `2` | **ConfigMap** | n/a in CCM API |
+| `web_search.daily_quota` | `integer` | `75` | **ConfigMap** | n/a in CCM API |
+| `disable_web_search` (kill switch) | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_web_search` |
+
+## B.6.1 Code interpreter configuration
+
+| Parameter | Type | Default | Source | Notes |
+|-----------|------|---------|--------|-------|
+| `code_interpreter.enabled` | `bool` | `false` | **Request** | Per-request body field |
+| `code_interpreter.max_calls_per_turn` | `integer` | `10` | **ConfigMap** | n/a in CCM API |
+| `code_interpreter.daily_quota` | `integer` | `50` | **ConfigMap** | n/a in CCM API |
+
+## B.7 File search / RAG configuration
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| `file_search.max_calls_per_turn` | `integer` | `2` | **ConfigMap** |
+| `max_documents_per_chat` | `integer` | `50` | **ConfigMap** |
+| `max_total_upload_mb_per_chat` | `integer` | `100` | **ConfigMap** |
+| `max_chunks_per_chat` | `integer` | `10_000` | **ConfigMap** |
+| `max_retrieved_chunks_per_turn` | `integer` | `5` | **ConfigMap** |
+| `retrieval_k` | `integer` | `5` | **ConfigMap** |
+| `max_retrieved_tokens_per_turn` | — | — | **ConfigMap** |
+| `disable_file_search` (kill switch) | `bool` | — | **CCM API**: `GET /policies/{v}` | |
+
+## B.8 Uploads / Attachments / Images
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| `uploaded_file_max_size_kb` | `integer` | — | **ConfigMap** |
+| `uploaded_image_max_size_kb` | `integer` | — | **ConfigMap** |
+| Max image size | — | `16 MiB` (target `25 MiB`) | **ConfigMap** |
+| `max_images_per_message` | `integer` | `4` | **ConfigMap** |
+| `max_image_inputs_per_user_per_day` | `integer` | `50` | **ConfigMap** |
+| `max_total_image_bytes_per_turn` | — | uncapped | **ConfigMap** |
+| `thumbnail_width` | `integer` | `128` | **ConfigMap** |
+| `thumbnail_height` | `integer` | `128` | **ConfigMap** |
+| `thumbnail_max_bytes` | `integer` | `131072` | **ConfigMap** |
+| `thumbnail_max_pixels` | `integer` | `100000000` | **ConfigMap** |
+| `thumbnail_max_decode_bytes` | `integer` | `33554432` | **ConfigMap** |
+
+**Two-layer per-file size limit resolution**: The effective per-file upload limit is `min(ConfigMap, CCM per-model)`:
+
+- **ConfigMap** (kind-specific): `uploaded_file_max_size_kb` for documents, `uploaded_image_max_size_kb` for images. Deployment-wide operational ceiling.
+- **CCM** (kind-agnostic): `max_file_size_mb` from `snapshot.model_catalog[].general_config.max_file_size_mb`. Per-model provider constraint, runtime-updatable via policy snapshot. Applies to both documents and images.
+
+The handler resolves the effective limit before streaming body bytes. If the CCM snapshot is unavailable, the system falls back to ConfigMap-only limits (safe — ConfigMap is always ≥ CCM).
+
+**Streaming upload**: The upload endpoint uses streaming multipart ingestion (`field.chunk()` loop) with incremental byte counting. Oversize files are rejected mid-stream with HTTP 413 (`file_too_large`) without buffering the full body. An Axum `DefaultBodyLimit` layer (25 MiB + 64 KiB overhead) acts as a coarse outer guard on the upload route, overriding the API gateway's default 16 MiB limit.
+
+| `disable_code_interpreter` (kill switch) | `bool` | — | **CCM API**: `GET /policies/{v}` | `snapshot.kill_switches.disable_code_interpreter` |
+
+Note: per-model `max_file_size_mb` is available from **CCM API**: `GET /policies/{v}` → `snapshot.model_catalog[].general_config.max_file_size_mb`. Per-model `tool_support.code_interpreter` is available from `snapshot.model_catalog[].general_config.tool_support.code_interpreter`.
+
+## B.9 Background workers
+
+### B.9.1 Orphan watchdog
+
+| Parameter | Type | Default | Valid range | Source |
+|-----------|------|---------|-------------|--------|
+| `orphan_watchdog.timeout_secs` | `integer` | `300` | `60..=3600` | **ConfigMap** |
+| `orphan_watchdog.enabled` | `bool` | — | — | **ConfigMap** |
+| `orphan_watchdog.scan_interval_secs` | `integer` | `60` | — | **ConfigMap** |
+
+##### Orphan watchdog semantics
+
+**Definition**:
+
+An orphan turn is a `chat_turns` row that remains in `state = 'running'` after the configured orphan timeout has elapsed since durable `last_progress_at` and has not reached any terminal state.
+
+For P1, the watchdog MUST treat a turn as orphaned when all of the following are true:
+
+1. `state = 'running'`
+2. `last_progress_at <= now() - orphan_watchdog.timeout_secs`
+3. no terminal transition (`completed`, `failed`, `cancelled`) and deleted_at IS NULL has been persisted for that turn
+
+**Execution model**:
+
+Automatic orphan cleanup is executed by a single active background worker leader.
+
+The worker MUST depend on a `LeaderElector` abstraction rather than directly on deployment-specific primitives.
+
+**LeaderElector responsibilities**:
+
+- Determine whether the current process is the active orphan watchdog leader.
+- Provide a mechanism to periodically re-check leadership.
+- Allow the worker to stop claiming or processing new orphan candidates if leadership is lost.
+
+**Implementations**:
+
+- **`k8s::LeaderElector`** — Used in Kubernetes deployments. Leadership MUST be determined using Kubernetes Lease or an equivalent cluster leader election mechanism. At most one pod may hold leadership at a time. Only the current leader MAY claim and process orphan turns.
+- **`NoopLeaderElector`** — Used in environments without Kubernetes (for example local development, single-instance deployments, or deployments without a cluster control plane). `NoopLeaderElector` MUST always report that the current process is leader. This mode assumes that only one Mini Chat process runs or that duplicate watchdog execution is otherwise prevented by deployment policy.
+
+Leader election determines **who runs the watchdog**, not **how orphan detection is evaluated**.
+
+**Claiming and idempotency**:
+
+The orphan watchdog MUST periodically scan for candidate orphan turns.
+
+When transitioning a turn, the worker MUST perform an atomic conditional update guarded by the current turn state so that only rows still in `state = 'running'` are changed.
+For example (illustrative SQL pattern):
+
+```sql
+UPDATE chat_turns
+SET
+    state = 'failed',
+    error_code = 'orphan_timeout',
+    completed_at = now(),
+    updated_at = now()
+WHERE
+    id = $1
+    AND state = 'running'
+    AND deleted_at IS NULL
+    AND last_progress_at <= now() - interval '1 second' * $timeout_secs
+RETURNING id;
+```
+
+A turn already moved to a terminal state by the normal request path or by a prior watchdog pass MUST NOT be processed again.
+
+**Why the orphan watchdog finalizes usage**
+
+Mini Chat billing guarantees that every turn that successfully reached the preflight reserve phase MUST produce exactly one usage settlement event.
+
+A turn that reaches `state = 'running'` has already completed preflight and has taken a quota reserve (`reserve_tokens`, `reserved_credits_micro`, and related fields in `chat_turns`).
+Normally the request processing path emits the usage settlement event when the provider finishes and the turn transitions to a terminal state.
+
+However, failures such as:
+
+- process crash
+- network interruption
+- lost provider callback
+- unexpected worker restart
+
+may leave a turn permanently stuck in `state = 'running'`.
+
+Such turns are considered **orphans**.
+
+Without corrective action these turns would:
+
+- keep quota reserves indefinitely
+- never produce a billing settlement event
+- leave the external billing system (CCM) in an inconsistent state.
+
+The orphan watchdog therefore acts as a **recovery mechanism for the turn lifecycle**.
+
+When it detects an orphan turn, the watchdog transitions the turn to a terminal failure state and performs the same deterministic settlement logic used for other abnormal outcomes (for example ABORTED or FAILED without provider usage).
+
+This settlement uses the preflight snapshot persisted in `chat_turns`:
+
+- `reserve_tokens`
+- `max_output_tokens_applied`
+- `reserved_credits_micro`
+- `policy_version_applied`
+- `minimal_generation_floor_applied`
+
+Because these values were persisted at preflight, the system can deterministically compute estimated settlement even when no provider usage information is available.
+
+The watchdog therefore emits the required usage outbox message **not because the watchdog generated tokens**, but because it must finalize the lifecycle of the abandoned turn and ensure that exactly one billing event is produced for that turn.
+
+This preserves the Mini Chat invariant:
+
+> Every turn that took a quota reserve MUST produce exactly one usage settlement event.
+
+**Required effects on orphan detection**:
+
+When an orphan turn is detected, the watchdog MUST attempt a single conditional finalization update guarded by:
+
+- `state = 'running'`
+- `deleted_at IS NULL`
+- `last_progress_at <= now() - interval '1 second' * orphan_watchdog.timeout_secs`
+
+Only if that conditional update succeeds may the watchdog:
+
+1. transition the turn to `state = 'failed'` and write terminal timestamps (`completed_at`, `updated_at`)
+2. record a machine-readable failure reason equivalent to `orphan_timeout`
+3. finalize bounded quota settlement according to the existing turn billing rules
+4. emit the required outbox message for billing/usage attribution
+
+If the conditional update affects 0 rows, the watchdog MUST treat the row as no longer orphan-finalizable and MUST NOT perform settlement, outbox emission, or orphan-finalized metrics for that row.
+
+The watchdog MUST NOT create or modify `messages` rows.
+
+**Late provider response rule**:
+
+If a provider response, SSE event, or callback arrives after the turn has already been transitioned to terminal failure by the orphan watchdog, that late provider result MUST NOT reopen or overwrite the turn.
+
+**Operational model**:
+
+The watchdog runs periodically according to `orphan_watchdog.scan_interval_secs`.
+
+Orphan cleanup is asynchronous and MUST NOT block any user-visible request path.
+
+**Observability (P1)**:
+
+- `mini_chat_orphan_detected_total{reason}` (counter) — increments when the watchdog identifies an orphan candidate by the stale-progress rule; `reason`: `stale_progress`
+- `mini_chat_orphan_finalized_total{reason}` (counter) — increments only when the watchdog successfully wins the CAS finalization and transitions the turn to terminal orphan outcome; `reason`: `stale_progress`
+- `mini_chat_orphan_scan_duration_seconds` (histogram) — watchdog scan duration
+
+### B.9.2 Chat-deletion cleanup (outbox-driven)
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| `chat_deletion_cleanup.enabled` | `bool` | `true` | **ConfigMap** |
+| `chat_deletion_cleanup.queue_name` | `string` | implementation-defined | **ConfigMap** |
+| `chat_deletion_cleanup.partition_count` | `integer` | implementation-defined (e.g. 8) | **ConfigMap** |
+| `chat_deletion_cleanup.max_attempts_per_attachment` | `integer` | `5` | **ConfigMap** |
+
+Chat-deletion cleanup is responsible for removing external provider resources associated with soft-deleted chats.
+
+These resources include:
+
+- provider files
+- provider vector stores
+
+Cleanup is performed asynchronously and is idempotent.
+
+Attachment cleanup is driven by the durable chat-cleanup outbox message plus persisted `attachments.cleanup_status` rows. Vector-store cleanup is driven by re-processing that same durable cleanup message against the persisted `chat_vector_stores` row whose parent chat is soft-deleted. A vector store becomes delete-eligible only when all attachment cleanup rows for that chat have reached terminal outcomes (`done` or `failed`). If vector-store deletion fails retryably, the `chat_vector_stores` row remains in place and the shared outbox retries the same cleanup message later. Because P1 does not define a separate vector-store row-state machine, canonical backlog state metrics apply to attachment rows only.
+
+### B.9.3 Shared `modkit-db::outbox` integration
+
+Mini-Chat does not define a separate Mini-Chat-specific dispatcher row-state configuration surface. P1 uses the shared `modkit-db::outbox` queue-registration and builder configuration.
+
+| Parameter | Owner | Default | Notes |
+|-----------|-------|---------|-------|
+| `sequencer_batch_size` | `OutboxBuilder` | `100` | Shared sequencer batch size |
+| `poll_interval` | `OutboxBuilder` | `1s` | Shared fallback poll interval for sequencer and processors |
+| `vacuum_cooldown` | `OutboxBuilder` | `1h` | Shared vacuum sweep cooldown |
+| `lease_duration` | `QueueBuilder` | `30s` | Applies to decoupled handlers only |
+| `backoff_base` | `QueueBuilder` | `1s` | Base delay for `HandlerResult::Retry` |
+| `backoff_max` | `QueueBuilder` | `60s` | Max delay for `HandlerResult::Retry` |
+| `max_concurrent_partitions` | `QueueBuilder` | all partitions | Must fit DB pool size |
+| `msg_batch_size` | `QueueBuilder` | `1` | Single-message decoupled handlers force `1` |
+
+Concrete deployment keys for these parameters are integration-specific, but their semantics MUST match the shared `modkit-db::outbox` API rather than a Mini-Chat-specific dispatcher row model.
+
+### B.9.4 Thread summary (outbox-driven)
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| `thread_summary.enabled` | `bool` | `true` | **ConfigMap** |
+| `thread_summary.queue_name` | `string` | implementation-defined | **ConfigMap** |
+| `thread_summary.partition_count` | `integer` | implementation-defined (e.g. 8) | **ConfigMap** |
+| `thread_summary.compression_threshold_pct` | `integer` | `80` | **ConfigMap** |
+| `thread_summary.message_content_limit` | `integer` | `4000` | **ConfigMap** |
+| `thread_summary.summary_model_id` | `string` | `""` (chat's model) | **ConfigMap** |
+| User turn interval trigger | — | `15` | **ConfigMap** |
+| `summary_quality.min_length` | — | — | **ConfigMap** |
+| `summary_quality.min_entropy` | — | — | **ConfigMap** |
+
+## B.10 API & OpenAPI defaults
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| Pagination `limit` | `integer` | `20` (min 1, max 100) | **Hardcoded** |
+| `is_temporary` | `bool` | `false` | **Hardcoded** |
+
+## B.11 Audit / retention / redaction
+
+| Parameter | Type | Default | Source |
+|-----------|------|---------|--------|
+| Audit string truncation max | — | `8 KiB` | **ConfigMap** |
+| Audit retention period | — | `90 days` | **ConfigMap** (owned by `audit_service`) |
+
+## B.12 Summary: CCM API coverage
+
+| CCM API Endpoint | Parameters sourced |
+|------------------|--------------------|
+| `GET /policies/latest` | `policy_version`, cache invalidation trigger |
+| `GET /policies/{v}` | Full model catalog, kill switches (`disable_web_search`, `disable_code_interpreter`, `disable_file_search`, `disable_images`), user_limits, model `max_output_tokens`, `context_window`, `max_file_size_mb`, credit multipliers |
+| `GET /users/{userId}/limits` | Per-user credit limits (alternative to reading from snapshot) |
+| `GET /tiers` | Tier definitions (`id`, `name`, `downgrade_to`) |
+| `GET /stats` | Tenant quota info (`soft_quota`, `hard_quota`) — not directly consumed by Mini Chat runtime |
+| `POST /usage/publish` | Not a source; Mini Chat is the **caller** of this endpoint |
+
+**Parameters with no CCM API source (ConfigMap / deployment-only):** ~45 parameters across sections B.1, B.3–B.5, B.6 (partial), B.7 (partial), B.8, B.9, B.10, B.11.
+
+**Design-only parameters not yet in CCM API:** `disable_premium_tier`, `force_standard_tier`.

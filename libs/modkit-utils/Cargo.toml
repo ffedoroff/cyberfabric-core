@@ -1,6 +1,6 @@
 [package]
 name = "cf-modkit-utils"
-version.workspace = true
+version = "0.6.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -18,12 +18,16 @@ name = "modkit_utils"
 workspace = true
 
 [features]
-humantime-serde = ["dep:humantime", "dep:serde"]
+serde = ["dep:serde"]
+humantime-serde = ["serde", "dep:humantime"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
+secrecy = { workspace = true }
+regex = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+temp-env = { workspace = true }

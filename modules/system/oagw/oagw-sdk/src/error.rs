@@ -50,6 +50,33 @@ pub enum ServiceGatewayError {
     #[error("{detail}")]
     RequestTimeout { detail: String, instance: String },
 
+    /// A guard plugin rejected the request.
+    #[error("guard rejected: {detail}")]
+    GuardRejected {
+        status: u16,
+        error_code: String,
+        detail: String,
+        instance: String,
+    },
+
+    #[error("{detail}")]
+    StreamAborted { detail: String, instance: String },
+
+    #[error("{detail}")]
+    LinkUnavailable { detail: String, instance: String },
+
+    #[error("{detail}")]
+    CircuitBreakerOpen { detail: String, instance: String },
+
+    #[error("{detail}")]
+    IdleTimeout { detail: String, instance: String },
+
+    #[error("plugin not found: {detail}")]
+    PluginNotFound { detail: String },
+
+    #[error("plugin in use: {detail}")]
+    PluginInUse { detail: String },
+
     /// The caller is authenticated but not authorized to perform the requested action.
     #[error("access forbidden: {detail}")]
     Forbidden { detail: String },

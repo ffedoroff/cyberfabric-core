@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 //! Provider-agnostic LLM integration layer.
 //!
 //! This module defines shared types, the [`LlmProvider`] trait, and
@@ -12,6 +13,8 @@
 //!                                   ← TerminalOutcome (via into_outcome)
 //! ```
 
+pub mod oagw_responses;
+pub mod provider_resolver;
 pub mod providers;
 pub mod request;
 
@@ -21,21 +24,20 @@ use std::task::{Context, Poll};
 
 use futures::Stream;
 use futures::StreamExt;
-use oagw_sdk::SecurityContext;
+use modkit_security::SecurityContext;
 use oagw_sdk::error::{ServiceGatewayError, StreamingError};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
-use utoipa::ToSchema;
 
 // Re-export commonly used request types.
 pub use request::{
-    Feature, LlmMessage, LlmRequest, LlmRequestBuilder, LlmTool, RequestMetadata, RequestType,
+    FeatureFlag, LlmMessage, LlmRequest, LlmRequestBuilder, LlmTool, RequestMetadata, RequestType,
     Role, UserIdentity,
 };
 
 // Re-export provider factory types.
-pub use providers::{ProviderConfig, ProviderKind, create_provider};
+pub use providers::{ProviderKind, create_provider};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Streaming mode markers
@@ -165,41 +167,8 @@ impl From<ServiceGatewayError> for LlmProviderError {
 // Usage, Citation, Response types
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Token usage counters.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
-pub struct Usage {
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-}
-
-/// A citation extracted from provider annotations.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct Citation {
-    pub source: CitationSource,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attachment_id: Option<String>,
-    pub snippet: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub score: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub span: Option<TextSpan>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CitationSource {
-    File,
-    Web,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-pub struct TextSpan {
-    pub start: usize,
-    pub end: usize,
-}
+// Domain-canonical definitions — re-exported for infra consumers.
+pub use crate::domain::llm::{Citation, CitationSource, TextSpan, Usage};
 
 /// Successful LLM response (non-streaming path).
 #[derive(Debug)]
@@ -280,12 +249,7 @@ pub enum ClientSseEvent {
     Citations { items: Vec<Citation> },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolPhase {
-    Start,
-    Done,
-}
+pub use crate::domain::llm::ToolPhase;
 
 // ════════════════════════════════════════════════════════════════════════════
 // ProviderStream
@@ -361,6 +325,18 @@ impl ProviderStream {
             }
         }
 
+        // After the terminal event, drain remaining inner-stream frames so
+        // the upstream HTTP body is fully consumed before the connection is
+        // dropped. This prevents Pingora "Downstream ConnectionClosed"
+        // errors when the provider sends trailing SSE frames after the
+        // terminal event (e.g. response.incomplete → stream close).
+        if self.terminal.is_some() && !self.cancel.is_cancelled() {
+            let _drain = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while self.inner.next().await.is_some() {}
+            })
+            .await;
+        }
+
         match self.terminal {
             Some(terminal) => terminal,
             None if self.cancel.is_cancelled() => TerminalOutcome::Incomplete {
@@ -368,6 +344,9 @@ impl ProviderStream {
                 usage: Usage {
                     input_tokens: 0,
                     output_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_write_input_tokens: 0,
+                    reasoning_tokens: 0,
                 },
                 partial_content: self.accumulated_text,
             },
@@ -400,8 +379,12 @@ impl Stream for ProviderStream {
         loop {
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(TranslatedEvent::Sse(event)))) => {
-                    // Accumulate delta text for fallback partial_content
-                    if let ClientSseEvent::Delta { ref content, .. } = event {
+                    // Accumulate only visible text (not reasoning) for DB content.
+                    if let ClientSseEvent::Delta {
+                        r#type: "text",
+                        ref content,
+                    } = event
+                    {
                         this.accumulated_text.push_str(content);
                     }
                     return Poll::Ready(Some(Ok(event)));
@@ -436,6 +419,10 @@ impl Stream for ProviderStream {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Provider-agnostic LLM trait. Each provider adapter implements this.
+///
+/// The `upstream_alias` parameter identifies the OAGW upstream to route
+/// through. It is resolved per-request by [`ProviderResolver`] based on
+/// the model's `provider_id` and the tenant's endpoint configuration.
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Send a streaming request. Returns a stream of SSE events.
@@ -443,6 +430,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         ctx: SecurityContext,
         request: LlmRequest<Streaming>,
+        upstream_alias: &str,
         cancel: CancellationToken,
     ) -> Result<ProviderStream, LlmProviderError>;
 
@@ -451,6 +439,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         ctx: SecurityContext,
         request: LlmRequest<NonStreaming>,
+        upstream_alias: &str,
     ) -> Result<ResponseResult, LlmProviderError>;
 }
 
@@ -465,124 +454,5 @@ pub fn llm_request(model: impl Into<String>) -> LlmRequestBuilder {
 // ════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
-#[allow(clippy::str_to_string)]
-mod tests {
-    use super::*;
-    use oagw_sdk::error::ServiceGatewayError;
-
-    #[test]
-    fn sanitize_removes_provider_response_ids() {
-        let msg = "Error in response resp_abc123xyz: rate limit exceeded";
-        let sanitized = sanitize_provider_message(msg);
-        assert!(!sanitized.contains("resp_abc123xyz"));
-        assert!(sanitized.contains("[provider_id]"));
-    }
-
-    #[test]
-    fn sanitize_removes_urls() {
-        let msg = "Error at https://api.openai.com/v1/responses: bad request";
-        let sanitized = sanitize_provider_message(msg);
-        assert!(!sanitized.contains("https://api.openai.com"));
-        assert!(sanitized.contains("[url]"));
-    }
-
-    #[test]
-    fn sanitize_removes_credentials() {
-        let msg = "Auth failed with sk-proj1234567890abcdef";
-        let sanitized = sanitize_provider_message(msg);
-        assert!(!sanitized.contains("sk-proj1234567890abcdef"));
-        assert!(sanitized.contains("[credential]"));
-    }
-
-    #[test]
-    fn sanitize_mixed_content() {
-        let msg = "resp_abc123 at https://api.openai.com with sk-test1234567890";
-        let sanitized = sanitize_provider_message(msg);
-        assert!(!sanitized.contains("resp_abc123"));
-        assert!(!sanitized.contains("https://api.openai.com"));
-        assert!(!sanitized.contains("sk-test1234567890"));
-    }
-
-    #[test]
-    fn raw_detail_preserves_original() {
-        let err = LlmProviderError::ProviderError {
-            code: "error".to_string(),
-            message: "sanitized".to_string(),
-            raw_detail: Some(RawDetail(
-                "resp_abc123 at https://api.openai.com".to_string(),
-            )),
-        };
-        assert_eq!(
-            err.raw_detail(),
-            Some("resp_abc123 at https://api.openai.com")
-        );
-    }
-
-    #[test]
-    fn gateway_rate_limit_maps_to_rate_limited() {
-        let err = ServiceGatewayError::RateLimitExceeded {
-            detail: "too many requests".into(),
-            instance: "/test".into(),
-            retry_after_secs: Some(60),
-        };
-        let mapped: LlmProviderError = err.into();
-        assert!(matches!(
-            mapped,
-            LlmProviderError::RateLimited {
-                retry_after_secs: Some(60)
-            }
-        ));
-    }
-
-    #[test]
-    fn gateway_connection_timeout_maps_to_timeout() {
-        let err = ServiceGatewayError::ConnectionTimeout {
-            detail: "timed out".into(),
-            instance: "/test".into(),
-        };
-        let mapped: LlmProviderError = err.into();
-        assert!(matches!(mapped, LlmProviderError::Timeout));
-    }
-
-    #[test]
-    fn gateway_request_timeout_maps_to_timeout() {
-        let err = ServiceGatewayError::RequestTimeout {
-            detail: "timed out".into(),
-            instance: "/test".into(),
-        };
-        let mapped: LlmProviderError = err.into();
-        assert!(matches!(mapped, LlmProviderError::Timeout));
-    }
-
-    #[test]
-    fn gateway_upstream_disabled_maps_to_unavailable() {
-        let err = ServiceGatewayError::UpstreamDisabled {
-            detail: "disabled".into(),
-            instance: "/test".into(),
-        };
-        let mapped: LlmProviderError = err.into();
-        assert!(matches!(mapped, LlmProviderError::ProviderUnavailable));
-    }
-
-    #[test]
-    fn gateway_downstream_error_maps_to_provider_error() {
-        let err = ServiceGatewayError::DownstreamError {
-            detail: "resp_xyz789 failed at https://api.example.com".into(),
-            instance: "/test".into(),
-        };
-        let mapped: LlmProviderError = err.into();
-        match mapped {
-            LlmProviderError::ProviderError {
-                code,
-                message,
-                raw_detail,
-            } => {
-                assert_eq!(code, "gateway_error");
-                assert!(!message.contains("resp_xyz789"));
-                assert!(!message.contains("https://api.example.com"));
-                assert!(raw_detail.is_some());
-            }
-            _ => panic!("expected ProviderError"),
-        }
-    }
-}
+#[path = "mod_tests.rs"]
+mod mod_tests;

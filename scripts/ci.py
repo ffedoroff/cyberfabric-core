@@ -319,6 +319,7 @@ def kill_existing_server(port):
 
 def cmd_e2e(args):
     base_url = os.environ.get("E2E_BASE_URL", "http://localhost:8086")
+
     check_pytest()
 
     # Kill any existing server on the port before starting
@@ -412,10 +413,7 @@ def cmd_e2e(args):
             sys.exit(1)
 
         # Create logs directory if it doesn't exist
-        if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
-            logs_dir = os.path.join(PROJECT_ROOT, "tmp", "e2e-logs")
-        else:
-            logs_dir = os.path.join(PROJECT_ROOT, "logs")
+        logs_dir = os.path.join(PROJECT_ROOT, "testing", "e2e", "logs")
         os.makedirs(logs_dir, exist_ok=True)
 
         data_dir = os.path.join(PROJECT_ROOT, "data")

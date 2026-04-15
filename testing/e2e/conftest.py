@@ -18,14 +18,15 @@ def base_url():
 def auth_headers():
     """
     Build Authorization headers using E2E_AUTH_TOKEN env var.
-    
+
+    Falls back to a dummy token suitable for the static-authn-plugin
+    running in ``accept_all`` mode (any non-empty Bearer token is accepted).
+
     Returns:
-        dict: Headers dict with Authorization header if token is set, empty dict otherwise.
+        dict: Headers dict with Authorization header.
     """
-    token = os.getenv("E2E_AUTH_TOKEN")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
-    return {}
+    token = os.getenv("E2E_AUTH_TOKEN", "e2e-token-tenant-a")
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -84,5 +85,12 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_auth: mark test as requiring authentication"
     )
+
+
+# ── Module test environment orchestration ─────────────────────────────────
+# Re-export fixtures from lib.orchestrator so all modules can use them.
+# Modules override `module_test_env` in their own conftest for custom needs.
+
+from lib.orchestrator import test_env, module_test_env  # noqa: F401, E402
 
 

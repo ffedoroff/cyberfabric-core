@@ -4,6 +4,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::config::TokenCacheConfig;
+use crate::domain::services::{
+    ControlPlaneService, ControlPlaneServiceImpl, DataPlaneService, EndpointSelector,
+    ServiceGatewayClientV1Facade,
+};
+use crate::infra::proxy::DataPlaneServiceImpl;
+use crate::infra::storage::{InMemoryRouteRepo, InMemoryUpstreamRepo};
 use async_trait::async_trait;
 use authz_resolver_sdk::{
     AuthZResolverClient, AuthZResolverError, EvaluationRequest, EvaluationResponse,
@@ -11,18 +18,21 @@ use authz_resolver_sdk::{
 };
 use credstore_sdk::{
     CredStoreClientV1, CredStoreError, GetSecretResponse, SecretRef, SecretValue, SharingMode,
+    TenantId as CredstoreTenantId,
 };
 use modkit::client_hub::ClientHub;
 use modkit_security::SecurityContext;
 use oagw_sdk::api::ServiceGatewayClientV1;
-use uuid::Uuid;
-
-use crate::domain::services::{
-    ControlPlaneService, ControlPlaneServiceImpl, DataPlaneService, EndpointSelector,
-    ServiceGatewayClientV1Facade,
+use tenant_resolver_sdk::{
+    GetAncestorsOptions, GetAncestorsResponse, GetDescendantsOptions, GetDescendantsResponse,
+    GetTenantsOptions, IsAncestorOptions, TenantId, TenantInfo, TenantRef, TenantResolverClient,
+    TenantResolverError, TenantStatus,
 };
-use crate::infra::proxy::DataPlaneServiceImpl;
-use crate::infra::storage::{InMemoryRouteRepo, InMemoryUpstreamRepo};
+
+/// Build an allow-all `PolicyEnforcer` for tests.
+pub fn allow_all_enforcer() -> PolicyEnforcer {
+    PolicyEnforcer::new(Arc::new(MockAuthZResolverClient))
+}
 
 /// Mock AuthZ resolver that always allows access for testing.
 struct MockAuthZResolverClient;
@@ -155,7 +165,7 @@ impl CredStoreClientV1 for MockCredStoreClient {
     ) -> Result<Option<GetSecretResponse>, CredStoreError> {
         Ok(self.store.get(key.as_ref()).map(|v| GetSecretResponse {
             value: SecretValue::new(v.clone()),
-            owner_tenant_id: Uuid::nil(),
+            owner_tenant_id: CredstoreTenantId::nil(),
             sharing: SharingMode::default(),
             is_inherited: false,
         }))
@@ -182,12 +192,178 @@ impl CredStoreClientV1 for FailingCredStoreClient {
 /// Re-export for tests that need a `CredStoreClientV1` mock.
 pub use MockCredStoreClient as TestCredStoreClient;
 
+/// Mock `TenantResolverClient` for tests.
+///
+/// By default operates in single-tenant mode: every tenant is a root with no
+/// ancestors and no descendants.  Use [`MockTenantResolverClient::with_hierarchy`]
+/// to configure a parent→child chain for hierarchy tests.
+pub struct MockTenantResolverClient {
+    /// Map from tenant_id → (TenantInfo, ordered ancestors [parent..root]).
+    tenants: HashMap<TenantId, (TenantInfo, Vec<TenantRef>)>,
+}
+
+impl MockTenantResolverClient {
+    /// Create a single-tenant resolver: any tenant_id is treated as a root
+    /// tenant with no ancestors.
+    pub fn single_tenant() -> Self {
+        Self {
+            tenants: HashMap::new(),
+        }
+    }
+
+    /// Create a resolver with an explicit hierarchy.
+    ///
+    /// `chain` is ordered root-first: `[root, parent, child]`.  Each entry
+    /// gets ancestors derived automatically from its position in the chain.
+    pub fn with_hierarchy(chain: Vec<TenantId>) -> Self {
+        let mut tenants = HashMap::new();
+        for (i, &id) in chain.iter().enumerate() {
+            let parent_id = if i == 0 { None } else { Some(chain[i - 1]) };
+            let info = TenantInfo {
+                id,
+                name: format!("tenant-{}", &id.to_string()[..8]),
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id,
+                self_managed: false,
+            };
+            // Ancestors for this tenant: walk backwards from parent to root.
+            let ancestors: Vec<TenantRef> = (0..i)
+                .rev()
+                .map(|j| {
+                    let anc_id = chain[j];
+                    let anc_parent = if j == 0 { None } else { Some(chain[j - 1]) };
+                    TenantRef {
+                        id: anc_id,
+                        status: TenantStatus::Active,
+                        tenant_type: None,
+                        parent_id: anc_parent,
+                        self_managed: false,
+                    }
+                })
+                .collect();
+            tenants.insert(id, (info, ancestors));
+        }
+        Self { tenants }
+    }
+}
+
+#[async_trait]
+impl TenantResolverClient for MockTenantResolverClient {
+    async fn get_tenant(
+        &self,
+        _ctx: &SecurityContext,
+        id: TenantId,
+    ) -> Result<TenantInfo, TenantResolverError> {
+        if let Some((info, _)) = self.tenants.get(&id) {
+            return Ok(info.clone());
+        }
+        // Single-tenant fallback: synthesize a root tenant.
+        Ok(TenantInfo {
+            id,
+            name: format!("tenant-{}", &id.to_string()[..8]),
+            status: TenantStatus::Active,
+            tenant_type: None,
+            parent_id: None,
+            self_managed: false,
+        })
+    }
+
+    async fn get_tenants(
+        &self,
+        ctx: &SecurityContext,
+        ids: &[TenantId],
+        _options: &GetTenantsOptions,
+    ) -> Result<Vec<TenantInfo>, TenantResolverError> {
+        let mut result = Vec::new();
+        for &id in ids {
+            result.push(self.get_tenant(ctx, id).await?);
+        }
+        Ok(result)
+    }
+
+    async fn get_ancestors(
+        &self,
+        _ctx: &SecurityContext,
+        id: TenantId,
+        _options: &GetAncestorsOptions,
+    ) -> Result<GetAncestorsResponse, TenantResolverError> {
+        if let Some((info, ancestors)) = self.tenants.get(&id) {
+            return Ok(GetAncestorsResponse {
+                tenant: TenantRef::from(info.clone()),
+                ancestors: ancestors.clone(),
+            });
+        }
+        // Single-tenant fallback: root tenant with no ancestors.
+        Ok(GetAncestorsResponse {
+            tenant: TenantRef {
+                id,
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id: None,
+                self_managed: false,
+            },
+            ancestors: vec![],
+        })
+    }
+
+    async fn get_descendants(
+        &self,
+        _ctx: &SecurityContext,
+        id: TenantId,
+        _options: &GetDescendantsOptions,
+    ) -> Result<GetDescendantsResponse, TenantResolverError> {
+        let tenant_ref = if let Some((info, _)) = self.tenants.get(&id) {
+            TenantRef::from(info.clone())
+        } else {
+            TenantRef {
+                id,
+                status: TenantStatus::Active,
+                tenant_type: None,
+                parent_id: None,
+                self_managed: false,
+            }
+        };
+        // Collect children from the hierarchy map.
+        let descendants: Vec<TenantRef> = self
+            .tenants
+            .values()
+            .filter(|(info, _)| info.parent_id == Some(id))
+            .map(|(info, _)| TenantRef::from(info.clone()))
+            .collect();
+        Ok(GetDescendantsResponse {
+            tenant: tenant_ref,
+            descendants,
+        })
+    }
+
+    async fn is_ancestor(
+        &self,
+        _ctx: &SecurityContext,
+        ancestor_id: TenantId,
+        descendant_id: TenantId,
+        _options: &IsAncestorOptions,
+    ) -> Result<bool, TenantResolverError> {
+        if ancestor_id == descendant_id {
+            return Ok(false);
+        }
+        if let Some((_, ancestors)) = self.tenants.get(&descendant_id) {
+            return Ok(ancestors.iter().any(|a| a.id == ancestor_id));
+        }
+        Ok(false)
+    }
+}
+
 /// Re-export plugin ID constants for test configurations.
-pub use crate::domain::gts_helpers::APIKEY_AUTH_PLUGIN_ID;
+pub use crate::domain::gts_helpers::{
+    APIKEY_AUTH_PLUGIN_ID, OAUTH2_CLIENT_CRED_AUTH_PLUGIN_ID,
+    OAUTH2_CLIENT_CRED_BASIC_AUTH_PLUGIN_ID,
+};
 
 /// Builder for a fully-wired Control Plane test environment.
 pub struct TestCpBuilder {
     credentials: Vec<(String, String)>,
+    tenant_resolver: Option<MockTenantResolverClient>,
 }
 
 impl TestCpBuilder {
@@ -195,6 +371,7 @@ impl TestCpBuilder {
     pub fn new() -> Self {
         Self {
             credentials: Vec::new(),
+            tenant_resolver: None,
         }
     }
 
@@ -205,17 +382,33 @@ impl TestCpBuilder {
         self
     }
 
+    /// Override the tenant resolver (for hierarchy tests).
+    #[must_use]
+    pub fn with_tenant_resolver(mut self, resolver: MockTenantResolverClient) -> Self {
+        self.tenant_resolver = Some(resolver);
+        self
+    }
+
     /// Create repos, service, and mock credstore, register them in the
     /// provided `ClientHub`, and return the CP service trait object.
     pub(crate) fn build_and_register(self, hub: &ClientHub) -> Arc<dyn ControlPlaneService> {
         let upstream_repo = Arc::new(InMemoryUpstreamRepo::new());
         let route_repo = Arc::new(InMemoryRouteRepo::new());
-        let cp: Arc<dyn ControlPlaneService> =
-            Arc::new(ControlPlaneServiceImpl::new(upstream_repo, route_repo));
-
+        let tenant_resolver: Arc<dyn TenantResolverClient> = Arc::new(
+            self.tenant_resolver
+                .unwrap_or_else(MockTenantResolverClient::single_tenant),
+        );
         let credstore: Arc<dyn CredStoreClientV1> =
             Arc::new(MockCredStoreClient::with_secrets(self.credentials));
-        hub.register::<dyn CredStoreClientV1>(credstore);
+        hub.register::<dyn CredStoreClientV1>(credstore.clone());
+
+        let cp: Arc<dyn ControlPlaneService> = Arc::new(ControlPlaneServiceImpl::new(
+            upstream_repo,
+            route_repo,
+            tenant_resolver,
+            allow_all_enforcer(),
+            credstore,
+        ));
 
         cp
     }
@@ -237,6 +430,11 @@ pub struct TestDpBuilder {
     backend_selector: Option<Arc<dyn EndpointSelector>>,
     max_body_size: Option<usize>,
     skip_upstream_tls_verify: bool,
+    token_http_config: Option<modkit_http::HttpClientConfig>,
+    token_cache_config: TokenCacheConfig,
+    websocket_idle_timeout: Option<Duration>,
+    websocket_close_timeout: Option<Duration>,
+    websocket_max_frame_size: Option<usize>,
 }
 
 impl TestDpBuilder {
@@ -248,6 +446,11 @@ impl TestDpBuilder {
             backend_selector: None,
             max_body_size: None,
             skip_upstream_tls_verify: false,
+            token_http_config: None,
+            token_cache_config: TokenCacheConfig::default(),
+            websocket_idle_timeout: None,
+            websocket_close_timeout: None,
+            websocket_max_frame_size: None,
         }
     }
 
@@ -287,6 +490,42 @@ impl TestDpBuilder {
         self
     }
 
+    /// Override the HTTP client config for OAuth2 token endpoints.
+    /// Pass `HttpClientConfig::for_testing()` to allow plain HTTP in tests.
+    #[must_use]
+    pub fn with_token_http_config(mut self, config: modkit_http::HttpClientConfig) -> Self {
+        self.token_http_config = Some(config);
+        self
+    }
+
+    /// Override the token cache configuration.
+    #[must_use]
+    pub fn with_token_cache_config(mut self, config: TokenCacheConfig) -> Self {
+        self.token_cache_config = config;
+        self
+    }
+
+    /// Override the WebSocket idle timeout (useful for idle-timeout tests).
+    #[must_use]
+    pub fn with_websocket_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.websocket_idle_timeout = Some(timeout);
+        self
+    }
+
+    /// Override the WebSocket Close frame handshake timeout.
+    #[must_use]
+    pub fn with_websocket_close_timeout(mut self, timeout: Duration) -> Self {
+        self.websocket_close_timeout = Some(timeout);
+        self
+    }
+
+    /// Override the maximum WebSocket frame payload size.
+    #[must_use]
+    pub fn with_websocket_max_frame_size(mut self, size: Option<usize>) -> Self {
+        self.websocket_max_frame_size = size;
+        self
+    }
+
     /// Fetch `CredStoreClientV1` from the hub, create a DP service with
     /// the given CP, and return the trait object.
     pub(crate) fn build_and_register(
@@ -307,6 +546,7 @@ impl TestDpBuilder {
         let pingora_proxy = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
             Duration::from_secs(10),
             Duration::from_secs(30),
+            Duration::from_secs(3600),
         )
         .with_skip_upstream_tls_verify(self.skip_upstream_tls_verify);
         let proxy = Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
@@ -319,14 +559,30 @@ impl TestDpBuilder {
                 Arc::new(crate::infra::proxy::pingora_proxy::PingoraEndpointSelector::new())
             });
 
-        let mut svc =
-            DataPlaneServiceImpl::new(cp, credstore, policy_enforcer, backend_selector, proxy)
-                .with_allow_http_upstream(true);
+        let mut svc = DataPlaneServiceImpl::new(
+            cp,
+            credstore,
+            policy_enforcer,
+            self.token_http_config,
+            self.token_cache_config,
+            backend_selector,
+            proxy,
+        )
+        .with_allow_http_upstream(true);
         if let Some(timeout) = self.request_timeout {
             svc = svc.with_request_timeout(timeout);
         }
         if let Some(size) = self.max_body_size {
             svc = svc.with_max_body_size(size);
+        }
+        if let Some(timeout) = self.websocket_idle_timeout {
+            svc = svc.with_websocket_idle_timeout(timeout);
+        }
+        if let Some(timeout) = self.websocket_close_timeout {
+            svc = svc.with_websocket_close_timeout(timeout);
+        }
+        if let Some(size) = self.websocket_max_frame_size {
+            svc = svc.with_websocket_max_frame_size(Some(size));
         }
 
         Arc::new(svc)
@@ -372,6 +628,10 @@ pub fn build_test_app_state(
             backend_selector,
             config: crate::config::RuntimeConfig {
                 max_body_size_bytes: 100 * 1024 * 1024, // 100 MB default for tests
+                websocket_idle_timeout_secs: 300,
+                websocket_close_timeout_secs: 5,
+                websocket_max_frame_size_bytes: None,
+                streaming_idle_timeout_secs: 300,
             },
         },
         facade,

@@ -1,3 +1,5 @@
+<!-- Updated: 2026-04-07 by Constructor Tech -->
+
 # Authentication & Authorization Design
 
 ## Table of Contents
@@ -15,6 +17,7 @@
   - [Capabilities -> Predicate Matrix](#capabilities---predicate-matrix)
   - [Table Schemas (Local Projections)](#table-schemas-local-projections)
   - [Usage Scenarios](#usage-scenarios)
+- [S2S Authentication (Service-to-Service)](#s2s-authentication-service-to-service)
 - [Open Questions](#open-questions)
 - [References](#references)
 
@@ -202,7 +205,7 @@ flowchart TB
             Handler["Handler"]
             subgraph ModuleDB["Module Database"]
                 DomainTables["Domain Tables<br/>(events, ...)"]
-                LocalProj["Local Projections<br/>• tenant_closure<br/>• resource_group_closure<br/>• resource_group_membership"]
+                LocalProj["Local Projections<br/>• tenant_closure<br/>• resource_group_closure"]
             end
         end
     end
@@ -338,19 +341,22 @@ scope mismatch without calling PDP.
 
 **Configuration:**
 ```yaml
-auth:
-  gateway_scope_checks:
-    enabled: true
-    routes:
-      "/admin/*":
-        required_scopes: ["admin"]
-      "/events/v1/*":
-        required_scopes: ["read:events", "write:events"]  # any of these
+api-gateway:
+  config:
+    route_policies:
+      enabled: true
+      rules:
+        - path: "/admin/**"
+          required_scopes: ["admin"]
+        - path: "/events/v1/*"
+          required_scopes: ["read:events", "write:events"]  # any of these
 ```
 
 **Behavior:**
-- If `token_scopes: ["*"]` → always pass
+- Rules are evaluated in declaration order (first match wins)
+- If `token_scopes: ["*"]` → always pass (first-party app)
 - If `token_scopes` contains any of `required_scopes` → pass
+- Empty `token_scopes` → 403 Forbidden (fail-closed)
 - Otherwise → 403 Forbidden (before PDP call)
 
 **Note:** This is coarse-grained optimization. Fine-grained permission checks still happen in PDP.
@@ -388,17 +394,12 @@ Authentication is handled by the **AuthN Resolver** — a module with plugins an
 #[async_trait]
 pub trait AuthNResolverClient: Send + Sync {
     /// Authenticate a bearer token and return the authentication result.
-    ///
-    /// # Errors
-    ///
-    /// - `Unauthorized` if the token is malformed/invalid/expired or authentication fails
-    /// - `ServiceUnavailable` if the IdP is unreachable
-    /// - `NoPluginAvailable` if no plugin is configured
-    ///
-    /// # Arguments
-    ///
-    /// * `bearer_token` - The bearer token from the Authorization header
     async fn authenticate(&self, bearer_token: &str) -> Result<AuthenticationResult, AuthNResolverError>;
+
+    /// Exchange OAuth2 client credentials for a SecurityContext (S2S authentication).
+    /// See [S2S Authentication](#s2s-authentication-service-to-service) for details.
+    async fn exchange_client_credentials(&self, request: &ClientCredentialsRequest)
+        -> Result<AuthenticationResult, AuthNResolverError>;
 }
 ```
 
@@ -408,14 +409,12 @@ pub trait AuthNResolverClient: Send + Sync {
 #[async_trait]
 pub trait AuthNResolverPluginClient: Send + Sync {
     /// Authenticate a bearer token using vendor-specific validation logic.
-    ///
-    /// Plugins implement this method with their validation strategy
-    /// (JWT local validation, token introspection, custom protocols, etc.).
-    ///
-    /// # Arguments
-    ///
-    /// * `bearer_token` - The bearer token to validate
     async fn authenticate(&self, bearer_token: &str) -> Result<AuthenticationResult, AuthNResolverError>;
+
+    /// Exchange client credentials for a SecurityContext (S2S authentication).
+    /// See [S2S Authentication](#s2s-authentication-service-to-service) for details.
+    async fn exchange_client_credentials(&self, request: &ClientCredentialsRequest)
+        -> Result<AuthenticationResult, AuthNResolverError>;
 }
 ```
 
@@ -504,6 +503,7 @@ The AuthN Resolver plugin bridges Cyber Fabric to the vendor's IdP. Plugin respo
 3. **Claim Enrichment** — If IdP doesn't include required claims (`subject_type`, `subject_tenant_id`), fetch from vendor services
 4. **Token Scope Detection** — Determine first-party vs third-party apps and set `token_scopes` accordingly (see [Token Scopes](#token-scopes))
 5. **Response Mapping** — Convert vendor-specific responses to `AuthenticationResult` (containing `SecurityContext`)
+6. **S2S Credential Exchange** — Implement `exchange_client_credentials()` for service-to-service authentication (see [S2S Authentication](#s2s-authentication-service-to-service))
 
 ### Rationale: Minimalist Interface
 
@@ -659,6 +659,7 @@ The PEP MUST:
 8. **Handle missing required fields** - Treat containing constraint as false
 9. **Handle unknown property names** - Treat containing constraint as false (PEP doesn't know how to map). This is a **PDP contract violation** — PDP MUST only return properties from the `supported_properties` list provided in the request. PEP MUST log this as an error for debugging, then fail-closed. If all constraints evaluate to false, deny access (403 Forbidden).
 10. **Handle empty constraints array** - If `constraints` field is present but empty (`constraints: []`) -> deny all. An empty array means no access paths exist (OR of empty set is false).
+11. **Handle empty value lists in set predicates** - If an `In`, `InGroup`, or `InGroupSubtree` predicate has an empty value list (`values: []`, `group_ids: []`, `ancestor_ids: []`) -> treat containing constraint as false (fail-closed). An empty set means "match nothing", which is semantically a deny. Passing it to the ORM would generate `WHERE col IN ()` — a SQL error on some engines. This is a **PDP contract violation**: a well-behaved PDP MUST NOT emit set predicates with empty lists.
 
 ---
 
@@ -1262,15 +1263,20 @@ The `require_constraints` field (separate from capabilities array) controls PEP 
 
 Capabilities declare what predicate types the PEP can enforce locally:
 
-| Capability | Enables Predicate Types |
-|------------|---------------------|
-| `tenant_hierarchy` | `in_tenant_subtree` |
-| `group_membership` | `in_group` |
-| `group_hierarchy` | `in_group_subtree` (implies `group_membership`) |
+| Capability | Enables Predicate Types | Required Projection |
+|------------|---------------------|---------------------|
+| `tenant_hierarchy` | `in_tenant_subtree` | `tenant_closure` |
+| `group_membership` | `in_group` | `resource_group_membership` (projection not recommended — see below) |
+| `group_hierarchy` | `in_group_subtree` | `resource_group_closure` + `resource_group_membership` (projection not recommended — see below) |
 
-**Capability dependencies:**
-- `group_hierarchy` implies `group_membership` — if PEP has the closure table, it necessarily has the membership table
-- When declaring capabilities, `["group_hierarchy"]` is sufficient; `group_membership` is implied
+**Progressive projection guidance:**
+- **Monolith** (single shared DB): no projections needed — PEP JOINs canonical tables directly.
+- **Microservices** (typical): project `resource_group` + `resource_group_closure` (small tables). Leave `resource_group_membership` to PDP capability degradation (→ `in` predicates with explicit IDs).
+- **Microservices** with membership filtering/pagination where the two-request pattern causes unacceptable N-request fan-out: project `resource_group_membership`. This table grows as `M_resources × N_groups_per_resource` and is expected to be **10× or more larger** than hierarchy tables (see [RG DESIGN §Storage Estimates](../../../modules/system/resource-group/docs/DESIGN.md#storage-estimates)) — only project after profiling confirms the need.
+
+Do not add projections speculatively — each projection creates an additional database and synchronization load.
+
+`group_membership` and `group_hierarchy` capabilities are only available when the membership table is present in the PEP's database (RG module, monolith with shared DB, or an explicit projection). Domain services that choose **not** to project the table rely on PDP capability degradation — PDP expands group memberships to explicit resource IDs and returns `in` predicates.
 
 **Predicate type availability by capability:**
 
@@ -1278,18 +1284,22 @@ Capabilities declare what predicate types the PEP can enforce locally:
 |-------------|---------------------|
 | `eq`, `in` | (none — always available) |
 | `in_tenant_subtree` | `tenant_hierarchy` |
-| `in_group` | `group_membership` |
-| `in_group_subtree` | `group_hierarchy` |
+| `in_group` | `group_membership` (requires membership table) |
+| `in_group_subtree` | `group_hierarchy` (requires membership table) |
 
 **Capability degradation**: If a PEP lacks a capability, the PDP must either:
-1. Expand the predicate to explicit IDs (may be large)
+1. Expand the predicate to explicit IDs (may be large) — e.g., resolve group memberships into `in` predicate with explicit resource IDs
 2. Return `decision: false` if expansion is not feasible
+
+**Note:** For domain services (which lack the `resource_group_membership` table), PDP always degrades `in_group`/`in_group_subtree` to explicit `in` predicates. These predicates can only be handled natively when the membership table is present in the PEP's database.
 
 ---
 
 ### Table Schemas (Local Projections)
 
-These tables are maintained locally by Cyber Fabric modules (Tenant Resolver, Resource Group Resolver) and used by PEPs to execute constraint queries efficiently without calling back to the vendor platform.
+These tables are maintained locally by Cyber Fabric modules (Tenant Resolver, Resource Group module) and used by PEPs to execute constraint queries efficiently without calling back to the vendor platform.
+
+**Projectable to domain services:** `tenant_closure`, `resource_group`, `resource_group_closure`, `resource_group_membership` (progressively — see [Capabilities and Projection Tables](#capabilities-and-projection-tables) for guidance on when to project each table).
 
 #### `tenant_closure`
 
@@ -1334,9 +1344,9 @@ Closure table for resource group hierarchy. Similar structure to tenant_closure 
 - Self-referential rows exist: each group has a row where `ancestor_id = descendant_id`.
 - **Predicate mapping:** `in_group_subtree` predicate compiles to SQL using this closure table.
 
-#### `resource_group_membership`
+#### `resource_group_membership` (RG-owned — project only when needed)
 
-Association between resources and groups. A resource can belong to multiple groups.
+Association between resources and groups. A resource can belong to multiple groups. This table grows as `M_resources × N_groups_per_resource` and is expected to be **10× or more larger** than other projection tables — concrete estimates depend on vendor scale (see [RG DESIGN §Storage Estimates](../../../modules/system/resource-group/docs/DESIGN.md#storage-estimates)). Project only after profiling confirms the two-request pattern causes unacceptable latency — see [Capabilities -> Predicate Matrix](#capabilities---predicate-matrix) for the progressive projection strategy.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -1345,7 +1355,7 @@ Association between resources and groups. A resource can belong to multiple grou
 
 **Notes:**
 - The `resource_id` column joins with the resource table's ID column (configurable per module, default `id`).
-- **Predicate mapping:** `in_group` and `in_group_subtree` predicates use this table for the resource-to-group join.
+- **Predicate mapping:** `in_group` and `in_group_subtree` predicates use this table for the resource-to-group join. These predicates are only executable within the RG module; domain services receive degraded `in` predicates with explicit IDs instead.
 
 **Example query (in_group_subtree):**
 ```sql
@@ -1367,6 +1377,54 @@ For concrete examples demonstrating the authorization model in practice, see [AU
 
 ---
 
+## S2S Authentication (Service-to-Service)
+
+### Overview
+
+Platform modules communicate with each other outside the context of an HTTP request — inter-module calls, background processing, scheduled tasks. These interactions require a `SecurityContext` to pass through AuthZ. AuthN Resolver provides S2S authentication via the [OAuth 2.0 Client Credentials Grant (RFC 6749 §4.4)](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4) pattern.
+
+A module presents its OAuth2 credentials (`client_id`, `client_secret`, optional `scopes`) to AuthN Resolver. The AuthN plugin exchanges them with the vendor's IdP and returns a validated `SecurityContext` — the same `AuthenticationResult` that `authenticate()` returns for bearer tokens.
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant Module as Calling Module
+    participant AuthN as AuthN Resolver
+    participant Plugin as AuthN Plugin
+    participant IdP as Vendor's IdP
+
+    Module->>AuthN: exchange_client_credentials(client_id, client_secret, scopes)
+    AuthN->>Plugin: exchange_client_credentials(request)
+    Plugin->>IdP: POST /token (client_credentials grant)
+    IdP-->>Plugin: access_token + claims
+    Plugin->>Plugin: Map IdP response → SecurityContext
+    Plugin-->>AuthN: AuthenticationResult
+    AuthN-->>Module: SecurityContext
+    Module->>Module: Use SecurityContext for inter-module calls
+```
+
+The calling module knows only its credentials. The plugin owns the token endpoint URL, OAuth2 flow, and identity mapping — analogous to how `authenticate()` accepts only the bearer token while JWKS URL is configured in the plugin or obtained from the IdP's `.well-known` endpoint for the issuer (it's up to the plugin to determine the correct endpoint).
+
+The returned `SecurityContext` contains the same fields as for bearer token authentication.
+
+### Relationship to AuthZ
+
+S2S `SecurityContext` flows through the standard AuthZ pipeline unchanged. The target module's PEP evaluates authorization with the S2S subject, PDP applies policies (potentially using `subject_type` for service-specific rules), and constraints are compiled to `AccessScope` as usual. No changes to AuthZ Resolver or PEP are required.
+
+### Key Principles
+
+- **AuthN Resolver is the single owner of `SecurityContext`.** Modules do not construct `SecurityContext` directly. All identity mapping and OAuth2 logic is encapsulated in the plugin.
+- **The platform does not issue tokens.** The plugin delegates to an external IdP and maps the response.
+- **Credentials and endpoints are separated.** Module configuration contains credentials; plugin configuration contains token endpoint / issuer URL.
+
+### Future Extensions
+
+- **Token lifetime propagation** — Plugin communicates token expiry to enable caller-side caching with proper TTL
+- **Cached SecurityContext provider** — A wrapper that caches the `SecurityContext` and automatically refreshes it on expiry, so modules don't need to manage token lifecycle themselves
+
+---
+
 ## Open Questions
 
 These questions require further design work.
@@ -1375,7 +1433,7 @@ These questions require further design work.
 
 2. **Projection tables scalability** - Closure table approach works well for moderate scale, but may not perform for all scenarios. Key factors: tenant hierarchy depth (10+ levels), total object count (10M+), object distribution across tenants, and query patterns (root tenant queries are heavier than leaf). For large-scale deployments, vendors may need alternative strategies: denormalization (e.g., PostgreSQL ltree), materialized views, or sharding. This design doc describes the reference architecture; concrete optimization strategy depends on vendor's data model and scale requirements.
 
-3. **Local projections sync** - How to keep projection tables (tenant_closure, resource_group_closure, resource_group_membership) in sync with vendor's source of truth? Possible approaches: event-based sync (requires event broker), CDC-based (Debezium-like), or periodic polling via Resolver APIs. Each has trade-offs in consistency, latency, and infrastructure complexity.
+3. **Local projections sync** - How to keep projection tables (`tenant_closure`, `resource_group_closure`) in sync with vendor's source of truth? Possible approaches: event-based sync (requires event broker), CDC-based (Debezium-like), or periodic polling via Resolver APIs. Each has trade-offs in consistency, latency, and infrastructure complexity. Note: `resource_group_membership` projection is not recommended (see [Capabilities and Projection Tables](#capabilities-and-projection-tables)) but is not forbidden if the use case demands it.
 
 4. **Resource Group Service** - Should Cyber Fabric have its own Resource Group Service, or is Resource Group Resolver (module bridging to vendor's service) sufficient? Having a Cyber Fabric-native service has pros and cons. Needs design.
 
@@ -1390,10 +1448,7 @@ These questions require further design work.
    - **Migration protocol** — When closure table schema changes, how do PEPs discover and adapt? Is there a capabilities negotiation mechanism?
    - **Backward compatibility** — Can old PEPs work with new schema, or is coordinated upgrade required? What's the compatibility matrix?
 
-9. **S2S token issuance** — Should AuthN Resolver support token issuance for service-to-service communication, or is it sufficient to rely on standard [OAuth 2.0 Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)? Open questions:
-   - **Scope** — Is token issuance AuthN Resolver's responsibility, or should services obtain tokens directly from the IdP?
-   - **Use cases** — What S2S scenarios require Cyber Fabric involvement vs. direct IdP integration?
-   - **Token types** — Should S2S tokens differ from user tokens (e.g., different scopes, shorter TTL)?
+9. ~~**S2S token issuance**~~ — **Resolved.** See [S2S Authentication (Service-to-Service)](#s2s-authentication-service-to-service).
 
 10. **Multi-Factor Authentication (MFA) support** — How should Cyber Fabric handle MFA across both AuthN and AuthZ layers? Industry standards and best practices to study:
     - **AuthN side:**
@@ -1410,12 +1465,20 @@ These questions require further design work.
       - How do industry multi-tenant platforms (Azure AD Conditional Access, AWS IAM, Google Cloud IAP) handle MFA in the context of delegated authorization?
       - What is the interaction between MFA and token scopes? Should third-party apps be able to request MFA-elevated scopes?
 
+11. **S2S SecurityContext caching** — Modules may call `exchange_client_credentials()` frequently (on every background task iteration, on every inter-module call). Open questions:
+    - **TTL strategy** — What default TTL for cached `SecurityContext`? Static plugin has no token expiry (effectively infinite), production plugins depend on OAuth2 token TTL. Proposal: default 5 min, configurable.
+    - **`AuthenticationResult.expires_at`** — Should `AuthenticationResult` include an `expires_at: Option<DateTime>` field so the plugin can communicate token lifetime to the caller? This enables smart caller-side caching without hardcoded TTLs.
+    - **`S2sSecurityContextProvider`** — Should there be a standard cached wrapper in the SDK (`authn-resolver-sdk`) that modules use instead of calling `exchange_client_credentials()` directly? Design: ArcSwap-based cache with TTL from `expires_at`, automatic refresh on expiry.
+    - **Plugin-level caching** — Production plugins can reuse `modkit-auth::oauth2::Token` handles with auto-refresh internally. Should this be a requirement or recommendation for plugin implementors?
+    - **Cache invalidation** — When credentials are rotated, how does the cached `SecurityContext` get invalidated? Is TTL-based expiry sufficient, or do we need explicit invalidation?
+
 ---
 
 ## References
 
 ### Authentication
 - [AUTHN_JWT_OIDC_PLUGIN.md](./AUTHN_JWT_OIDC_PLUGIN.md) — JWT + OIDC plugin reference implementation
+- [RFC 6749: OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749) (§4.4 Client Credentials Grant — S2S authentication)
 - [RFC 7519: JSON Web Token (JWT)](https://datatracker.ietf.org/doc/html/rfc7519)
 - [RFC 7662: OAuth 2.0 Token Introspection](https://datatracker.ietf.org/doc/html/rfc7662)
 - [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)

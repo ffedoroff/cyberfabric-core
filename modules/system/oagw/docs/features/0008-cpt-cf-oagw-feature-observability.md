@@ -1,5 +1,38 @@
 # Feature: Observability & Security Hardening
 
+
+<!-- toc -->
+
+- [1. Feature Context](#1-feature-context)
+  - [1.1 Overview](#11-overview)
+  - [1.2 Purpose](#12-purpose)
+  - [1.3 Actors](#13-actors)
+  - [1.4 References](#14-references)
+  - [1.5 Out of Scope](#15-out-of-scope)
+  - [1.6 Configuration Parameters](#16-configuration-parameters)
+  - [1.7 Non-Applicable Domains](#17-non-applicable-domains)
+- [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
+  - [Configure CORS Policy](#configure-cors-policy)
+  - [Review Prometheus Metrics](#review-prometheus-metrics)
+- [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
+  - [Metrics Collection Pipeline](#metrics-collection-pipeline)
+  - [Audit Log Emission](#audit-log-emission)
+  - [CORS Handler](#cors-handler)
+  - [SSRF Protection Validation](#ssrf-protection-validation)
+  - [HTTP Smuggling Prevention](#http-smuggling-prevention)
+  - [Multi-Layer Config Cache](#multi-layer-config-cache)
+- [4. States (CDSL)](#4-states-cdsl)
+- [5. Definitions of Done](#5-definitions-of-done)
+  - [Implement Prometheus Metrics](#implement-prometheus-metrics)
+  - [Implement Structured Audit Logging](#implement-structured-audit-logging)
+  - [Implement CORS Handling](#implement-cors-handling)
+  - [Implement SSRF Protection](#implement-ssrf-protection)
+  - [Implement HTTP Smuggling Prevention](#implement-http-smuggling-prevention)
+  - [Implement Multi-Layer Config Caching](#implement-multi-layer-config-caching)
+- [6. Acceptance Criteria](#6-acceptance-criteria)
+
+<!-- /toc -->
+
 - [ ] `p2` - **ID**: `cpt-cf-oagw-featstatus-observability-implemented`
 
 <!-- reference to DECOMPOSITION entry -->
@@ -47,7 +80,7 @@ Operators need full visibility into outbound API traffic patterns, errors, and p
 | CP L2 cache TTL | 300s | Yes | `OagwConfig` |
 | Redis operation timeout | 50ms | Yes | `OagwConfig` |
 | Audit log sampling rate | 1/100 | Yes | Per-route configurable |
-| CORS max_age default | 86400s | Yes | Per-upstream/route |
+| CORS max_age | 86400s | No | Hardcoded in handler |
 
 ### 1.7 Non-Applicable Domains
 
@@ -75,7 +108,7 @@ Operators need full visibility into outbound API traffic patterns, errors, and p
 **Steps**:
 1. [ ] - `p2` - Operator submits upstream/route update with CORS configuration via Management API - `inst-cors-1`
 2. [ ] - `p2` - API: PUT /api/oagw/v1/upstreams/{id} or PUT /api/oagw/v1/routes/{id} (cors field in request body) - `inst-cors-2`
-3. [ ] - `p2` - Validate CORS configuration: allowed_origins, allowed_methods, allowed_headers, max_age - `inst-cors-3`
+3. [ ] - `p2` - Validate CORS configuration: allowed_origins, allowed_methods - `inst-cors-3`
 4. [ ] - `p2` - **IF** validation fails - `inst-cors-4`
    1. [ ] - `p2` - **RETURN** 400 ValidationError with details - `inst-cors-4a`
 5. [ ] - `p2` - **ELSE** - `inst-cors-5`
@@ -165,36 +198,38 @@ Operators need full visibility into outbound API traffic patterns, errors, and p
 8. [ ] - `p2` - Emit to stdout - `inst-al-8`
 9. [ ] - `p2` - **RETURN** void - `inst-al-9`
 
-### CORS Preflight Handler
+### CORS Handler
+
+Preflight returns a permissive 204 at the handler level (no upstream resolution). Origin validation happens on actual requests after upstream resolution. See [ADR: CORS](../ADR/0006-cors.md).
 
 - [ ] `p2` - **ID**: `cpt-cf-oagw-algo-obs-cors-handler`
 
-**Input**: Inbound HTTP request, resolved upstream/route CORS configuration
+**Input**: Inbound HTTP request (preflight or actual), upstream/route CORS configuration (actual requests only)
 
 **Output**: CORS preflight response (for OPTIONS) or CORS headers added to proxy response
 
 **Steps**:
-1. [ ] - `p2` - **IF** no CORS configuration on upstream or route - `inst-cors-h-1`
-   1. [ ] - `p2` - Skip CORS processing; CORS is disabled by default (secure default) - `inst-cors-h-1a`
-   2. [ ] - `p2` - **RETURN** request unchanged - `inst-cors-h-1b`
-2. [ ] - `p2` - Extract `Origin` header from inbound request - `inst-cors-h-2`
-3. [ ] - `p2` - **IF** Origin header absent - `inst-cors-h-3`
-   1. [ ] - `p2` - Skip CORS processing (not a cross-origin request) - `inst-cors-h-3a`
-   2. [ ] - `p2` - **RETURN** request unchanged - `inst-cors-h-3b`
-4. [ ] - `p2` - Match Origin against configured `allowed_origins` patterns - `inst-cors-h-4`
-5. [ ] - `p2` - **IF** Origin not in allowed list - `inst-cors-h-5`
-   1. [ ] - `p2` - **RETURN** 403 with CORS violation error (no CORS headers) - `inst-cors-h-5a`
-6. [ ] - `p2` - **IF** request method is OPTIONS (preflight) - `inst-cors-h-6`
-   1. [ ] - `p2` - Validate `Access-Control-Request-Method` against `allowed_methods` - `inst-cors-h-6a`
-   2. [ ] - `p2` - Validate `Access-Control-Request-Headers` against `allowed_headers` - `inst-cors-h-6b`
-   3. [ ] - `p2` - **IF** validation fails - `inst-cors-h-6c`
-      1. [ ] - `p2` - **RETURN** 403 with CORS preflight rejection - `inst-cors-h-6c1`
-   4. [ ] - `p2` - Build preflight response: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Access-Control-Max-Age` - `inst-cors-h-6d`
-   5. [ ] - `p2` - **RETURN** 204 No Content with CORS headers (no upstream round-trip) - `inst-cors-h-6e`
-7. [ ] - `p2` - **ELSE** (actual cross-origin request) - `inst-cors-h-7`
-   1. [ ] - `p2` - Add `Access-Control-Allow-Origin` to response headers after upstream call - `inst-cors-h-7a`
-   2. [ ] - `p2` - Add `Access-Control-Expose-Headers` if configured - `inst-cors-h-7b`
-   3. [ ] - `p2` - **RETURN** response with CORS headers - `inst-cors-h-7c`
+
+**Preflight path** (handler level, no upstream resolution):
+1. [ ] - `p2` - **IF** request is CORS preflight (OPTIONS + Origin + Access-Control-Request-Method) - `inst-cors-h-1`
+   1. [ ] - `p2` - Return permissive 204 echoing the request's origin, method, and headers - `inst-cors-h-1a`
+   2. [ ] - `p2` - **RETURN** 204 No Content with permissive CORS headers (no upstream resolution, no tenant context required) - `inst-cors-h-1b`
+
+**Actual request path** (after upstream resolution in Data Plane service):
+2. [ ] - `p2` - **IF** no CORS configuration on upstream or route - `inst-cors-h-2`
+   1. [ ] - `p2` - Skip CORS processing; CORS is disabled by default (secure default) - `inst-cors-h-2a`
+   2. [ ] - `p2` - **RETURN** request unchanged - `inst-cors-h-2b`
+3. [ ] - `p2` - Extract `Origin` header from inbound request - `inst-cors-h-3`
+4. [ ] - `p2` - **IF** Origin header absent - `inst-cors-h-4`
+   1. [ ] - `p2` - Skip CORS processing (not a cross-origin request) - `inst-cors-h-4a`
+   2. [ ] - `p2` - **RETURN** request unchanged - `inst-cors-h-4b`
+5. [ ] - `p2` - Match Origin against configured `allowed_origins` - `inst-cors-h-5`
+6. [ ] - `p2` - **IF** Origin not in allowed list - `inst-cors-h-6`
+   1. [ ] - `p2` - **RETURN** 403 with CORS origin not allowed error (request not forwarded to upstream) - `inst-cors-h-6a`
+7. [ ] - `p2` - Forward request to upstream - `inst-cors-h-7`
+8. [ ] - `p2` - Add `Access-Control-Allow-Origin` to response headers after upstream call - `inst-cors-h-8`
+   1. [ ] - `p2` - Add `Access-Control-Expose-Headers` if configured - `inst-cors-h-8a`
+   2. [ ] - `p2` - **RETURN** response with CORS headers - `inst-cors-h-8b`
 
 ### SSRF Protection Validation
 
@@ -326,7 +361,7 @@ Log retention is an infrastructure concern (centralized logging system). This fe
 
 The system **MUST** provide built-in CORS handling configurable per upstream and per route. Preflight OPTIONS requests **MUST** be handled locally without upstream round-trip. CORS **MUST** be disabled by default (secure default); only configured origins are allowed.
 
-Configuration **MUST** support: `allowed_origins`, `allowed_methods`, `allowed_headers`, `max_age`. Origin matching **MUST** reject unrecognized origins with no CORS headers in the response.
+Configuration **MUST** support: `allowed_origins`, `allowed_methods`. Origin matching **MUST** reject unrecognized origins with no CORS headers in the response.
 
 **Implements**:
 - `cpt-cf-oagw-algo-obs-cors-handler`
@@ -400,9 +435,9 @@ When Redis (CP L2) is unavailable, the system **MUST** degrade gracefully by ski
 - [ ] Audit logs never contain request/response bodies, query parameters, API keys, tokens, or credentials
 - [ ] Log levels follow policy: INFO for success, WARN for rate limit/circuit breaker, ERROR for failures
 - [ ] High-frequency route sampling reduces log volume without losing visibility
-- [ ] CORS preflight OPTIONS requests return 204 without upstream round-trip
+- [ ] CORS preflight OPTIONS requests return permissive 204 at handler level without upstream resolution (see [ADR: CORS](../ADR/0006-cors.md))
 - [ ] CORS is disabled by default; only explicitly configured origins are allowed
-- [ ] Unrecognized origins receive no CORS headers in the response
+- [ ] Unrecognized origins on actual requests are rejected with 403 before reaching the upstream
 - [ ] HTTPS-only scheme enforcement blocks non-HTTPS upstream connections
 - [ ] DNS results resolving to private/reserved IP ranges are rejected (unless explicitly allowed)
 - [ ] Internal forwarding headers are stripped from outbound requests

@@ -30,8 +30,46 @@ pub enum DomainError {
     #[error("Access denied")]
     Forbidden,
 
+    #[error("Message not found: {id}")]
+    MessageNotFound { id: Uuid },
+
+    #[error("Invalid reaction target: message {id} is not an assistant message")]
+    InvalidReactionTarget { id: Uuid },
+
+    #[error("Model not found: {model_id}")]
+    ModelNotFound { model_id: String },
+
     #[error("Internal error: {message}")]
     InternalError { message: String },
+
+    #[error("Web search is currently disabled")]
+    WebSearchDisabled,
+
+    #[error("Web search calls exceeded for this message")]
+    WebSearchCallsExceeded,
+
+    #[error("Unsupported file type: {mime}")]
+    UnsupportedFileType { mime: String },
+
+    #[error("File too large: {message}")]
+    FileTooLarge { message: String },
+
+    #[error("Document limit exceeded: {message}")]
+    DocumentLimitExceeded { message: String },
+
+    #[error("Storage limit exceeded: {message}")]
+    StorageLimitExceeded { message: String },
+
+    #[error("Service temporarily unavailable: {message}")]
+    ServiceUnavailable { message: String },
+
+    /// Provider returned an error. `sanitized_message` is pre-sanitized by
+    /// `sanitize_provider_message()` at construction — safe for client exposure.
+    #[error("Provider error: {sanitized_message}")]
+    ProviderError {
+        code: String,
+        sanitized_message: String,
+    },
 }
 
 impl DomainError {
@@ -76,6 +114,29 @@ impl DomainError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::InternalError {
             message: message.into(),
+        }
+    }
+
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::ServiceUnavailable {
+            message: message.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn message_not_found(id: Uuid) -> Self {
+        Self::MessageNotFound { id }
+    }
+
+    #[must_use]
+    pub fn invalid_reaction_target(id: Uuid) -> Self {
+        Self::InvalidReactionTarget { id }
+    }
+
+    #[must_use]
+    pub fn model_not_found(model_id: impl Into<String>) -> Self {
+        Self::ModelNotFound {
+            model_id: model_id.into(),
         }
     }
 
@@ -126,12 +187,19 @@ impl From<ScopeError> for DomainError {
 }
 
 impl From<authz_resolver_sdk::EnforcerError> for DomainError {
+    #[allow(clippy::cognitive_complexity)]
     fn from(e: authz_resolver_sdk::EnforcerError) -> Self {
-        tracing::error!(error = %e, "AuthZ scope resolution failed");
         match e {
-            authz_resolver_sdk::EnforcerError::Denied { .. }
-            | authz_resolver_sdk::EnforcerError::CompileFailed(_) => Self::Forbidden,
+            authz_resolver_sdk::EnforcerError::Denied { ref deny_reason } => {
+                tracing::warn!(deny_reason = ?deny_reason, "AuthZ denied access");
+                Self::Forbidden
+            }
+            authz_resolver_sdk::EnforcerError::CompileFailed(ref err) => {
+                tracing::warn!(error = %err, "AuthZ constraint compile failed - access denied");
+                Self::Forbidden
+            }
             authz_resolver_sdk::EnforcerError::EvaluationFailed(ref err) => {
+                tracing::error!(error = %err, "AuthZ evaluation failed (internal error)");
                 Self::internal(err.to_string())
             }
         }
@@ -143,6 +211,15 @@ fn map_db_err(db_err: &sea_orm::DbErr) -> DomainError {
         return DomainError::Conflict {
             code: "unique_violation".into(),
             message: msg,
+        };
+    }
+    // Fallback: SeaORM's sql_err() may fail to classify the violation when
+    // the error is wrapped by a connection proxy or driver layer. Use the
+    // robust string-based detector from modkit-db.
+    if modkit_db::secure::is_unique_violation(db_err) {
+        return DomainError::Conflict {
+            code: "unique_violation".into(),
+            message: db_err.to_string(),
         };
     }
     DomainError::database(db_err.to_string())

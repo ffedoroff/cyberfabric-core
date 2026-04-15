@@ -1,6 +1,6 @@
 [package]
 name = "cf-modkit"
-version.workspace = true
+version = "0.6.3"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -21,6 +21,8 @@ workspace = true
 # Enable the runner and the runtime integration by default.
 default = ["otel", "db"]
 coverage_nightly = []
+# FIPS-140-3: install the AWS-LC FIPS-validated crypto provider at bootstrap
+fips = ["dep:rustls", "rustls/fips"]
 
 # Database integration (modkit-db, migrations, DbManager/DbHandle in contexts/runtime)
 db = ["dep:modkit-db", "dep:sea-orm-migration"]
@@ -34,6 +36,9 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:tonic",
 ]
+# Transactional outbox pipeline (preview — API may change)
+preview-outbox = ["db", "modkit-db/preview-outbox"]
+
 bootstrap = [
     "db",
     "dep:serde-saphyr",
@@ -42,7 +47,6 @@ bootstrap = [
     "dep:file-rotate",
     "dep:tracing-log",
     "dep:chrono",
-    "dep:regex",
     "dep:url",
     "dep:dsn",
     "dep:supports-color",
@@ -55,7 +59,7 @@ modkit-macros = { workspace = true }
 modkit-errors = { workspace = true, features = ["utoipa", "axum"] }
 modkit-db = { workspace = true, optional = true }
 sea-orm-migration = { workspace = true, optional = true }
-modkit-odata = { workspace = true, features = ["with-odata-params"] }
+modkit-odata = { workspace = true }
 modkit-sdk = { workspace = true }
 cf-system-sdks = { workspace = true, features = ["directory"] }
 
@@ -69,7 +73,8 @@ file-rotate = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 dsn = { workspace = true, optional = true }
-regex = { workspace = true, optional = true }
+modkit-utils = { workspace = true }
+rustls = { workspace = true, optional = true }
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }

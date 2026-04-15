@@ -1,5 +1,37 @@
 # Technical Design — Outbound API Gateway (OAGW)
 
+
+<!-- toc -->
+
+- [1. Architecture Overview](#1-architecture-overview)
+  - [1.1 Architectural Vision](#11-architectural-vision)
+  - [1.2 Architecture Drivers](#12-architecture-drivers)
+  - [1.3 Architecture Layers](#13-architecture-layers)
+  - [1.4 High-Level Architecture Diagram](#14-high-level-architecture-diagram)
+- [2. Principles & Constraints](#2-principles--constraints)
+  - [2.1 Design Principles](#21-design-principles)
+  - [2.2 Constraints](#22-constraints)
+- [3. Technical Architecture](#3-technical-architecture)
+  - [3.1 Domain Model](#31-domain-model)
+  - [3.2 Component Model](#32-component-model)
+  - [3.3 API Contracts](#33-api-contracts)
+  - [3.4 Internal & External Dependencies](#34-internal--external-dependencies)
+  - [3.5 Interactions & Sequences](#35-interactions--sequences)
+  - [3.6 Database Schemas & Tables](#36-database-schemas--tables)
+- [4. Additional Context](#4-additional-context)
+  - [4.1 Caching Strategy](#41-caching-strategy)
+  - [4.2 Metrics and Observability](#42-metrics-and-observability)
+  - [4.3 Audit Logging](#43-audit-logging)
+  - [4.4 Security Considerations](#44-security-considerations)
+  - [4.5 Out of Scope](#45-out-of-scope)
+  - [4.6 Review](#46-review)
+  - [4.7 Future Developments](#47-future-developments)
+- [5. Traceability](#5-traceability)
+  - [5.1 PRD Coverage](#51-prd-coverage)
+  - [5.2 ADR Coverage](#52-adr-coverage)
+
+<!-- /toc -->
+
 ## 1. Architecture Overview
 
 ### 1.1 Architectural Vision
@@ -20,6 +52,8 @@ This design satisfies the requirements for centralized outbound traffic manageme
 | Multi-tenant hierarchy | `cpt-cf-oagw-fr-hierarchical-config` | Configuration sharing/inheritance across tenant tree |
 | Plugin extensibility | `cpt-cf-oagw-fr-plugin-system` | Three plugin types (Auth/Guard/Transform) with trait-based isolation |
 | Low-latency proxy path | `cpt-cf-oagw-nfr-low-latency` | In-memory rate limiters |
+| Configuration layering | `cpt-cf-oagw-fr-config-layering` | Upstream < Route < Tenant merge priority |
+| Alias resolution | `cpt-cf-oagw-fr-alias-resolution` | Path-based routing with alias shadowing |
 | Credential isolation | `cpt-cf-oagw-nfr-credential-isolation` | Auth via `cred_store` references, no direct secret storage |
 | ModKit integration | CyberFabric platform | Single-executable deployment, trait-based DI, secure ORM |
 
@@ -242,7 +276,7 @@ Multiple per upstream/route. Can reject requests before they reach upstream.
 | Plugin ID | Description |
 |---|---|
 | `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.timeout.v1` | Request timeout enforcement |
-| `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1` | CORS preflight validation |
+| `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1` | CORS origin validation (actual requests; preflight handled at handler level — see [ADR: CORS](./ADR/0006-cors.md)) |
 
 Circuit breaker is **core functionality** (not a plugin). See [ADR: Circuit Breaker](./ADR/0005-circuit-breaker.md).
 
@@ -379,16 +413,43 @@ Alias resolution walks tenant hierarchy from descendant to root; closest match w
 
 Upstreams are identified by alias in proxy requests: `{METHOD} /api/oagw/v1/proxy/{alias}/{path}`.
 
-**Alias Generation Rules**:
+**Alias Enforcement Rules**:
 
-| Scenario | Generated Alias | Example |
+Alias behavior is determined entirely by endpoint type. The system enforces strict rules — aliases are not arbitrary labels.
+
+| Endpoint Type | Alias Rule | Example |
 |---|---|---|
-| Single host, standard port | hostname (no port) | `api.openai.com:443` → `api.openai.com` |
-| Single host, non-standard port | hostname:port | `api.openai.com:8443` → `api.openai.com:8443` |
-| Multiple hosts with common suffix | common domain suffix | `us.vendor.com`, `eu.vendor.com` → `vendor.com` |
-| IP addresses or heterogeneous hosts | must be explicit | `10.0.1.1`, `10.0.1.2` → user provides `my-service` |
+| Hostname, standard port | Auto-derived (hostname) | `api.openai.com:443` → `api.openai.com` |
+| Hostname, non-standard port | Auto-derived (hostname:port) | `api.openai.com:8443` → `api.openai.com:8443` |
+| Multiple hostnames, registrable common suffix (PSL-validated) | Auto-derived via `common_domain_suffix()` — shared suffix must be a registrable domain (≥2 labels, not a bare public suffix) | `us.vendor.com`, `eu.vendor.com` → `vendor.com` |
+| Multiple hostnames, common suffix is a bare public suffix | Explicit alias **required** (derivation rejected) | `foo.co.uk`, `bar.co.uk` → **not** derivable (`co.uk` is a public suffix) |
+| Multiple hostnames, no registrable common suffix | Explicit alias **required** | `us.foo.com`, `eu.bar.com` → user must provide alias |
+| IP addresses | Explicit alias **required** | `10.0.1.1`, `10.0.1.2` → user provides `my-service` |
 
-**Standard ports** (omitted from alias): HTTP: 80, HTTPS: 443, WebSocket: 80 (ws) / 443 (wss), WebTransport: 443, gRPC: 443.
+**Hostname-based endpoints**: alias is always auto-derived. User-provided alias that differs from the auto-derived value is **rejected** (400 Validation); providing the exact derived value is tolerated silently for idempotency.
+
+**IP-based or non-derivable endpoints**: explicit alias is **required** from the user. Omitting the alias field returns 400 Validation.
+
+**Standard ports** (omitted from derived alias): HTTP: 80, HTTPS/WSS/WebTransport/gRPC: 443.
+
+**Alias Normalization**: All aliases are normalized to ASCII lowercase with trailing dots stripped. Resolution is case-insensitive (e.g., `Api.OpenAI.COM` resolves to an upstream with alias `api.openai.com`).
+
+**Hostname Validation**: Endpoint hostnames are validated per RFC 1123: max 253 characters total, each label 1–63 characters, labels contain only ASCII alphanumeric and hyphen, labels cannot start or end with hyphen. A trailing dot (FQDN notation) is tolerated and stripped.
+
+**Alias Update Behavior**:
+
+| Transition | Behavior |
+|---|---|
+| Derivable → Derivable (new endpoints) | Alias recomputed from new endpoints |
+| Derivable → Non-derivable | **Rejected** unless user provides explicit alias |
+| Non-derivable → Non-derivable | Existing alias retained; user may provide a new one |
+| Non-derivable → Derivable | Alias recomputed (old explicit alias replaced) |
+| Derivable (no endpoint change) | Alias override **rejected** (400 Validation) |
+| Non-derivable (no endpoint change) | User may update alias freely |
+
+"Derivable" means `compute_derived_alias()` returns a value (single hostname, or multiple hostnames with a registrable common suffix). "Non-derivable" means derivation fails — this includes IP-based endpoints, heterogeneous hostnames with no common suffix, and hostname pools whose only common suffix is a bare public suffix (e.g., `co.uk`). See `enforce_alias_update()` for the full branching logic.
+
+For multi-host endpoints with non-standard ports, the common suffix derivation preserves `:port` in the alias (e.g., `us.vendor.com:8443` + `eu.vendor.com:8443` → `vendor.com:8443`). This avoids collisions between pools sharing the same domain suffix on different ports — operators should reference the `suffix:port` form when routing to these upstreams.
 
 **Alias Uniqueness**: Alias is unique **per tenant**, not globally. Database constraint: `UNIQUE (tenant_id, alias)`. Tenants can independently manage upstreams without namespace collisions. Descendants can shadow ancestor aliases for controlled customization.
 
@@ -436,7 +497,8 @@ Validation rules that can reject requests:
 | Query params | Validate against `match.http.query_allowlist`; reject if unknown |
 | Path suffix | Reject if `path_suffix_mode`: `disabled` and suffix provided |
 | Body | See body validation rules below |
-| CORS | Reject if CORS policy validation fails |
+| CORS origin | Reject if origin is not in upstream's `allowed_origins` (actual cross-origin requests only; preflight returns permissive 204 at handler level — see [ADR: CORS](./ADR/0006-cors.md)) |
+| CORS method | Reject if method is not in upstream's `allowed_methods` (actual cross-origin requests only) |
 
 #### Body Validation Rules
 
@@ -504,7 +566,7 @@ Without appropriate permissions, descendant must use ancestor's configuration as
 - Headers: Well-known headers stripping and validation.
 - Request Validation: Path, query parameters validation against route configuration.
 
-**Cross-Origin Resource Sharing (CORS)**: Built-in, configured per upstream/route. Preflight OPTIONS requests handled locally (no upstream round-trip). See [ADR: CORS](./ADR/0006-cors.md).
+**Cross-Origin Resource Sharing (CORS)**: Built-in, configured per upstream/route. Preflight OPTIONS requests return a permissive 204 at the handler level (no upstream resolution or tenant context required). Origin validation happens on actual requests after upstream resolution, before forwarding. See [ADR: CORS](./ADR/0006-cors.md).
 
 **HTTP Version Negotiation**: OAGW uses adaptive per-host HTTP version detection:
 1. **First request**: Attempt HTTP/2 via ALPN during TLS handshake
@@ -552,12 +614,12 @@ Authorization checks:
 | `POST` | `/api/oagw/v1/upstreams` | Create upstream |
 | `GET` | `/api/oagw/v1/upstreams` | List upstreams |
 | `GET` | `/api/oagw/v1/upstreams/{id}` | Get upstream by ID |
-| `PUT` | `/api/oagw/v1/upstreams/{id}` | Update upstream |
+| `PUT` | `/api/oagw/v1/upstreams/{id}` | Replace upstream |
 | `DELETE` | `/api/oagw/v1/upstreams/{id}` | Delete upstream |
 | `POST` | `/api/oagw/v1/routes` | Create route |
 | `GET` | `/api/oagw/v1/routes` | List routes |
 | `GET` | `/api/oagw/v1/routes/{id}` | Get route by ID |
-| `PUT` | `/api/oagw/v1/routes/{id}` | Update route |
+| `PUT` | `/api/oagw/v1/routes/{id}` | Replace route |
 | `DELETE` | `/api/oagw/v1/routes/{id}` | Delete route |
 | `POST` | `/api/oagw/v1/plugins` | Create plugin |
 | `GET` | `/api/oagw/v1/plugins` | List plugins |
@@ -567,9 +629,41 @@ Authorization checks:
 
 IDs use anonymous GTS identifiers: `gts.x.core.oagw.{type}.v1~{uuid}`. Plugins are immutable (no PUT). DELETE returns `409 PluginInUse` when referenced.
 
-List endpoints support OData query parameters: `$filter`, `$select`, `$orderby`, `$top`, `$skip`.
+#### CRUD Semantics
 
-**Upstream List Query Parameters**:
+**POST (Create)**:
+
+- Server-generated UUID for all resources.
+- **Upstream**: Alias auto-derived from hostname endpoints; explicit alias required for IP-based. Unique per `(tenant_id, alias)` — returns 409 on conflict. If alias matches an ancestor upstream, the operation is a "bind" requiring `oagw:upstream:bind` permission and respecting sharing mode constraints (`enforce` blocks overrides, `private` blocks visibility).
+- **Route**: `upstream_id` must belong to the calling tenant — ancestor upstreams are not directly addressable. Validates match rule uniqueness within the upstream (same path + priority + method → 409).
+
+**PUT (Replace)**:
+
+- Full replacement — all fields are overwritten; omitted optional fields are cleared.
+- **Upstream**: Alias is recomputed when hostname endpoints change; only IP-based upstreams allow explicit alias updates. Re-validates ancestor bind constraints if overrides, endpoints, or alias changed.
+- **Route**: `upstream_id` is immutable (not present in the update DTO). Re-validates match rule uniqueness.
+
+**Immutable fields**: `id`, `tenant_id` on all resources. Route `upstream_id` is also immutable.
+
+#### Tenant Scoping
+
+All CRUD operations are strictly scoped to the calling tenant. Ancestor resources are invisible (404) to descendants via the management API.
+
+| Operation | Own resources | Ancestor resources |
+|---|---|---|
+| POST (create) | Yes | N/A (bind via alias match) |
+| PUT (replace) | Yes | 404 |
+| DELETE | Yes | 404 |
+| GET / List | Yes | 404 |
+| Proxy (data plane) | Yes | Inherited via tenant chain walk |
+
+At proxy time, `resolve_alias` walks the tenant chain (descendant → root) to find the closest enabled upstream by alias, then searches the chain for matching routes. Descendant routes take priority. Ancestor routes are inherited but cannot be viewed or modified through the management API.
+
+#### List Query Parameters
+
+All list endpoints support OData query parameters: `$filter`, `$select`, `$orderby`, `$top`, `$skip`.
+
+**Upstream**:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -579,7 +673,7 @@ List endpoints support OData query parameters: `$filter`, `$select`, `$orderby`,
 | `$top` | integer | Max results (default: 50, max: 100) |
 | `$skip` | integer | Offset for pagination |
 
-**Route List Query Parameters**:
+**Route**:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -589,7 +683,7 @@ List endpoints support OData query parameters: `$filter`, `$select`, `$orderby`,
 | `$top` | integer | Max results (default: 50, max: 100) |
 | `$skip` | integer | Offset for pagination |
 
-**Plugin List Query Parameters**:
+**Plugin**:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -855,6 +949,7 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 5. [Security] TLS certificate pinning — Pin specific certificates/public keys for critical upstreams to prevent MITM attacks
 6. [Security] mTLS support — Mutual TLS for client certificate authentication with upstream services
 7. [Protocol] gRPC support — HTTP/2 multiplexing with content-type detection — [ADR: gRPC Support](./ADR/0014-grpc-support.md) — **Requires prototype**
+8. [Deployment] Registry-only mode — All upstreams, routes, and plugin configs sourced exclusively from type registry (no management API CRUD). The `post_init()` provisioning path already materializes registry entities through the full domain validation pipeline. A registry-only mode would require: (a) config flag to disable or make CRUD endpoints read-only, (b) soft-fail on invalid entities (skip with warning instead of blocking startup), (c) a validation feedback mechanism so config authors can discover rejected entities — e.g., status writeback on GTS entities or a dedicated provisioning status endpoint. This is a platform-level concern: any module consuming GTS entities for configuration faces the same write-time validation gap.
 
 ## 5. Traceability
 

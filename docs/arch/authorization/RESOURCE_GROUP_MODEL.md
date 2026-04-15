@@ -1,34 +1,14 @@
-# Resource Group Model
+<!-- Updated: 2026-04-07 by Constructor Tech -->
 
-This document describes Cyber Fabric's resource group model for authorization: group topology, membership mechanisms, and how groups are used in access control.
+# Resource Group Model — AuthZ Perspective
 
-## Table of Contents
-
-- [Resource Group Model](#resource-group-model)
-  - [Table of Contents](#table-of-contents)
-  - [Overview](#overview)
-  - [Resource Group Topology: Forest](#resource-group-topology-forest)
-  - [Resource Group Properties](#resource-group-properties)
-  - [Resource-to-Group Membership](#resource-to-group-membership)
-  - [Closure Table](#closure-table)
-  - [Membership Table](#membership-table)
-  - [Relationship with Tenant Model](#relationship-with-tenant-model)
-  - [References](#references)
+This document describes how CyberFabric's authorization system uses Resource Groups (RG) for access control. For the full RG module design (domain model, API contracts, database schemas, type system), see [RG Technical Design](../../../modules/system/resource-group/docs/DESIGN.md).
 
 ---
 
 ## Overview
 
-Cyber Fabric uses **resource groups** as an optional organizational layer for grouping resources. The primary purpose is **access control** — granting permissions at the group level rather than per-resource.
-
-Vendors may implement various group types depending on their domain. Examples include:
-
-- Projects (task management, issue tracking)
-- Workspaces (collaboration spaces)
-- Folders (document organization with nesting)
-- Teams, Departments, Campaigns, etc.
-
-The specific group types and their semantics are vendor-defined. Cyber Fabric provides the infrastructure for hierarchical grouping and membership resolution without prescribing what groups represent.
+CyberFabric uses **resource groups** as an optional organizational layer for grouping resources. The primary purpose from the AuthZ perspective is **access control** — granting permissions at the group level rather than per-resource.
 
 ```
 Tenant T1
@@ -46,173 +26,55 @@ Tenant T1
 Key principles:
 - **Optional** — resources may exist without group membership
 - **Many-to-many** — a resource can belong to multiple groups
-- **Hierarchical** — groups can form nested structures
+- **Hierarchical** — groups form a strict forest (single parent, no cycles)
 - **Tenant-scoped** — groups exist within tenant boundaries
+- **Typed** — groups have dynamic GTS types with configurable parent/membership rules
+
+For topology details (forest invariants, type system, query profiles), see [RG DESIGN §Domain Model](../../../modules/system/resource-group/docs/DESIGN.md#31-domain-model).
 
 ---
 
-## Resource Group Topology: Forest
+## How AuthZ Uses Resource Groups
 
-The group structure is a **forest** — a collection of independent trees within a tenant.
+AuthZ consumes RG data as a **PIP (Policy Information Point)** source. RG is policy-agnostic — it stores hierarchy and membership data without evaluating access decisions. AuthZ plugin reads this data to resolve group-based predicates.
 
-```
-Tenant T1:
-    [G1]              [G4]           ← Root groups (no parent)
-   /    \               |
- [G2]   [G3]          [G5]
-   |
- [G6]
+### Projection Tables
 
-Tenant T2:
-    [G7]
-     |
-    [G8]
-```
+RG tables are the canonical source of truth, owned by the RG module. External consumers (AuthZ resolver, domain services) may maintain **projection copies** in their databases — synchronized from RG via read contracts (`ResourceGroupReadHierarchy`).
 
-**Properties:**
-- Each tree has exactly one root group (`parent_id = NULL`)
-- A group belongs to exactly one tree within a tenant
-- Trees are completely isolated from each other
-- Groups in different tenants are isolated by tenant boundaries
-- Depth is unlimited (but deep hierarchies may impact performance)
+**Projectable tables:**
 
----
+- **`resource_group`** — group entities with hierarchy (`parent_id`) and tenant scope (`tenant_id`)
+- **`resource_group_closure`** — pre-computed ancestor-descendant pairs with depth, enabling efficient subtree queries
+- **`resource_group_membership`** — resource-to-group M:N links (see guidance below)
 
-## Resource Group Properties
+#### Progressive projection strategy
 
-Resource groups are stored on the **vendor side** (in the vendor's Resource Group service). Cyber Fabric does not store the full group entity — only local projections for authorization (closure and membership tables).
+Whether and which tables to project depends on the deployment topology and access patterns. **Do not add projections speculatively** — each projection creates an additional database, synchronization load, and operational complexity.
 
-The following properties are the **minimum** Cyber Fabric expects from the vendor's group model:
+| Deployment | Recommended projections | Rationale |
+|------------|------------------------|-----------|
+| **Monolith** (single shared DB) | **None** — all tables are already co-located | PEP JOINs against canonical tables directly; no extra databases or sync needed |
+| **Microservices** (separate DBs, typical case) | **`resource_group` + `resource_group_closure`** | Enables `in_group_subtree` predicates locally; hierarchy tables are small (~100 K rows). Membership resolved by PDP via capability degradation → `in` predicates |
+| **Microservices** with membership filtering/pagination | **`resource_group` + `resource_group_closure` + `resource_group_membership`** | Only when profiling confirms the two-request pattern (RG API → domain service) is unacceptable for latency budget. Membership table grows as `M_resources × N_groups_per_resource` and is expected to be **10× or more larger** than hierarchy tables — see [RG DESIGN §Storage Estimates](../../../modules/system/resource-group/docs/DESIGN.md#storage-estimates) for concrete numbers |
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `id` | UUID | Unique group identifier |
-| `tenant_id` | UUID | Owning tenant (groups are tenant-scoped) |
-| `parent_id` | UUID? | Parent group (NULL for root groups) |
+> **Important:** When a domain service query includes filters by resource group attributes (e.g., `GET /tasks?status=pending&project={projectX}&after=…&limit=50`), the two-request pattern means N additional round-trips to the RG Membership API (one per filter page or group), not just +1. If this N-request fan-out violates the latency budget, that is the signal to project the membership table locally.
+>
+> **Architecture guidance:** default to consuming degraded `in` predicates from PDP. The `in_group` and `in_group_subtree` predicates are natively executable within the RG module; domain services that choose not to project the membership table rely on PDP capability degradation.
 
-Vendors typically maintain additional fields (name, description, type, status, metadata, etc.) in their own systems. Cyber Fabric's RG Resolver plugin syncs only the hierarchy structure needed for authorization.
+PEP within the RG module compiles `in_group`/`in_group_subtree` predicates into SQL subqueries using the membership table. Domain services without the membership projection receive degraded `in` predicates and do not need group-related projection tables for authorization filtering.
 
----
+- RG canonical table schemas: [RG DESIGN §Database Schemas](../../../modules/system/resource-group/docs/DESIGN.md#37-database-schemas--tables)
+- When to use which table: [AUTHZ_USAGE_SCENARIOS §Choosing Projection Tables](./AUTHZ_USAGE_SCENARIOS.md#choosing-projection-tables)
 
-## Resource-to-Group Membership
+### Access Inheritance
 
-Resources are associated with groups via the **membership** relationship. This is a many-to-many relationship:
+- **Explicit membership, inherited access** — a resource is added to a specific group (explicit). Access is inherited top-down: a user with access to parent group G1 can access resources in all descendant groups via `in_group_subtree` predicate.
+- **Flat group access** — `in_group` predicate checks direct membership only (no hierarchy traversal).
 
-- A resource can belong to multiple groups
-- A group can contain multiple resources
+### Integration Path
 
-```
-┌─────────────┐         ┌─────────────┐
-│  Resource   │◄───────►│    Group    │
-│  (Task 1)   │   M:N   │ (Project A) │
-└─────────────┘         └─────────────┘
-       │
-       ▼
-┌─────────────┐
-│    Group    │
-│ (Project B) │
-└─────────────┘
-```
-
-**Membership properties (minimum):**
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `resource_id` | UUID | ID of the resource |
-| `group_id` | UUID | ID of the group |
-
-**Design decisions:**
-
-1. **Explicit membership, inherited access** — a resource is added to a specific group (explicit membership). However, access is inherited top-down: a user with access to parent group G1 can access resources in all descendant groups (G2, G3, etc.) via `in_group_subtree` predicate.
-
-> **TODO:** Design resource-to-group membership operations (add, remove, move). This includes API contract, validation rules, sync mechanism with vendor systems, and behavior on resource deletion.
-
----
-
-## Closure Table
-
-The `resource_group_closure` table is a denormalized representation of the group hierarchy. It contains all ancestor-descendant pairs, enabling efficient subtree queries.
-
-**Schema:**
-
-| Column | Type | Nullable | Description |
-|--------|------|----------|-------------|
-| `ancestor_id` | UUID | No | Ancestor group |
-| `descendant_id` | UUID | No | Descendant group |
-
-**Notes:**
-- Self-referential rows exist: each group has a row where `ancestor_id = descendant_id`
-- The table is scoped per module database (not global)
-
-**Example data for the hierarchy:**
-
-```
-G1
-├── G2
-│   └── G6
-└── G3
-```
-
-| ancestor_id | descendant_id |
-|-------------|---------------|
-| G1 | G1 |
-| G1 | G2 |
-| G1 | G3 |
-| G1 | G6 |
-| G2 | G2 |
-| G2 | G6 |
-| G3 | G3 |
-| G6 | G6 |
-
-**Query: "All groups in G1's subtree"**
-
-```sql
-SELECT descendant_id FROM resource_group_closure
-WHERE ancestor_id = 'G1'
-```
-
-Result: G1, G2, G3, G6
-
-**Synchronization:** How closure tables are synchronized with vendor systems, consistency guarantees, and conflict resolution are out of scope for this document. See Resource Group Resolver design documentation (TBD).
-
----
-
-## Membership Table
-
-The `resource_group_membership` table stores the many-to-many relationship between resources and groups.
-
-**Schema:**
-
-| Column | Type | Nullable | Description |
-|--------|------|----------|-------------|
-| `resource_id` | UUID | No | ID of the resource |
-| `group_id` | UUID | No | ID of the group |
-
-**Notes:**
-- Primary key: `(resource_id, group_id)`
-- The `resource_id` column joins with the resource table's ID column
-- The table is scoped per module database (each module has its own membership table)
-
-**Example data:**
-
-| resource_id | group_id |
-|-------------|----------|
-| task-1 | ProjectA |
-| task-1 | ProjectB |
-| task-2 | ProjectA |
-| task-3 | FolderA-Sub1 |
-
-**Query: "All resources in groups G1 and G2 (flat)"**
-
-```sql
-SELECT * FROM tasks
-WHERE id IN (
-  SELECT resource_id FROM resource_group_membership
-  WHERE group_id IN ('G1', 'G2')
-)
-```
-
-**Synchronization:** How projection tables are synchronized with vendor systems, consistency guarantees, and conflict resolution are out of scope for this document. See Resource Group Resolver design documentation.
+AuthZ plugin reads RG hierarchy via `ResourceGroupReadHierarchy` trait (narrow, hierarchy-only read contract). In microservice deployments, this uses MTLS-authenticated requests to the RG service; in monolith deployments, it's a direct in-process call via ClientHub. See [RG DESIGN §RG Authentication Modes](../../../modules/system/resource-group/docs/DESIGN.md#rg-authentication-modes-jwt-vs-mtls).
 
 ---
 
@@ -226,19 +88,29 @@ WHERE id IN (
 | **Scope** | System-wide | Per-tenant |
 | **Resource relationship** | Ownership (1:N) | Membership (M:N) |
 | **Hierarchy** | Forest (multiple roots) | Forest (multiple roots per tenant) |
+| **Type system** | Fixed (built-in tenant type) | Dynamic (GTS-based, vendor-defined types) |
 
-Resource groups operate **within** tenant boundaries. They provide additional organizational structure but do not override tenant isolation.
+Resource groups operate **within** tenant boundaries — groups are tenant-scoped, cross-tenant groups are forbidden, and authorization always includes a tenant constraint alongside group predicates.
 
 **Key rules:**
 
 1. **Groups are tenant-scoped** — a group belongs to exactly one tenant
 2. **Cross-tenant groups are forbidden** — a group cannot span multiple tenants
-3. **Tenant constraint always applies** — authorization always includes a tenant constraint alongside group predicates (see [DESIGN.md](./DESIGN.md) for details)
+3. **Tenant constraint always applies** — authorization always includes a tenant constraint alongside group predicates
+
+**Further reading:**
+
+- Tenant topology, barriers, closure tables: [TENANT_MODEL.md](./TENANT_MODEL.md)
+- Tenant-hierarchy-compatible validation on group writes: [RG DESIGN §Tenant Scope for Ownership Graph](../../../modules/system/resource-group/docs/DESIGN.md#tenant-scope-for-ownership-graph)
+- Tenant constraint compilation: [DESIGN.md](./DESIGN.md)
 
 ---
 
 ## References
 
+- [RG Technical Design](../../../modules/system/resource-group/docs/DESIGN.md) — Full RG module design (domain model, API, database schemas, security, auth modes)
+- [RG PRD](../../../modules/system/resource-group/docs/PRD.md) — Product requirements
+- [RG OpenAPI](../../../modules/system/resource-group/docs/openapi.yaml) — REST API specification
 - [DESIGN.md](./DESIGN.md) — Core authorization design
 - [TENANT_MODEL.md](./TENANT_MODEL.md) — Tenant topology, barriers, closure tables
 - [AUTHZ_USAGE_SCENARIOS.md](./AUTHZ_USAGE_SCENARIOS.md) — Authorization scenarios with resource group examples

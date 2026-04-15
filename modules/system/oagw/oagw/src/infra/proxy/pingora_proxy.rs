@@ -13,6 +13,7 @@ use pingora_load_balancing::discovery::ServiceDiscovery;
 use pingora_load_balancing::health_check::TcpHealthCheck;
 use pingora_load_balancing::selection::RoundRobin;
 use pingora_load_balancing::{Backend, Backends, LoadBalancer};
+use pingora_memory_cache::MemoryCache;
 use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -20,7 +21,7 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::{Endpoint, Scheme};
-use crate::domain::services::EndpointSelector;
+use crate::domain::services::{EndpointSelector, SelectedEndpoint};
 use modkit::api::Problem;
 
 // ---------------------------------------------------------------------------
@@ -34,18 +35,92 @@ pub(crate) const H_ENDPOINT_HOST: &str = "x-oagw-internal-endpoint-host";
 pub(crate) const H_ENDPOINT_PORT: &str = "x-oagw-internal-endpoint-port";
 pub(crate) const H_ENDPOINT_SCHEME: &str = "x-oagw-internal-endpoint-scheme";
 pub(crate) const H_INSTANCE_URI: &str = "x-oagw-internal-instance-uri";
+pub(crate) const H_RESOLVED_ADDR: &str = "x-oagw-internal-resolved-addr";
 
-/// Hop-by-hop headers that must not be forwarded in responses (mirrors headers.rs).
-const HOP_BY_HOP: &[&str] = &[
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-];
+use super::HOP_BY_HOP_HEADERS;
+
+// ---------------------------------------------------------------------------
+// Per-host protocol version cache (spec: cpt-cf-oagw-algo-protocol-version-negotiation)
+// ---------------------------------------------------------------------------
+
+/// Cached ALPN negotiation result for an upstream host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedProtocol {
+    /// Host supports only HTTP/1.1 (H2 negotiation fell back).
+    Http1Only,
+    /// Host confirmed HTTP/2 support via ALPN.
+    Http2,
+}
+
+/// Capacity for the protocol version cache. The key space is bounded by
+/// the number of distinct upstream endpoints (typically < 100).
+const PROTOCOL_CACHE_CAPACITY: usize = 1024;
+
+/// Per-host cache of ALPN-negotiated HTTP protocol versions.
+///
+/// Backed by [`MemoryCache`] (TinyUfo LFU with per-entry TTL), consistent
+/// with the OAuth2 token cache. Cache key: `"{scheme}://{host}:{port}"`
+/// (spec `inst-proto-1`). When TTL is zero the cache is disabled: [`get`]
+/// always returns `None`, [`insert`] and [`evict`] are no-ops.
+struct ProtocolVersionCache {
+    inner: MemoryCache<String, CachedProtocol>,
+    ttl: Duration,
+}
+
+impl ProtocolVersionCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            inner: MemoryCache::new(PROTOCOL_CACHE_CAPACITY),
+            ttl,
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.ttl > Duration::ZERO
+    }
+
+    /// Build the cache key from an endpoint: `"{scheme}://{host}:{port}"`.
+    fn cache_key(ep: &Endpoint) -> String {
+        let scheme = match ep.scheme {
+            Scheme::Http => "http",
+            Scheme::Https => "https",
+            Scheme::Wss => "wss",
+            Scheme::Wt => "wt",
+            Scheme::Grpc => "grpc",
+        };
+        format!("{}://{}:{}", scheme, ep.normalized_host(), ep.port)
+    }
+
+    /// Look up the cached protocol for a host. Returns `None` if not cached,
+    /// expired, or the cache is disabled.
+    fn get(&self, ep: &Endpoint) -> Option<CachedProtocol> {
+        if !self.is_enabled() {
+            return None;
+        }
+        let key = Self::cache_key(ep);
+        let (cached, _status) = self.inner.get(&key);
+        cached
+    }
+
+    /// Record the negotiated protocol for a host. No-op when disabled.
+    fn insert(&self, ep: &Endpoint, protocol: CachedProtocol) {
+        if !self.is_enabled() {
+            return;
+        }
+        let key = Self::cache_key(ep);
+        self.inner.put(&key, protocol, Some(self.ttl));
+    }
+
+    /// Evict a cache entry so the next request re-negotiates via ALPN.
+    /// No-op when disabled.
+    fn evict(&self, ep: &Endpoint) {
+        if !self.is_enabled() {
+            return;
+        }
+        let key = Self::cache_key(ep);
+        self.inner.remove(&key);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PingoraProxy — ProxyHttp implementation (D3)
@@ -57,14 +132,21 @@ pub struct PingoraProxy {
     /// When true, skip TLS certificate verification for upstream connections.
     /// **Test use only** — allows self-signed certs in integration tests.
     skip_upstream_tls_verify: bool,
+    /// Per-host cache of ALPN-negotiated protocol versions.
+    protocol_cache: ProtocolVersionCache,
 }
 
 impl PingoraProxy {
-    pub fn new(connect_timeout: Duration, read_timeout: Duration) -> Self {
+    pub fn new(
+        connect_timeout: Duration,
+        read_timeout: Duration,
+        protocol_cache_ttl: Duration,
+    ) -> Self {
         Self {
             connect_timeout,
             read_timeout,
             skip_upstream_tls_verify: false,
+            protocol_cache: ProtocolVersionCache::new(protocol_cache_ttl),
         }
     }
 
@@ -74,6 +156,21 @@ impl PingoraProxy {
     pub fn with_skip_upstream_tls_verify(mut self, allow: bool) -> Self {
         self.skip_upstream_tls_verify = allow;
         self
+    }
+
+    /// Determine the ALPN setting for an endpoint, consulting the protocol
+    /// cache for HTTPS/WT endpoints.
+    fn select_alpn(&self, ep: &Endpoint) -> pingora_core::protocols::tls::ALPN {
+        let tls = matches!(ep.scheme, Scheme::Https | Scheme::Wss | Scheme::Wt);
+        if tls && !matches!(ep.scheme, Scheme::Wss) {
+            match self.protocol_cache.get(ep) {
+                Some(CachedProtocol::Http2) => pingora_core::protocols::tls::ALPN::H2,
+                Some(CachedProtocol::Http1Only) => pingora_core::protocols::tls::ALPN::H1,
+                None => pingora_core::protocols::tls::ALPN::H2H1,
+            }
+        } else {
+            pingora_core::protocols::tls::ALPN::H1
+        }
     }
 }
 
@@ -95,6 +192,37 @@ pub fn new_http_proxy(
 /// `select()` can map Pingora's resolved `Backend` address back to the
 /// domain-level `Endpoint` (which carries scheme, original hostname, port).
 type AddrMap = Arc<ArcSwap<HashMap<String, Endpoint>>>;
+
+/// Resolve a hostname with retry and exponential backoff.
+///
+/// Retries up to 3 times with 100ms / 500ms / 2500ms delays. This handles
+/// transient DNS failures (common in container environments where CoreDNS
+/// may briefly drop queries under load).
+async fn dns_lookup_with_retry(addr: &str) -> Result<Vec<std::net::SocketAddr>, std::io::Error> {
+    const MAX_RETRIES: u32 = 3;
+    const BASE_DELAY_MS: u64 = 100;
+
+    let mut last_err = None;
+    for attempt in 0..=MAX_RETRIES {
+        match tokio::net::lookup_host(addr).await {
+            Ok(addrs) => return Ok(addrs.collect()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < MAX_RETRIES {
+                    let delay = BASE_DELAY_MS * 5u64.pow(attempt); // 100ms, 500ms, 2500ms
+                    tracing::debug!(
+                        addr,
+                        attempt = attempt + 1,
+                        delay_ms = delay,
+                        "DNS lookup failed, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.expect("retry loop always sets last_err on failure"))
+}
 
 /// [`ServiceDiscovery`] implementation that re-resolves hostnames on every
 /// `discover()` call. IP-only endpoints are passed through without DNS.
@@ -119,7 +247,8 @@ impl DnsDiscovery {
     /// Resolve endpoints to `Backend`s and rebuild the reverse-lookup map.
     ///
     /// Uses async `tokio::net::lookup_host` to avoid blocking the Tokio
-    /// worker thread during DNS resolution.
+    /// worker thread during DNS resolution. Retries up to 3 times with
+    /// exponential backoff on transient DNS failures.
     async fn resolve(&self) -> (BTreeSet<Backend>, HashMap<String, Endpoint>) {
         let mut backends = BTreeSet::new();
         let mut map = HashMap::with_capacity(self.endpoints.len());
@@ -127,7 +256,7 @@ impl DnsDiscovery {
         for ep in &self.endpoints {
             let addr_str = format!("{}:{}", ep.host, ep.port);
 
-            let resolved = tokio::net::lookup_host(addr_str.clone()).await;
+            let resolved = dns_lookup_with_retry(&addr_str).await;
             match resolved {
                 Ok(addrs) => {
                     for sock in addrs {
@@ -140,7 +269,7 @@ impl DnsDiscovery {
                     }
                 }
                 Err(e) => {
-                    warn!(addr = %addr_str, error = %e, "DNS resolution failed, using original address");
+                    warn!(addr = %addr_str, error = %e, "DNS resolution failed after retries, using original address");
                     if let Ok(b) = Backend::new(&addr_str) {
                         backends.insert(b);
                         map.entry(addr_str).or_insert_with(|| ep.clone());
@@ -245,13 +374,18 @@ impl PingoraEndpointSelector {
 
 #[async_trait]
 impl EndpointSelector for PingoraEndpointSelector {
-    async fn select(&self, upstream_id: Uuid, endpoints: &[Endpoint]) -> Option<Endpoint> {
+    async fn select(&self, upstream_id: Uuid, endpoints: &[Endpoint]) -> Option<SelectedEndpoint> {
         // Fast path: LB already cached.
         if let Some(entry) = self.cache.get(&upstream_id) {
             let backend = entry.lb.select(b"", 256)?;
+            let resolved_addr = backend.addr.as_inet();
             let addr_key = backend.addr.to_string();
             let map = entry.addr_map.load();
-            return map.get(&addr_key).cloned();
+            let endpoint = map.get(&addr_key)?.clone();
+            return Some(SelectedEndpoint {
+                endpoint,
+                resolved_addr: resolved_addr.copied(),
+            });
         }
 
         // Slow path: build a new LB entry then atomically insert-if-absent.
@@ -260,9 +394,14 @@ impl EndpointSelector for PingoraEndpointSelector {
         let entry = self.build_entry(endpoints).await?;
         let entry_ref = self.cache.entry(upstream_id).or_insert(entry);
         let backend = entry_ref.lb.select(b"", 256)?;
+        let resolved_addr = backend.addr.as_inet();
         let addr_key = backend.addr.to_string();
         let map = entry_ref.addr_map.load();
-        map.get(&addr_key).cloned()
+        let endpoint = map.get(&addr_key)?.clone();
+        Some(SelectedEndpoint {
+            endpoint,
+            resolved_addr: resolved_addr.copied(),
+        })
     }
 
     fn invalidate(&self, upstream_id: Uuid) {
@@ -279,6 +418,47 @@ impl EndpointSelector for PingoraEndpointSelector {
 pub struct ProxyCtx {
     endpoint: Endpoint,
     instance_uri: String,
+    /// Upstream that owns this endpoint (for diagnostic logs).
+    upstream_id: Option<Uuid>,
+    /// Pre-resolved socket address from the load balancer's DNS cache.
+    /// When set, `upstream_peer` skips DNS and connects directly.
+    resolved_addr: Option<std::net::SocketAddr>,
+}
+
+impl ProxyCtx {
+    /// Populate context fields from internal headers.
+    ///
+    /// Extracted from `request_filter` so the parsing logic is unit-testable
+    /// without constructing a full Pingora `Session`.
+    fn populate_from_headers(&mut self, headers: &http::HeaderMap) {
+        if let Some(v) = headers.get(H_ENDPOINT_HOST).and_then(|v| v.to_str().ok()) {
+            self.endpoint.host = v.to_string();
+        }
+        if let Some(v) = headers.get(H_ENDPOINT_PORT).and_then(|v| v.to_str().ok())
+            && let Ok(port) = v.parse()
+        {
+            self.endpoint.port = port;
+        }
+        if let Some(v) = headers.get(H_ENDPOINT_SCHEME).and_then(|v| v.to_str().ok()) {
+            self.endpoint.scheme = match v {
+                "http" => Scheme::Http,
+                "https" => Scheme::Https,
+                "wss" => Scheme::Wss,
+                "wt" => Scheme::Wt,
+                "grpc" => Scheme::Grpc,
+                _ => Scheme::Https,
+            };
+        }
+        if let Some(v) = headers.get(H_INSTANCE_URI).and_then(|v| v.to_str().ok()) {
+            self.instance_uri = v.to_string();
+        }
+        if let Some(v) = headers.get(H_UPSTREAM_ID).and_then(|v| v.to_str().ok()) {
+            self.upstream_id = v.parse().ok();
+        }
+        if let Some(v) = headers.get(H_RESOLVED_ADDR).and_then(|v| v.to_str().ok()) {
+            self.resolved_addr = v.parse().ok();
+        }
+    }
 }
 
 impl Default for ProxyCtx {
@@ -290,6 +470,8 @@ impl Default for ProxyCtx {
                 port: 443,
             },
             instance_uri: String::new(),
+            upstream_id: None,
+            resolved_addr: None,
         }
     }
 }
@@ -312,44 +494,7 @@ impl ProxyHttp for PingoraProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora_core::Result<bool> {
-        // Read context from internal headers.
-        let req = session.req_header();
-        if let Some(v) = req
-            .headers
-            .get(H_ENDPOINT_HOST)
-            .and_then(|v| v.to_str().ok())
-        {
-            ctx.endpoint.host = v.to_string();
-        }
-        if let Some(v) = req
-            .headers
-            .get(H_ENDPOINT_PORT)
-            .and_then(|v| v.to_str().ok())
-            && let Ok(port) = v.parse()
-        {
-            ctx.endpoint.port = port;
-        }
-        if let Some(v) = req
-            .headers
-            .get(H_ENDPOINT_SCHEME)
-            .and_then(|v| v.to_str().ok())
-        {
-            ctx.endpoint.scheme = match v {
-                "http" => Scheme::Http,
-                "https" => Scheme::Https,
-                "wss" => Scheme::Wss,
-                "wt" => Scheme::Wt,
-                "grpc" => Scheme::Grpc,
-                _ => Scheme::Https,
-            };
-        }
-        if let Some(v) = req
-            .headers
-            .get(H_INSTANCE_URI)
-            .and_then(|v| v.to_str().ok())
-        {
-            ctx.instance_uri = v.to_string();
-        }
+        ctx.populate_from_headers(&session.req_header().headers);
 
         // Strip all internal headers before forwarding.
         let to_remove: Vec<http::HeaderName> = session
@@ -368,6 +513,11 @@ impl ProxyHttp for PingoraProxy {
     }
 
     /// Build `HttpPeer` from the resolved endpoint. (D3, D4, D7)
+    ///
+    /// Uses the pre-resolved `SocketAddr` from the load balancer's DNS cache
+    /// when available, falling back to an explicit `lookup_host` otherwise.
+    /// Both paths pass a `SocketAddr` to `HttpPeer::new`, avoiding the
+    /// `unwrap()` panic on DNS failure in pingora-core 0.8.0. (See bug: https://github.com/cloudflare/pingora/issues/570)
     async fn upstream_peer(
         &self,
         _session: &mut Session,
@@ -376,18 +526,41 @@ impl ProxyHttp for PingoraProxy {
         let ep = &ctx.endpoint;
         let tls = matches!(ep.scheme, Scheme::Https | Scheme::Wss | Scheme::Wt);
 
-        let mut peer = HttpPeer::new(format!("{}:{}", ep.host, ep.port), tls, ep.host.clone());
+        let addr = match ctx.resolved_addr {
+            Some(a) => a,
+            None => {
+                // Fallback: resolve DNS explicitly (single-endpoint bypass, target-host header).
+                let addr_str = format!("{}:{}", ep.host, ep.port);
+                let addrs = dns_lookup_with_retry(&addr_str)
+                    .await
+                    .map_err(|e| {
+                        warn!(upstream_id = ?ctx.upstream_id, host = %ep.host, port = ep.port, error = %e, "DNS resolution failed after retries");
+                        pingora_core::Error::because(
+                            pingora_core::ErrorType::ConnectError,
+                            "DNS resolution failed",
+                            e,
+                        )
+                    })?;
+                addrs.into_iter().next()
+                    .ok_or_else(|| {
+                        warn!(upstream_id = ?ctx.upstream_id, host = %ep.host, port = ep.port, "DNS returned no addresses");
+                        pingora_core::Error::explain(
+                            pingora_core::ErrorType::ConnectError,
+                            format!("DNS returned no addresses for {}:{}", ep.host, ep.port),
+                        )
+                    })?
+            }
+        };
+
+        // Pass SocketAddr directly — no DNS inside HttpPeer::new.
+        let mut peer = HttpPeer::new(addr, tls, ep.host.clone());
 
         peer.options.connection_timeout = Some(self.connect_timeout);
         peer.options.read_timeout = Some(self.read_timeout);
         peer.options.idle_timeout = Some(Duration::from_secs(90));
 
-        // ALPN: H2H1 for HTTPS, H1 for WebSocket and cleartext.
-        peer.options.alpn = if tls && !matches!(ep.scheme, Scheme::Wss) {
-            pingora_core::protocols::tls::ALPN::H2H1
-        } else {
-            pingora_core::protocols::tls::ALPN::H1
-        };
+        // ALPN selection: consult protocol cache for HTTPS/WT, H1 for WSS/cleartext.
+        peer.options.alpn = self.select_alpn(ep);
 
         if self.skip_upstream_tls_verify {
             peer.options.verify_cert = false;
@@ -408,12 +581,26 @@ impl ProxyHttp for PingoraProxy {
     }
 
     /// Sanitize response headers: strip hop-by-hop and x-oagw-* headers. (D3)
+    ///
+    /// Also caches the negotiated HTTP version for HTTPS/WT endpoints
+    /// (spec `inst-proto-4`/`inst-proto-5`). The response version is still
+    /// the original upstream version here; Pingora downgrades it later.
     async fn upstream_response_filter(
         &self,
         _session: &mut Session,
         upstream_response: &mut ResponseHeader,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> pingora_core::Result<()> {
+        // Cache the negotiated HTTP version for this host (spec inst-proto-4/5).
+        if matches!(ctx.endpoint.scheme, Scheme::Https | Scheme::Wt) {
+            let protocol = if upstream_response.version == http::Version::HTTP_2 {
+                CachedProtocol::Http2
+            } else {
+                CachedProtocol::Http1Only
+            };
+            self.protocol_cache.insert(&ctx.endpoint, protocol);
+        }
+
         let status = upstream_response.status;
         let content_type = upstream_response
             .headers
@@ -425,6 +612,13 @@ impl ProxyHttp for PingoraProxy {
             content_type,
             "upstream response received"
         );
+
+        // For 101 Switching Protocols, preserve Upgrade and Connection headers
+        // but strip Connection-nominated hop-by-hop headers and x-oagw-* internals.
+        if status == http::StatusCode::SWITCHING_PROTOCOLS {
+            super::headers::sanitize_response_headers_for_upgrade(&mut upstream_response.headers);
+            return Ok(());
+        }
 
         // Strip Connection-nominated headers.
         if let Some(conn_value) = upstream_response
@@ -442,7 +636,7 @@ impl ProxyHttp for PingoraProxy {
         }
 
         // Strip static hop-by-hop headers.
-        for name in HOP_BY_HOP {
+        for name in HOP_BY_HOP_HEADERS {
             upstream_response.remove_header(*name);
         }
 
@@ -522,20 +716,52 @@ impl ProxyHttp for PingoraProxy {
                 }
             }
             pingora_core::ErrorType::H2Error | pingora_core::ErrorType::H2Downgrade => {
+                // Evict cached protocol so the next request re-negotiates
+                // via ALPN (spec inst-proto-7a). Current request is not
+                // retried per cpt-cf-oagw-principle-no-retry.
+                self.protocol_cache.evict(&ctx.endpoint);
                 DomainError::ProtocolError {
                     detail: "upstream HTTP/2 error".into(),
                     instance,
                 }
             }
+            pingora_core::ErrorType::ReadError | pingora_core::ErrorType::WriteError => {
+                DomainError::StreamAborted {
+                    detail: format!(
+                        "upstream stream {} error",
+                        if matches!(e.etype, pingora_core::ErrorType::ReadError) {
+                            "read"
+                        } else {
+                            "write"
+                        }
+                    ),
+                    instance,
+                }
+            }
+            pingora_core::ErrorType::ConnectNoRoute
+            | pingora_core::ErrorType::ConnectError
+            | pingora_core::ErrorType::ConnectProxyFailure => DomainError::LinkUnavailable {
+                detail: match &e.etype {
+                    pingora_core::ErrorType::ConnectNoRoute => "no route to upstream host",
+                    pingora_core::ErrorType::ConnectProxyFailure => {
+                        "upstream connect proxy failure"
+                    }
+                    _ => "upstream connection error",
+                }
+                .into(),
+                instance,
+            },
             _ => DomainError::DownstreamError {
                 detail: match &e.etype {
+                    pingora_core::ErrorType::ConnectionClosed => {
+                        "upstream connection closed (peer disconnect)"
+                    }
                     pingora_core::ErrorType::ConnectRefused => "upstream connection refused",
                     pingora_core::ErrorType::TLSHandshakeFailure
                     | pingora_core::ErrorType::TLSHandshakeTimedout => {
                         "upstream TLS handshake failed"
                     }
                     pingora_core::ErrorType::InvalidCert => "upstream certificate invalid",
-                    pingora_core::ErrorType::ConnectionClosed => "upstream connection closed",
                     _ => "upstream error",
                 }
                 .into(),
@@ -639,7 +865,7 @@ mod tests {
         let mut port_b = 0u32;
         for _ in 0..4 {
             let selected = selector.select(id, &endpoints).await.unwrap();
-            match selected.port {
+            match selected.endpoint.port {
                 10001 => port_a += 1,
                 10002 => port_b += 1,
                 other => panic!("unexpected port: {other}"),
@@ -656,13 +882,13 @@ mod tests {
 
         let v1 = vec![ep("127.0.0.1", 20001, Scheme::Https)];
         let selected = selector.select(id, &v1).await.unwrap();
-        assert_eq!(selected.port, 20001);
+        assert_eq!(selected.endpoint.port, 20001);
 
         selector.invalidate(id);
 
         let v2 = vec![ep("127.0.0.1", 20002, Scheme::Https)];
         let selected = selector.select(id, &v2).await.unwrap();
-        assert_eq!(selected.port, 20002);
+        assert_eq!(selected.endpoint.port, 20002);
     }
 
     #[tokio::test]
@@ -672,9 +898,9 @@ mod tests {
         let endpoints = vec![ep("127.0.0.1", 30001, Scheme::Http)];
 
         let selected = selector.select(id, &endpoints).await.unwrap();
-        assert_eq!(selected.host, "127.0.0.1");
-        assert_eq!(selected.port, 30001);
-        assert_eq!(selected.scheme, Scheme::Http);
+        assert_eq!(selected.endpoint.host, "127.0.0.1");
+        assert_eq!(selected.endpoint.port, 30001);
+        assert_eq!(selected.endpoint.scheme, Scheme::Http);
     }
 
     /// Endpoints in an upstream share scheme/port (by design).
@@ -694,9 +920,16 @@ mod tests {
         let mut found_2 = false;
         for _ in 0..20 {
             let selected = selector.select(id, &endpoints).await.unwrap();
-            assert_eq!(selected.scheme, Scheme::Https, "scheme must be preserved");
-            assert_eq!(selected.host, "127.0.0.1", "host must be preserved");
-            match selected.port {
+            assert_eq!(
+                selected.endpoint.scheme,
+                Scheme::Https,
+                "scheme must be preserved"
+            );
+            assert_eq!(
+                selected.endpoint.host, "127.0.0.1",
+                "host must be preserved"
+            );
+            match selected.endpoint.port {
                 40001 => found_1 = true,
                 40002 => found_2 = true,
                 other => panic!("unexpected port: {other}"),
@@ -726,9 +959,9 @@ mod tests {
         );
         let selected = selected.unwrap();
         // The returned endpoint must match the original — host stays "localhost".
-        assert_eq!(selected.host, "localhost");
-        assert_eq!(selected.port, 50001);
-        assert_eq!(selected.scheme, Scheme::Https);
+        assert_eq!(selected.endpoint.host, "localhost");
+        assert_eq!(selected.endpoint.port, 50001);
+        assert_eq!(selected.endpoint.scheme, Scheme::Https);
     }
 
     // -- DnsDiscovery unit tests --
@@ -888,7 +1121,7 @@ mod tests {
         // Initial endpoints.
         let v1 = vec![ep("127.0.0.1", 60001, Scheme::Https)];
         let selected = selector.select(id, &v1).await.unwrap();
-        assert_eq!(selected.port, 60001);
+        assert_eq!(selected.endpoint.port, 60001);
 
         // Access the addr_map to verify it's populated.
         let entry = selector.cache.get(&id).unwrap();
@@ -901,7 +1134,7 @@ mod tests {
 
         let v2 = vec![ep("127.0.0.1", 60002, Scheme::Https)];
         let selected = selector.select(id, &v2).await.unwrap();
-        assert_eq!(selected.port, 60002);
+        assert_eq!(selected.endpoint.port, 60002);
 
         // New addr_map should only contain the new endpoint.
         let entry = selector.cache.get(&id).unwrap();
@@ -925,14 +1158,21 @@ mod tests {
     //   alpn = if tls && !Wss { H2H1 } else { H1 }
 
     /// Build an HttpPeer using the same logic as `upstream_peer`.
+    /// Uses a dummy IP (production resolves via `lookup_host`); the `host`
+    /// string is passed as the SNI, matching `upstream_peer` behaviour.
+    /// Build an `HttpPeer` using `select_alpn` for ALPN selection, matching
+    /// the production code path. Uses a default (enabled) protocol cache.
     fn build_peer(scheme: Scheme, host: &str, port: u16) -> HttpPeer {
-        let tls = matches!(scheme, Scheme::Https | Scheme::Wss | Scheme::Wt);
-        let mut peer = HttpPeer::new(format!("{host}:{port}"), tls, host.to_string());
-        peer.options.alpn = if tls && !matches!(scheme, Scheme::Wss) {
-            pingora_core::protocols::tls::ALPN::H2H1
-        } else {
-            pingora_core::protocols::tls::ALPN::H1
-        };
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(3600),
+        );
+        let ep = ep(host, port, scheme);
+        let tls = matches!(ep.scheme, Scheme::Https | Scheme::Wss | Scheme::Wt);
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut peer = HttpPeer::new(addr, tls, host.to_string());
+        peer.options.alpn = proxy.select_alpn(&ep);
         peer
     }
 
@@ -982,9 +1222,254 @@ mod tests {
 
     #[test]
     fn peer_timeouts_propagate() {
-        let proxy = PingoraProxy::new(Duration::from_secs(7), Duration::from_secs(15));
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(7),
+            Duration::from_secs(15),
+            Duration::from_secs(3600),
+        );
         // Verify timeouts are stored correctly on the proxy.
         assert_eq!(proxy.connect_timeout, Duration::from_secs(7));
         assert_eq!(proxy.read_timeout, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn populate_from_headers_parses_resolved_addr() {
+        let mut ctx = ProxyCtx::default();
+        let mut headers = http::HeaderMap::new();
+        let upstream_id = Uuid::new_v4();
+        headers.insert(H_ENDPOINT_HOST, "api.example.com".parse().unwrap());
+        headers.insert(H_ENDPOINT_PORT, "8443".parse().unwrap());
+        headers.insert(H_ENDPOINT_SCHEME, "https".parse().unwrap());
+        headers.insert(H_INSTANCE_URI, "/test/instance".parse().unwrap());
+        headers.insert(H_UPSTREAM_ID, upstream_id.to_string().parse().unwrap());
+        headers.insert(H_RESOLVED_ADDR, "93.184.216.34:8443".parse().unwrap());
+
+        ctx.populate_from_headers(&headers);
+
+        assert_eq!(ctx.endpoint.host, "api.example.com");
+        assert_eq!(ctx.endpoint.port, 8443);
+        assert_eq!(ctx.endpoint.scheme, Scheme::Https);
+        assert_eq!(ctx.instance_uri, "/test/instance");
+        assert_eq!(ctx.upstream_id, Some(upstream_id));
+        let expected: std::net::SocketAddr = "93.184.216.34:8443".parse().unwrap();
+        assert_eq!(ctx.resolved_addr, Some(expected));
+    }
+
+    #[test]
+    fn populate_from_headers_missing_resolved_addr_leaves_none() {
+        let mut ctx = ProxyCtx::default();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(H_ENDPOINT_HOST, "api.example.com".parse().unwrap());
+        headers.insert(H_ENDPOINT_PORT, "443".parse().unwrap());
+        // No H_RESOLVED_ADDR header.
+
+        ctx.populate_from_headers(&headers);
+
+        assert_eq!(ctx.endpoint.host, "api.example.com");
+        assert!(ctx.resolved_addr.is_none());
+    }
+
+    #[test]
+    fn populate_from_headers_invalid_resolved_addr_leaves_none() {
+        let mut ctx = ProxyCtx::default();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(H_RESOLVED_ADDR, "not-an-addr".parse().unwrap());
+
+        ctx.populate_from_headers(&headers);
+
+        assert!(ctx.resolved_addr.is_none());
+    }
+
+    #[tokio::test]
+    async fn select_populates_resolved_addr() {
+        let selector = PingoraEndpointSelector::new();
+        let id = Uuid::new_v4();
+        // IP-based endpoint — resolved_addr should be populated.
+        let endpoints = vec![ep("127.0.0.1", 30001, Scheme::Http)];
+
+        let selected = selector.select(id, &endpoints).await.unwrap();
+        assert!(
+            selected.resolved_addr.is_some(),
+            "resolved_addr should be populated for IP endpoint"
+        );
+        assert_eq!(selected.resolved_addr.unwrap().port(), 30001);
+    }
+
+    // -----------------------------------------------------------------------
+    // ProtocolVersionCache tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn protocol_cache_miss_returns_none() {
+        let cache = ProtocolVersionCache::new(Duration::from_secs(3600));
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        assert_eq!(cache.get(&endpoint), None);
+    }
+
+    #[test]
+    fn protocol_cache_insert_h2_then_get() {
+        let cache = ProtocolVersionCache::new(Duration::from_secs(3600));
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        cache.insert(&endpoint, CachedProtocol::Http2);
+        assert_eq!(cache.get(&endpoint), Some(CachedProtocol::Http2));
+    }
+
+    #[test]
+    fn protocol_cache_insert_h1_then_get() {
+        let cache = ProtocolVersionCache::new(Duration::from_secs(3600));
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        cache.insert(&endpoint, CachedProtocol::Http1Only);
+        assert_eq!(cache.get(&endpoint), Some(CachedProtocol::Http1Only));
+    }
+
+    #[test]
+    fn protocol_cache_ttl_expiry() {
+        let cache = ProtocolVersionCache::new(Duration::from_millis(1));
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        cache.insert(&endpoint, CachedProtocol::Http2);
+        // Let the entry expire.
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(
+            cache.get(&endpoint),
+            None,
+            "expired entry should return None"
+        );
+    }
+
+    #[test]
+    fn protocol_cache_evict() {
+        let cache = ProtocolVersionCache::new(Duration::from_secs(3600));
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        cache.insert(&endpoint, CachedProtocol::Http2);
+        cache.evict(&endpoint);
+        assert_eq!(cache.get(&endpoint), None);
+    }
+
+    #[test]
+    fn protocol_cache_key_format() {
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        assert_eq!(
+            ProtocolVersionCache::cache_key(&endpoint),
+            "https://example.com:443"
+        );
+
+        let endpoint_wt = ep("api.test.io", 8443, Scheme::Wt);
+        assert_eq!(
+            ProtocolVersionCache::cache_key(&endpoint_wt),
+            "wt://api.test.io:8443"
+        );
+    }
+
+    #[test]
+    fn protocol_cache_different_ports_distinct() {
+        let cache = ProtocolVersionCache::new(Duration::from_secs(3600));
+        let ep_a = ep("example.com", 443, Scheme::Https);
+        let ep_b = ep("example.com", 8443, Scheme::Https);
+        cache.insert(&ep_a, CachedProtocol::Http2);
+        cache.insert(&ep_b, CachedProtocol::Http1Only);
+        assert_eq!(cache.get(&ep_a), Some(CachedProtocol::Http2));
+        assert_eq!(cache.get(&ep_b), Some(CachedProtocol::Http1Only));
+    }
+
+    #[test]
+    fn protocol_cache_disabled_when_ttl_zero() {
+        let cache = ProtocolVersionCache::new(Duration::ZERO);
+        assert!(!cache.is_enabled());
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        cache.insert(&endpoint, CachedProtocol::Http2);
+        assert_eq!(
+            cache.get(&endpoint),
+            None,
+            "disabled cache should always miss"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // select_alpn tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn select_alpn_uses_h2_for_cached_h2_host() {
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(3600),
+        );
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        proxy
+            .protocol_cache
+            .insert(&endpoint, CachedProtocol::Http2);
+        assert_eq!(
+            proxy.select_alpn(&endpoint),
+            pingora_core::protocols::tls::ALPN::H2
+        );
+    }
+
+    #[test]
+    fn select_alpn_uses_h1_for_cached_h1_host() {
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(3600),
+        );
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        proxy
+            .protocol_cache
+            .insert(&endpoint, CachedProtocol::Http1Only);
+        assert_eq!(
+            proxy.select_alpn(&endpoint),
+            pingora_core::protocols::tls::ALPN::H1
+        );
+    }
+
+    #[test]
+    fn select_alpn_default_h2h1_for_uncached() {
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(3600),
+        );
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        assert_eq!(
+            proxy.select_alpn(&endpoint),
+            pingora_core::protocols::tls::ALPN::H2H1
+        );
+    }
+
+    #[test]
+    fn select_alpn_wss_always_h1() {
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(3600),
+        );
+        let endpoint = ep("example.com", 443, Scheme::Wss);
+        // Even if someone were to insert an entry for this host, WSS must use H1.
+        proxy
+            .protocol_cache
+            .insert(&endpoint, CachedProtocol::Http2);
+        assert_eq!(
+            proxy.select_alpn(&endpoint),
+            pingora_core::protocols::tls::ALPN::H1
+        );
+    }
+
+    #[test]
+    fn select_alpn_h2h1_when_cache_disabled() {
+        let proxy = PingoraProxy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::ZERO, // disabled
+        );
+        let endpoint = ep("example.com", 443, Scheme::Https);
+        // Insert would be a no-op, but call it anyway to verify.
+        proxy
+            .protocol_cache
+            .insert(&endpoint, CachedProtocol::Http2);
+        assert_eq!(
+            proxy.select_alpn(&endpoint),
+            pingora_core::protocols::tls::ALPN::H2H1,
+            "disabled cache should fall through to H2H1"
+        );
     }
 }

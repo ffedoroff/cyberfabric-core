@@ -1,5 +1,19 @@
 # ADR-0003: FileStorage for Media Handling
 
+
+<!-- toc -->
+
+- [Context and Problem Statement](#context-and-problem-statement)
+- [Decision Drivers](#decision-drivers)
+- [Considered Options](#considered-options)
+- [Decision Outcome](#decision-outcome)
+  - [Consequences](#consequences)
+  - [Confirmation](#confirmation)
+- [Pros and Cons of the Options](#pros-and-cons-of-the-options)
+- [Related Design Elements](#related-design-elements)
+
+<!-- /toc -->
+
 **Date**: 2026-01-29
 
 **Status**: Accepted
@@ -65,4 +79,4 @@ None
 
 **References**:
 * PRD: `cpt-cf-llm-gateway-nfr-scalability-v1`
-* DESIGN: `cpt-cf-llm-gateway-principle-pass-through`
+* DESIGN: `cpt-cf-llm-gateway-adr-pass-through`

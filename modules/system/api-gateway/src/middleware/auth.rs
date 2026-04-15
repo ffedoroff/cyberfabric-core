@@ -2,6 +2,8 @@ use axum::http::Method;
 use axum::response::IntoResponse;
 use std::{collections::HashMap, sync::Arc};
 
+use crate::middleware::common;
+
 use authn_resolver_sdk::{AuthNResolverClient, AuthNResolverError};
 use modkit::api::Problem;
 use modkit_security::SecurityContext;
@@ -199,12 +201,21 @@ pub async fn authn_middleware(
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    // Skip CORS preflight
+    // Skip CORS preflight — insert anonymous SecurityContext so downstream
+    // handlers that extract Extension<SecurityContext> don't panic.
     if is_preflight_request(req.method(), req.headers()) {
+        req.extensions_mut().insert(SecurityContext::anonymous());
         return next.run(req).await;
     }
 
-    let requirement = state.route_policy.resolve(req.method(), req.uri().path());
+    let path = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or_else(|| req.uri().path().to_owned(), |p| p.as_str().to_owned());
+
+    let path = common::resolve_path(&req, path.as_str());
+
+    let requirement = state.route_policy.resolve(req.method(), path.as_str());
 
     match requirement {
         AuthRequirement::None => {
@@ -246,7 +257,7 @@ fn authn_error_to_response(err: &AuthNResolverError) -> axum::response::Response
             "Service Unavailable",
             "Authentication service unavailable",
         ),
-        AuthNResolverError::Internal(_) => (
+        AuthNResolverError::TokenAcquisitionFailed(_) | AuthNResolverError::Internal(_) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Server Error",
             "Internal authentication error",
@@ -265,6 +276,9 @@ fn log_authn_error(err: &AuthNResolverError) {
         AuthNResolverError::NoPluginAvailable => tracing::error!("No AuthN plugin available"),
         AuthNResolverError::ServiceUnavailable(msg) => {
             tracing::error!("AuthN service unavailable: {msg}");
+        }
+        AuthNResolverError::TokenAcquisitionFailed(msg) => {
+            tracing::error!("AuthN token acquisition failed: {msg}");
         }
         AuthNResolverError::Internal(msg) => tracing::error!("AuthN internal error: {msg}"),
     }

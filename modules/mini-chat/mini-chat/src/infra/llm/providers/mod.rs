@@ -4,50 +4,55 @@
 //! [`LlmRequest`](super::LlmRequest) to the provider's wire format, proxying
 //! through OAGW, and translating SSE events back to `TranslatedEvent`.
 
+pub mod azure_file_storage;
+pub mod azure_vector_store;
+pub mod dispatching_storage;
 pub mod openai_chat;
+pub mod openai_file_storage;
 pub mod openai_responses;
+pub mod openai_vector_store;
+pub mod rag_http_client;
+pub mod vllm_responses;
 
 use std::sync::Arc;
 
 use oagw_sdk::ServiceGatewayClientV1;
+use serde::{Deserialize, Serialize};
 
 pub use openai_chat::OpenAiChatProvider;
 pub use openai_responses::OpenAiResponsesProvider;
+pub use vllm_responses::VllmResponsesProvider;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Provider selection
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Which provider adapter to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
     /// `OpenAI` Responses API (`/v1/responses`).
+    #[serde(rename = "openai_responses")]
     OpenAiResponses,
     /// `OpenAI` Chat Completions API (`/v1/chat/completions`).
+    #[serde(rename = "openai_chat_completions")]
     OpenAiChatCompletions,
+    /// vLLM Responses API (`/v1/responses`).
+    #[serde(rename = "vllm_responses")]
+    VllmResponses,
 }
 
-/// Configuration for a provider adapter.
-#[derive(Debug, Clone)]
-pub struct ProviderConfig {
-    /// Which provider adapter to use.
-    pub kind: ProviderKind,
-    /// OAGW upstream alias (e.g., "openai", "azure-openai", "anthropic").
-    pub upstream_alias: String,
-}
-
-/// Create a provider adapter from configuration.
+/// Create a provider adapter from a [`ProviderKind`].
+///
+/// The upstream alias is not stored in the adapter — it is passed per-request
+/// to [`LlmProvider::stream()`] and [`LlmProvider::complete()`].
 #[must_use]
 pub fn create_provider(
     gateway: Arc<dyn ServiceGatewayClientV1>,
-    config: ProviderConfig,
+    kind: ProviderKind,
 ) -> Arc<dyn super::LlmProvider> {
-    match config.kind {
-        ProviderKind::OpenAiResponses => {
-            Arc::new(OpenAiResponsesProvider::new(gateway, config.upstream_alias))
-        }
-        ProviderKind::OpenAiChatCompletions => {
-            Arc::new(OpenAiChatProvider::new(gateway, config.upstream_alias))
-        }
+    match kind {
+        ProviderKind::OpenAiResponses => Arc::new(OpenAiResponsesProvider::new(gateway)),
+        ProviderKind::OpenAiChatCompletions => Arc::new(OpenAiChatProvider::new(gateway)),
+        ProviderKind::VllmResponses => Arc::new(VllmResponsesProvider::new(gateway)),
     }
 }

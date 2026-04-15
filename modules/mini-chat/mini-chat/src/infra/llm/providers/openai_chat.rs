@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt;
+use modkit_security::SecurityContext;
 use oagw_sdk::error::StreamingError;
 use oagw_sdk::sse::{FromServerEvent, ServerEvent, ServerEventsResponse, ServerEventsStream};
-use oagw_sdk::{Body, SecurityContext, ServiceGatewayClientV1};
+use oagw_sdk::{Body, ServiceGatewayClientV1};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -65,10 +66,26 @@ struct ToolCallPiece {
     arguments: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: i64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct ChatUsage {
     prompt_tokens: i64,
     completion_tokens: i64,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -258,6 +275,15 @@ impl ChatCompletionsState {
         let mapped_usage = Usage {
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
+            cache_read_input_tokens: usage
+                .prompt_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cached_tokens),
+            cache_write_input_tokens: 0,
+            reasoning_tokens: usage
+                .completion_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.reasoning_tokens),
         };
 
         match finish_reason {
@@ -399,6 +425,8 @@ fn translate_chat_event(
                 let zero = ChatUsage {
                     prompt_tokens: 0,
                     completion_tokens: 0,
+                    prompt_tokens_details: None,
+                    completion_tokens_details: None,
                 };
                 return vec![state.make_terminal(&zero, &reason)];
             }
@@ -413,6 +441,7 @@ fn translate_chat_event(
 // LlmRequest → Chat Completions conversion
 // ════════════════════════════════════════════════════════════════════════════
 
+#[allow(clippy::cognitive_complexity)]
 fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::Value {
     let mut body = serde_json::json!({});
 
@@ -503,8 +532,12 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
                 debug!("FileSearch tool not supported by Chat Completions, dropping");
                 None
             }
-            LlmTool::WebSearch => {
+            LlmTool::WebSearch { .. } => {
                 debug!("WebSearch tool not supported by Chat Completions, dropping");
+                None
+            }
+            LlmTool::CodeInterpreter { .. } => {
+                debug!("CodeInterpreter tool not supported by Chat Completions, dropping");
                 None
             }
         })
@@ -527,19 +560,18 @@ fn body_to_bytes(body: &serde_json::Value) -> Body {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// `OpenAI` Chat Completions API adapter. Routes all calls through OAGW.
+///
+/// The upstream alias is not stored — it is passed per-request to allow
+/// different tenants to route to different OAGW upstreams.
 #[derive(Clone)]
 pub struct OpenAiChatProvider {
     gateway: Arc<dyn ServiceGatewayClientV1>,
-    upstream_alias: String,
 }
 
 impl OpenAiChatProvider {
     #[must_use]
-    pub fn new(gateway: Arc<dyn ServiceGatewayClientV1>, upstream_alias: String) -> Self {
-        Self {
-            gateway,
-            upstream_alias,
-        }
+    pub fn new(gateway: Arc<dyn ServiceGatewayClientV1>) -> Self {
+        Self { gateway }
     }
 }
 
@@ -584,17 +616,18 @@ struct ChatResponseMessage {
 #[async_trait::async_trait]
 impl crate::infra::llm::LlmProvider for OpenAiChatProvider {
     #[tracing::instrument(
-        skip(self, ctx, request, cancel),
-        fields(model = %request.model())
+        skip(self, ctx, request, upstream_alias, cancel),
+        fields(model = %request.model(), upstream = %upstream_alias)
     )]
     async fn stream(
         &self,
         ctx: SecurityContext,
         request: LlmRequest<Streaming>,
+        upstream_alias: &str,
         cancel: CancellationToken,
     ) -> Result<ProviderStream, LlmProviderError> {
         let body = build_request_body(&request, true);
-        let uri = format!("/{}/v1/chat/completions", self.upstream_alias);
+        let uri = format!("/{upstream_alias}");
 
         let http_request = http::Request::builder()
             .method(http::Method::POST)
@@ -659,16 +692,17 @@ impl crate::infra::llm::LlmProvider for OpenAiChatProvider {
     }
 
     #[tracing::instrument(
-        skip(self, ctx, request),
-        fields(model = %request.model())
+        skip(self, ctx, request, upstream_alias),
+        fields(model = %request.model(), upstream = %upstream_alias)
     )]
     async fn complete(
         &self,
         ctx: SecurityContext,
         request: LlmRequest<NonStreaming>,
+        upstream_alias: &str,
     ) -> Result<ResponseResult, LlmProviderError> {
         let body = build_request_body(&request, false);
-        let uri = format!("/{}/v1/chat/completions", self.upstream_alias);
+        let uri = format!("/{upstream_alias}");
 
         let http_request = http::Request::builder()
             .method(http::Method::POST)
@@ -725,10 +759,22 @@ impl crate::infra::llm::LlmProvider for OpenAiChatProvider {
             Usage {
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                reasoning_tokens: 0,
             },
             |u| Usage {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
+                cache_read_input_tokens: u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.cached_tokens),
+                cache_write_input_tokens: 0,
+                reasoning_tokens: u
+                    .completion_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.reasoning_tokens),
             },
         );
 
@@ -783,6 +829,34 @@ mod tests {
                 assert_eq!(usage.prompt_tokens, 500);
                 assert_eq!(usage.completion_tokens, 120);
                 assert_eq!(finish_reason, "stop");
+            }
+            _ => panic!("expected Done"),
+        }
+    }
+
+    #[test]
+    fn parse_done_with_token_details() {
+        let event = ServerEvent {
+            event: None,
+            data: r#"{"usage":{"prompt_tokens":500,"completion_tokens":120,"prompt_tokens_details":{"cached_tokens":200},"completion_tokens_details":{"reasoning_tokens":40}},"choices":[{"finish_reason":"stop"}]}"#.into(),
+            id: None,
+            retry: None,
+        };
+        let result = ChatCompletionEvent::from_server_event(event).unwrap();
+        match result {
+            ChatCompletionEvent::Done { usage, .. } => {
+                assert_eq!(
+                    usage.prompt_tokens_details.as_ref().unwrap().cached_tokens,
+                    200
+                );
+                assert_eq!(
+                    usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .unwrap()
+                        .reasoning_tokens,
+                    40
+                );
             }
             _ => panic!("expected Done"),
         }
@@ -904,6 +978,8 @@ mod tests {
             usage: ChatUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             finish_reason: "stop".into(),
         };
@@ -922,6 +998,8 @@ mod tests {
             usage: ChatUsage {
                 prompt_tokens: 500,
                 completion_tokens: 120,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             finish_reason: "stop".into(),
         };
@@ -939,11 +1017,38 @@ mod tests {
     }
 
     #[test]
+    fn translate_done_propagates_token_details() {
+        let event = ChatCompletionEvent::Done {
+            usage: ChatUsage {
+                prompt_tokens: 500,
+                completion_tokens: 120,
+                prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 200 }),
+                completion_tokens_details: Some(CompletionTokensDetails {
+                    reasoning_tokens: 40,
+                }),
+            },
+            finish_reason: "stop".into(),
+        };
+        let mut state = ChatCompletionsState::new();
+        let translated = translate_one(&event, &mut state);
+        match translated {
+            TranslatedEvent::Terminal(TerminalOutcome::Completed { usage, .. }) => {
+                assert_eq!(usage.cache_read_input_tokens, 200);
+                assert_eq!(usage.reasoning_tokens, 40);
+                assert_eq!(usage.cache_write_input_tokens, 0);
+            }
+            _ => panic!("expected Terminal(Completed)"),
+        }
+    }
+
+    #[test]
     fn translate_done_length_to_incomplete() {
         let event = ChatCompletionEvent::Done {
             usage: ChatUsage {
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             finish_reason: "length".into(),
         };
@@ -989,6 +1094,8 @@ mod tests {
             usage: ChatUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
         };
         let translated = translate_one(&usage, &mut state);
@@ -1016,6 +1123,8 @@ mod tests {
             usage: ChatUsage {
                 prompt_tokens: 200,
                 completion_tokens: 100,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
         };
         let translated = translate_one(&usage, &mut state);
@@ -1239,8 +1348,24 @@ mod tests {
         let request = llm_request("gpt-4o")
             .tool(LlmTool::FileSearch {
                 vector_store_ids: vec!["vs-1".into()],
+                filters: None,
+                max_num_results: None,
             })
             .message(LlmMessage::user("Hi"))
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn request_code_interpreter_dropped() {
+        let request = llm_request("gpt-4o")
+            .tool(LlmTool::CodeInterpreter {
+                file_ids: vec!["file-1".into()],
+            })
+            .message(LlmMessage::user("Run analysis"))
             .build_streaming();
 
         let body = build_request_body(&request, true);

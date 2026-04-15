@@ -1,6 +1,6 @@
 CI := 1
 
-OPENAPI_URL ?= http://127.0.0.1:8087/openapi.json
+OPENAPI_URL ?= http://127.0.0.1:8087/cf/openapi.json
 OPENAPI_OUT ?= docs/api/api.json
 
 # E2E feature set (single source of truth: config/e2e-features.txt)
@@ -16,6 +16,89 @@ endef
 define check_rustup_component
     @command -v rustup >/dev/null || (echo "ERROR: rustup not installed. Install rustup or run 'make setup'." && exit 1)
 	@rustup component list --installed | grep -q '^$(1)' || (echo "ERROR: $(1) component not installed. Run 'rustup component add $(1)' or 'make setup'." && exit 1)
+endef
+
+# Generic server start/stop with cleanup (cross-platform: Linux, Mac, Windows)
+# Usage: $(call start_server_and_wait,<command>,<health_url>,<max_wait_seconds>)
+# Args:
+#   1. command - Full command to start the server (e.g., cargo run --bin server)
+#   2. health_url - URL to poll for server readiness (e.g., http://localhost:8080/health)
+#   3. max_wait_seconds - Maximum time to wait for server to be ready (e.g., 300)
+# Returns: Sets $$SERVER_PID variable for use in the recipe
+# Cleanup: Automatically kills server on EXIT/INT/TERM (normal or error)
+# Features:
+#   - Cross-platform: Works on Linux, Mac, and Windows (Git Bash/WSL/MSYS2)
+#   - Logs server output to temp directory for debugging
+#   - Exponential backoff polling (1s, 2s, 4s, 8s intervals)
+#   - Detects if server dies unexpectedly during startup
+#   - Graceful shutdown with SIGTERM, then SIGKILL if needed (or taskkill on Windows)
+# Example:
+#   @$(call start_server_and_wait,cargo run --bin my-server,http://localhost:8080/health,60); \
+#   curl http://localhost:8080/api/data -o output.json
+define start_server_and_wait
+	TEMP_DIR=$$(if [ -n "$$TEMP" ]; then echo "$$TEMP"; elif [ -n "$$TMP" ]; then echo "$$TMP"; else echo "/tmp"; fi); \
+	LOG_FILE="$$TEMP_DIR/server-$$$$.log"; \
+	$(1) > "$$LOG_FILE" 2>&1 & \
+	SERVER_PID=$$!; \
+	echo "Server started with PID: $$SERVER_PID (log: $$LOG_FILE)"; \
+	is_process_running() { \
+		if command -v kill >/dev/null 2>&1; then \
+			kill -0 $$1 2>/dev/null; \
+		elif command -v tasklist >/dev/null 2>&1; then \
+			tasklist /FI "PID eq $$1" 2>NUL | grep -q "$$1"; \
+		else \
+			ps -p $$1 >/dev/null 2>&1; \
+		fi; \
+	}; \
+	kill_process() { \
+		PID_TO_KILL=$$1; \
+		FORCE=$$2; \
+		if command -v kill >/dev/null 2>&1; then \
+			if [ "$$FORCE" = "force" ]; then \
+				kill -9 $$PID_TO_KILL 2>/dev/null || true; \
+			else \
+				kill $$PID_TO_KILL 2>/dev/null || true; \
+			fi; \
+		elif command -v taskkill >/dev/null 2>&1; then \
+			if [ "$$FORCE" = "force" ]; then \
+				taskkill /PID $$PID_TO_KILL /F /T 2>NUL || true; \
+			else \
+				taskkill /PID $$PID_TO_KILL /T 2>NUL || true; \
+			fi; \
+		fi; \
+	}; \
+	cleanup_server() { \
+		if is_process_running $$SERVER_PID; then \
+			echo "Stopping server (PID $$SERVER_PID)..."; \
+			kill_process $$SERVER_PID; \
+			sleep 1; \
+			if is_process_running $$SERVER_PID; then \
+				echo "Server still running, forcing shutdown..."; \
+				kill_process $$SERVER_PID force; \
+				sleep 1; \
+			fi; \
+			wait $$SERVER_PID 2>/dev/null || true; \
+			echo "Server stopped."; \
+		fi; \
+	}; \
+	trap cleanup_server EXIT INT TERM; \
+	echo "Waiting for $(2) to become ready..."; \
+	ELAPSED=0; MAX_WAIT=$(3); SLEEP=1; \
+	while ! curl -fsS "$(2)" -o /dev/null 2>/dev/null; do \
+		if ! is_process_running $$SERVER_PID; then \
+			echo "ERROR: Server process died unexpectedly. Check $$LOG_FILE"; \
+			exit 1; \
+		fi; \
+		if [ $$ELAPSED -ge $$MAX_WAIT ]; then \
+			echo "ERROR: Server did not become ready in time. Check $$LOG_FILE"; \
+			exit 1; \
+		fi; \
+		echo "Waiting for server... ($$ELAPSED s)"; \
+		sleep $$SLEEP; \
+		ELAPSED=$$((ELAPSED + SLEEP)); \
+		SLEEP=$$((SLEEP < 8 ? SLEEP*2 : 8)); \
+	done; \
+	echo "Server is ready!"
 endef
 
 # -------- Defaults --------
@@ -113,25 +196,20 @@ validate-module-names:
 # |             | - Use 'make dylint-list' to see all available custom lints           |
 # +-------------+----------------------------------------------------------------------+
 
-.PHONY: clippy lychee kani geiger safety lint dylint dylint-list dylint-test gts-docs gts-docs-vendor gts-docs-release gts-docs-vendor-release gts-docs-test cypilot-validate
+.PHONY: clippy lychee kani geiger safety lint dylint dylint-list dylint-test gts-docs gts-docs-vendor gts-docs-release gts-docs-vendor-release gts-docs-test cypilot-validate cypilot-spec-coverage
 
 # Run clippy linter (excludes gts-rust submodule which has its own lint settings)
 clippy:
 	$(call check_rustup_component,clippy)
 	cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::perf
 
+# Check cypilot spec-to-code traceability coverage
+cypilot-spec-coverage:
+	@python3 .cypilot/.core/skills/cypilot/scripts/cypilot.py spec-coverage --min-coverage 80
+
 # Validate cypilot artifacts (specs, code, templates)
 cypilot-validate:
-	@if [ ! -d .cypilot/.git ] && [ ! -f .cypilot/.git ]; then \
-		echo "Initializing .cypilot submodule (first run)"; \
-		git submodule update --init --recursive -- .cypilot; \
-	elif git -C .cypilot symbolic-ref -q HEAD >/dev/null 2>&1; then \
-		echo "Skipping .cypilot update (branch checkout detected)"; \
-	else \
-		echo "Updating .cypilot via git submodule update (detached HEAD)"; \
-		git submodule update --init --recursive -- .cypilot; \
-	fi
-	@python3 .cypilot/skills/cypilot/scripts/cypilot.py validate && echo "OK. cypilot validation PASSED" || (echo "ERROR: cypilot validation FAILED"; exit 1)
+	@python3 .cypilot/.core/skills/cypilot/scripts/cypilot.py validate && echo "OK. cypilot validation PASSED" || (echo "ERROR: cypilot validation FAILED"; exit 1)
 
 # Run markdown checks with 'lychee'
 lychee:
@@ -161,6 +239,8 @@ gts-docs:
 	cargo run -p gts-docs-validator -- \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
+		--exclude "**/helm/*/templates/*" \
 		docs modules libs examples
 
 ## Validate GTS docs with vendor check (ensures all IDs use vendor "x")
@@ -169,6 +249,8 @@ gts-docs-vendor:
 		--vendor x \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
+		--exclude "**/helm/*/templates/*" \
 		docs modules libs examples
 
 ## Validate GTS identifiers (release build)
@@ -176,6 +258,8 @@ gts-docs-release:
 	cargo run --release -p gts-docs-validator -- \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
+		--exclude "**/helm/*/templates/*" \
 		docs modules libs examples
 
 ## Validate GTS docs with vendor check (release build)
@@ -184,11 +268,16 @@ gts-docs-vendor-release:
 		--vendor x \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
+		--exclude "*/helm/*/templates/*" \
 		docs modules libs examples
 
+install-tools:
+	@command -v cargo-nextest >/dev/null 2>&1 || cargo install cargo-nextest
+
 ## Run tests for GTS documentation validator
-gts-docs-test:
-	cargo test -p gts-docs-validator
+gts-docs-test: install-tools
+	cargo nextest run -p gts-docs-validator
 
 ## List all custom project compliance lints (see dylint_lints/README.md)
 dylint-list:
@@ -204,8 +293,8 @@ dylint-list:
 	done
 
 ## Test dylint lints on UI test cases (compile and verify violations)
-dylint-test:
-	@cd dylint_lints && cargo test
+dylint-test: install-tools
+	@cd dylint_lints && cargo nextest run
 
 # Run project compliance dylint lints on the workspace (see `make dylint-list`)
 dylint:
@@ -236,37 +325,21 @@ security: deny
 openapi:
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
 	@echo "Starting hyperspot-server to generate OpenAPI spec..."
-	# Run server in background
-	cargo run --bin hyperspot-server $(E2E_ARGS) -- --config config/quickstart.yaml &
-	@SERVER_PID=$$!; \
-	trap 'kill $$SERVER_PID >/dev/null 2>&1 || true' EXIT; \
-	echo "hyperspot-server PID: $$SERVER_PID"; \
-	echo "Waiting for $(OPENAPI_URL) to become ready..."; \
-	ELAPSED=0; MAX_WAIT=300; SLEEP=1; \
-	while ! curl -fsS "$(OPENAPI_URL)" -o /dev/null >/dev/null 2>&1; do \
-		if [ $$ELAPSED -ge $$MAX_WAIT ]; then \
-			echo "ERROR: hyperspot-server did not become ready in time"; exit 1; \
-		fi; \
-		echo "Waiting for hyperspot-server... ($$ELAPSED s)"; \
-		sleep $$SLEEP; \
-		ELAPSED=$$((ELAPSED + SLEEP)); \
-		SLEEP=$$((SLEEP < 8 ? SLEEP*2 : 8)); \
-	done; \
-	echo "Server is ready, fetching OpenAPI spec..."; \
-	mkdir -p $$(dirname "$(OPENAPI_OUT)"); \
-	curl -fsS "$(OPENAPI_URL)" -o "$(OPENAPI_OUT)"; \
-	echo "OpenAPI spec saved to $(OPENAPI_OUT)"; \
-	echo "Stopping hyperspot-server..."; \
-	kill $$SERVER_PID >/dev/null 2>&1 || true; \
-	wait $$SERVER_PID 2>/dev/null || true
+	@$(call start_server_and_wait,cargo run --bin hyperspot-server $(E2E_ARGS) -- --config config/quickstart.yaml,$(OPENAPI_URL),300) && \
+	echo "Fetching OpenAPI spec..." && \
+	mkdir -p $$(dirname "$(OPENAPI_OUT)") && \
+	curl -fsS "$(OPENAPI_URL)" -o "$(OPENAPI_OUT)" && \
+	echo "Sorting OpenAPI JSON for deterministic ordering..." && \
+	python3 scripts/sort_openapi_json.py "$(OPENAPI_OUT)" && \
+	echo "OpenAPI spec saved to $(OPENAPI_OUT)"
 
 # -------- Development and auto fix --------
 
 .PHONY: dev dev-fmt dev-clippy dev-test
 
 ## Run tests in development mode
-dev-test:
-	cargo test --workspace
+dev-test: install-tools
+	cargo nextest run --workspace
 
 ## Auto-fix code formatting
 dev-fmt:
@@ -284,38 +357,82 @@ dev: dev-fmt dev-clippy dev-test
 .PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg
 
 # Run all tests
-test:
-	cargo test --workspace
+test: install-tools
+	cargo nextest run --workspace
 
-test-no-macros:
-	cargo test --workspace --exclude cf-modkit-macros-tests --exclude cf-modkit-db-macros
+test-no-macros: install-tools
+	cargo nextest run --workspace --exclude cf-modkit-macros-tests --exclude cf-modkit-db-macros
 
-test-macros:
-	cargo test -p cf-modkit-db-macros
-	cargo test -p cf-modkit-macros-tests
+test-macros: install-tools
+	cargo nextest run -p cf-modkit-db-macros
+	cargo nextest run -p cf-modkit-macros-tests
 
 ## Run SQLite integration tests
-test-sqlite:
-	cargo test -p cf-modkit-db --features sqlite,integration
+test-sqlite: install-tools
+	cargo nextest run -p cf-modkit-db --features sqlite,integration,preview-outbox
+	cargo build -p cf-modkit-db --examples --features sqlite,preview-outbox
 
 ## Run PostgreSQL integration tests
-test-pg:
-	cargo test -p cf-modkit-db --features pg,integration
+test-pg: install-tools
+	cargo nextest run -p cf-modkit-db --features pg,integration,preview-outbox
 
 ## Run MySQL integration tests
-test-mysql:
-	cargo test -p cf-modkit-db --features mysql,integration
+test-mysql: install-tools
+	cargo nextest run -p cf-modkit-db --features mysql,integration,preview-outbox
 
 # Run all database integration tests
 test-db: test-sqlite test-pg test-mysql
 
 ## Run users-info module integration tests
-test-users-info-pg:
-	cargo test -p users-info --features "integration" -- --nocapture
+test-users-info-pg: install-tools
+	cargo nextest run -p users-info --features "integration"
+
+# -------- Benchmarks --------
+
+.PHONY: bench-pg bench-pg-profiler bench-mysql bench-mariadb bench-sqlite bench-db \
+       bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul bench-sqlite-longhaul bench-db-longhaul
+
+## Run outbox throughput benchmarks against PostgreSQL
+bench-pg:
+	cargo bench -p cf-modkit-db --features pg,preview-outbox --bench outbox_throughput -- postgres
+
+## Run outbox throughput benchmarks against MySQL
+bench-mysql:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mysql
+
+## Run outbox throughput benchmarks against MariaDB
+bench-mariadb:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mariadb
+
+## Run outbox throughput benchmarks against SQLite
+bench-sqlite:
+	cargo bench -p cf-modkit-db --features sqlite,preview-outbox --bench outbox_throughput -- sqlite
+
+## Run outbox throughput benchmarks against all database engines
+bench-db: bench-pg bench-mysql bench-mariadb bench-sqlite
+
+## Run long-haul (1M+10M) outbox benchmarks against PostgreSQL
+bench-pg-longhaul:
+	cargo bench -p cf-modkit-db --features pg,preview-outbox --bench outbox_throughput -- postgres_longhaul
+
+## Run long-haul (1M+10M) outbox benchmarks against MySQL
+bench-mysql-longhaul:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mysql_longhaul
+
+## Run long-haul (1M+10M) outbox benchmarks against MariaDB
+bench-mariadb-longhaul:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mariadb_longhaul
+
+## Run long-haul (100K 1P) outbox benchmarks against SQLite
+bench-sqlite-longhaul:
+	cargo bench -p cf-modkit-db --features sqlite,preview-outbox --bench outbox_throughput -- sqlite_longhaul
+
+## Run long-haul outbox benchmarks against all database engines
+bench-db-longhaul: bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul bench-sqlite-longhaul
 
 # -------- E2E tests --------
 
-.PHONY: e2e e2e-local e2e-local-smoke e2e-docker e2e-docker-smoke
+.PHONY: e2e e2e-local e2e-local-smoke e2e-mini-chat e2e-docker e2e-docker-smoke
 
 # Run E2E tests in Docker (default)
 e2e: e2e-docker
@@ -335,6 +452,18 @@ e2e-local:
 ## Run E2E smoke tests locally (only tests marked @pytest.mark.smoke)
 e2e-local-smoke:
 	python3 scripts/ci.py e2e-local --smoke
+
+MINI_CHAT_FEATURES = mini-chat,static-authn,static-authz,single-tenant,static-credstore
+MINI_CHAT_K8S_FEATURES = $(MINI_CHAT_FEATURES),k8s
+
+MINI_CHAT_IMAGE ?= hyperspot-mini-chat
+MINI_CHAT_TAG   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+
+## Run mini-chat E2E tests (separate binary with mini-chat features)
+e2e-mini-chat:
+	cargo build --bin hyperspot-server --features=$(MINI_CHAT_FEATURES)
+	E2E_BINARY=target/debug/hyperspot-server \
+		python3 -m pytest testing/e2e/modules/mini_chat/ --mode offline -vv
 
 # -------- Code coverage --------
 
@@ -415,7 +544,7 @@ fuzz-corpus: fuzz-install
 
 # -------- Main targets --------
 
-.PHONY: all check ci build quickstart example mini-chat
+.PHONY: all check ci build quickstart example mini-chat mini-chat-docker mini-chat-helm mini-chat-helm-template mini-chat-up mini-chat-down mini-chat-port-forward
 
 # Start server with quickstart config
 quickstart:
@@ -426,9 +555,126 @@ quickstart:
 example:
 	cargo run --bin hyperspot-server $(E2E_ARGS) -- --config config/quickstart.yaml run
 
+# mini-chat targets are for running the mini-chat module locally and in Kubernetes, with options for building Docker images and deploying with Helm.
+## Run server with fips module
+fips:
+	cargo run --bin hyperspot-server --features fips,static-authn,static-authz,single-tenant,static-credstore,otel -- --config config/quickstart.yaml run
+
 ## Run server with mini-chat module
 mini-chat:
-	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant -- --config config/mini-chat.yaml run
+	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant,static-credstore,otel -- --config config/mini-chat.yaml run
+
+## Build mini-chat Docker image for K8s (dev build by default, RELEASE=1 for optimized)
+## On linux: builds on host (reuses local target/), then packages the binary.
+## On other OS: full multi-stage Docker build with BuildKit caching.
+MINI_CHAT_PROFILE = $(if $(RELEASE),release,dev)
+MINI_CHAT_CARGO_RELEASE_FLAG = $(if $(RELEASE),--release,)
+MINI_CHAT_TARGET_DIR = $(or $(CARGO_TARGET_DIR),target)/$(if $(RELEASE),release,debug)
+
+mini-chat-docker:
+ifeq ($(shell uname -s),Linux)
+	@echo "==> Linux host: building on host, packaging into image"
+	cargo build $(MINI_CHAT_CARGO_RELEASE_FLAG) --bin hyperspot-server --package=hyperspot-server \
+		--features "$(MINI_CHAT_K8S_FEATURES)"
+	@mkdir -p .docker-stage
+	@cp $(MINI_CHAT_TARGET_DIR)/hyperspot-server .docker-stage/hyperspot-server
+	DOCKER_BUILDKIT=1 docker build \
+		-f modules/mini-chat/deploy/docker/mini-chat-prebuilt.Dockerfile \
+		--build-arg BINARY_PATH=".docker-stage/hyperspot-server" \
+		-t $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) .
+	@rm -rf .docker-stage
+else
+	@echo "==> Non-linux host: full Docker build"
+	DOCKER_BUILDKIT=1 docker build \
+		-f modules/mini-chat/deploy/docker/mini-chat.Dockerfile \
+		--build-arg CARGO_FEATURES="$(MINI_CHAT_K8S_FEATURES)" \
+		--build-arg BUILD_PROFILE="$(MINI_CHAT_PROFILE)" \
+		-t $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) .
+endif
+
+## Deploy mini-chat Helm chart to local K8s cluster (build + load + install)
+mini-chat-helm: mini-chat-docker
+	@if command -v k3s >/dev/null 2>&1; then \
+		docker save $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) | sudo k3s ctr images import -; \
+	elif command -v minikube >/dev/null 2>&1; then \
+		minikube ssh "docker rmi -f $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) 2>/dev/null" || true; \
+		minikube image load $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG); \
+	else \
+		echo "ERROR: k3s or minikube required"; exit 1; \
+	fi
+	helm upgrade --install mini-chat modules/mini-chat/deploy/helm/mini-chat/ \
+		--set image.tag="$(MINI_CHAT_TAG)" \
+		--set secrets.azureOpenaiApiKey="$${AZURE_OPENAI_API_KEY}" \
+		--set secrets.azureOpenaiApiHost="$${AZURE_OPENAI_API_HOST}" \
+		--set postgres.host="$${PG_HOST:-postgres.default.svc.cluster.local}" \
+		--set postgres.password="$${PG_PASSWORD}"
+	kubectl rollout restart deployment/mini-chat
+	kubectl rollout status deployment/mini-chat --timeout=120s
+
+## Render mini-chat Helm templates (dry-run)
+mini-chat-helm-template:
+	helm template mini-chat modules/mini-chat/deploy/helm/mini-chat/
+
+## One-command: ensure minikube is up, deploy latest chart, port-forward
+## Usage: make mini-chat-up
+## If image was rebuilt (make mini-chat-docker), re-run this to pick it up.
+mini-chat-up:
+	@# --- 1. Ensure cluster is running ---
+	@if command -v minikube >/dev/null 2>&1; then \
+		STATUS=$$(minikube status -f '{{.Host}}' 2>/dev/null || true); \
+		if [ "$$STATUS" != "Running" ]; then \
+			echo "Starting minikube..."; \
+			minikube start; \
+		fi; \
+	elif command -v k3s >/dev/null 2>&1; then \
+		: ; \
+	else \
+		echo "ERROR: minikube or k3s required"; exit 1; \
+	fi
+	@# --- 2. Load latest image if it exists locally ---
+	@if docker image inspect $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) >/dev/null 2>&1; then \
+		echo "Loading image $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) into cluster..."; \
+		if command -v minikube >/dev/null 2>&1; then \
+			minikube ssh "docker rmi -f $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) 2>/dev/null" || true; \
+			minikube image load $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG); \
+		else \
+			docker save $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) | sudo k3s ctr images import -; \
+		fi; \
+	else \
+		echo "No local image found. Run 'make mini-chat-docker' first to build."; \
+		exit 1; \
+	fi
+	@# --- 3. Helm install/upgrade ---
+	@if [ -z "$${AZURE_OPENAI_API_KEY}" ] || [ -z "$${AZURE_OPENAI_API_HOST}" ]; then \
+		echo "WARNING: AZURE_OPENAI_API_KEY or AZURE_OPENAI_API_HOST not set."; \
+		echo "  export AZURE_OPENAI_API_KEY=... AZURE_OPENAI_API_HOST=..."; \
+	fi
+	helm upgrade --install mini-chat modules/mini-chat/deploy/helm/mini-chat/ \
+		--set image.tag="$(MINI_CHAT_TAG)" \
+		--set secrets.azureOpenaiApiKey="$${AZURE_OPENAI_API_KEY}" \
+		--set secrets.azureOpenaiApiHost="$${AZURE_OPENAI_API_HOST}" \
+		--set postgres.host="$${PG_HOST:-postgres.default.svc.cluster.local}" \
+		--set postgres.password="$${PG_PASSWORD}"
+	kubectl rollout restart deployment/mini-chat
+	kubectl rollout status deployment/mini-chat --timeout=120s
+	@echo ""
+	@echo "mini-chat is running. In a separate terminal run:"
+	@echo "  make mini-chat-port-forward"
+	@echo "Then access: http://localhost:8087/cf/mini-chat"
+
+## Persistent port-forward with auto-reconnect (run in a separate terminal)
+mini-chat-port-forward:
+	@echo "Port-forward: localhost:8087 -> svc/mini-chat:8087 (auto-reconnect, Ctrl+C to stop)"
+	@while true; do \
+		kubectl port-forward svc/mini-chat 8087:8087 2>&1 || true; \
+		echo "connection lost, reconnecting in 2s..."; \
+		sleep 2; \
+	done
+
+## Tear down mini-chat from the cluster
+mini-chat-down:
+	helm uninstall mini-chat 2>/dev/null || true
+	@echo "mini-chat uninstalled"
 
 oop-example:
 	cargo build -p calculator --features oop_module
@@ -450,5 +696,14 @@ build:
 	cargo +stable build --release --bin hyperspot-server $(E2E_ARGS)
 
 # Run all necessary quality checks and tests and then build the release binary
-all: build check test-sqlite e2e-local
-	@echo "consider to run 'make test-db' as well"
+all: build check test-sqlite e2e-local openapi
+	@echo ""
+	@echo "============================================================="
+	@echo "  CONGRATULATIONS! All 'make all' tasks have been completed!"
+	@echo ""
+	@echo "  Next suggestions:"
+	@echo "    - make test-db        # run full DB integration tests"
+	@echo "    - make mini-chat-up   # deploy and try the mini-chat demo"
+	@echo ""
+	@echo "  Tip: run 'git status' to inspect changes."
+	@echo "============================================================="

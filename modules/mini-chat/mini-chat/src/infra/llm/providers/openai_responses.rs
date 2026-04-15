@@ -1,3 +1,4 @@
+// Updated: 2026-04-14 by Constructor Tech
 //! `OpenAI` Responses API adapter (`/v1/responses`).
 //!
 //! Implements [`LlmProvider`] by converting [`LlmRequest`] to the Responses
@@ -8,19 +9,23 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt;
+use modkit_security::SecurityContext;
 use oagw_sdk::error::StreamingError;
 use oagw_sdk::sse::{FromServerEvent, ServerEvent, ServerEventsResponse, ServerEventsStream};
-use oagw_sdk::{Body, SecurityContext, ServiceGatewayClientV1};
+use oagw_sdk::{Body, ServiceGatewayClientV1};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::infra::llm::request::{ContentPart as MessageContentPart, LlmTool};
+use crate::infra::llm::request::{ContentPart as MessageContentPart, FileSearchFilter, LlmTool};
 use crate::infra::llm::{
     Citation, CitationSource, ClientSseEvent, LlmProviderError, LlmRequest, NonStreaming,
     ProviderStream, RawDetail, ResponseResult, Streaming, TerminalOutcome, TextSpan, ToolPhase,
     TranslatedEvent, Usage,
 };
+
+/// Safety cap for code-interpreter log output forwarded to clients via SSE.
+const MAX_CODE_INTERPRETER_OUTPUT_CHARS: usize = 8_192;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Provider event types (internal)
@@ -28,7 +33,7 @@ use crate::infra::llm::{
 
 /// Raw provider SSE event from the Responses API.
 #[derive(Debug, Clone)]
-enum ProviderEvent {
+pub(super) enum ProviderEvent {
     ResponseOutputTextDelta {
         delta: String,
     },
@@ -42,6 +47,11 @@ enum ProviderEvent {
     },
     ResponseWebSearchCallSearching,
     ResponseWebSearchCallCompleted,
+    ResponseCodeInterpreterCallInProgress,
+    ResponseCodeInterpreterCallCompleted {
+        /// Concatenated text from all `logs` output items.
+        output: String,
+    },
     ResponseCompleted {
         response: ResponseObject,
     },
@@ -49,7 +59,7 @@ enum ProviderEvent {
         error: ProviderErrorPayload,
     },
     ResponseIncomplete {
-        reason: String,
+        response: ResponseObject,
     },
     Unknown {
         #[allow(dead_code)]
@@ -68,17 +78,61 @@ pub struct ResponseObject {
     #[serde(default)]
     pub output: Vec<OutputItem>,
     pub usage: RawUsage,
+    #[serde(default)]
+    pub incomplete_details: Option<IncompleteDetails>,
+}
+
+/// Details returned when a response finishes with status `"incomplete"`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IncompleteDetails {
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct InputTokensDetails {
+    #[serde(default)]
+    cached_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct OutputTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawUsage {
     pub input_tokens: i64,
     pub output_tokens: i64,
+    #[serde(default)]
+    input_tokens_details: Option<InputTokensDetails>,
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+impl RawUsage {
+    /// Convert to the domain [`Usage`] type.
+    pub(super) fn to_usage(&self) -> Usage {
+        Usage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_read_input_tokens: self
+                .input_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cached_tokens),
+            cache_write_input_tokens: 0,
+            reasoning_tokens: self
+                .output_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.reasoning_tokens),
+        }
+    }
 }
 
 /// Provider error payload from `response.failed` event.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct ProviderErrorPayload {
+pub(super) struct ProviderErrorPayload {
     #[serde(default)]
     code: String,
     #[serde(default)]
@@ -93,7 +147,7 @@ struct ProviderErrorEnvelope {
 
 /// Parse an error response body, handling both `{"error":{...}}` (`OpenAI`)
 /// and flat `{"code":"...","message":"..."}` shapes.
-fn parse_error_response(bytes: &[u8]) -> LlmProviderError {
+pub(super) fn parse_error_response(bytes: &[u8]) -> LlmProviderError {
     // Try OpenAI envelope first: {"error": {"message": "...", "code": "..."}}
     if let Ok(envelope) = serde_json::from_slice::<ProviderErrorEnvelope>(bytes) {
         let raw = envelope.error.message.clone();
@@ -211,8 +265,23 @@ struct ResponseFailedData {
 
 #[derive(Deserialize)]
 struct ResponseIncompleteData {
+    response: ResponseObject,
+}
+
+/// A single output item from `response.code_interpreter_call.completed`.
+#[derive(Deserialize)]
+struct CodeInterpreterOutputItem {
+    #[serde(default, rename = "type")]
+    output_type: String,
+    /// Present when `output_type == "logs"`.
     #[serde(default)]
-    reason: String,
+    logs: String,
+}
+
+#[derive(Deserialize)]
+struct CodeInterpreterCompletedData {
+    #[serde(default)]
+    outputs: Vec<CodeInterpreterOutputItem>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -266,6 +335,39 @@ impl FromServerEvent for ProviderEvent {
                 Ok(ProviderEvent::ResponseWebSearchCallCompleted)
             }
 
+            "response.code_interpreter_call.in_progress" => {
+                Ok(ProviderEvent::ResponseCodeInterpreterCallInProgress)
+            }
+
+            "response.code_interpreter_call.interpreting" => {
+                // Intermediate event — no client-visible update needed.
+                Ok(ProviderEvent::Unknown {
+                    event_name: event_name.to_owned(),
+                })
+            }
+
+            "response.code_interpreter_call.completed" => {
+                let data: CodeInterpreterCompletedData = serde_json::from_str(&event.data)
+                    .map_err(|e| StreamingError::ServerEventsParse {
+                        detail: format!("failed to parse code interpreter completed: {e}"),
+                    })?;
+                let mut output = data
+                    .outputs
+                    .into_iter()
+                    .filter(|o| o.output_type == "logs")
+                    .map(|o| o.logs)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if output.chars().count() > MAX_CODE_INTERPRETER_OUTPUT_CHARS {
+                    output = output
+                        .chars()
+                        .take(MAX_CODE_INTERPRETER_OUTPUT_CHARS)
+                        .collect::<String>();
+                    output.push_str("...[truncated]");
+                }
+                Ok(ProviderEvent::ResponseCodeInterpreterCallCompleted { output })
+            }
+
             "response.completed" => {
                 let data: ResponseCompletedData =
                     serde_json::from_str(&event.data).map_err(|e| {
@@ -295,7 +397,7 @@ impl FromServerEvent for ProviderEvent {
                         }
                     })?;
                 Ok(ProviderEvent::ResponseIncomplete {
-                    reason: data.reason,
+                    response: data.response,
                 })
             }
 
@@ -321,7 +423,10 @@ impl FromServerEvent for ProviderEvent {
             }
 
             other => {
-                debug!(event_name = other, data = %event.data, "unknown provider event, skipping");
+                debug!(
+                    event_name = other,
+                    "ignoring unhandled provider lifecycle event"
+                );
                 Ok(ProviderEvent::Unknown {
                     event_name: other.to_owned(),
                 })
@@ -335,7 +440,10 @@ impl FromServerEvent for ProviderEvent {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Translate a raw Responses API event into the shared contract.
-fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> TranslatedEvent {
+pub(super) fn translate_provider_event(
+    event: &ProviderEvent,
+    accumulated_text: &str,
+) -> TranslatedEvent {
     match event {
         ProviderEvent::ResponseOutputTextDelta { delta } => {
             TranslatedEvent::Sse(ClientSseEvent::Delta {
@@ -380,12 +488,25 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
             })
         }
 
+        ProviderEvent::ResponseCodeInterpreterCallInProgress => {
+            TranslatedEvent::Sse(ClientSseEvent::Tool {
+                phase: ToolPhase::Start,
+                name: "code_interpreter",
+                details: serde_json::json!({}),
+            })
+        }
+
+        ProviderEvent::ResponseCodeInterpreterCallCompleted { output } => {
+            TranslatedEvent::Sse(ClientSseEvent::Tool {
+                phase: ToolPhase::Done,
+                name: "code_interpreter",
+                details: serde_json::json!({ "output": output }),
+            })
+        }
+
         ProviderEvent::ResponseCompleted { response } => {
-            let citations = extract_citations(response);
-            let usage = Usage {
-                input_tokens: response.usage.input_tokens,
-                output_tokens: response.usage.output_tokens,
-            };
+            let citations = extract_citations(response, accumulated_text);
+            let usage = response.usage.to_usage();
             let raw = serde_json::to_value(response).unwrap_or_default();
             TranslatedEvent::Terminal(TerminalOutcome::Completed {
                 usage,
@@ -409,13 +530,15 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
             })
         }
 
-        ProviderEvent::ResponseIncomplete { reason } => {
+        ProviderEvent::ResponseIncomplete { response } => {
+            let reason = response
+                .incomplete_details
+                .as_ref()
+                .map_or_else(String::new, |d| d.reason.clone());
+            let usage = response.usage.to_usage();
             TranslatedEvent::Terminal(TerminalOutcome::Incomplete {
-                reason: reason.clone(),
-                usage: Usage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                },
+                reason,
+                usage,
                 partial_content: accumulated_text.to_owned(),
             })
         }
@@ -423,37 +546,56 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
 }
 
 /// Extract citations from a `ResponseCompleted`'s output annotations.
-fn extract_citations(response: &ResponseObject) -> Vec<Citation> {
+pub(super) fn extract_citations(
+    response: &ResponseObject,
+    accumulated_text: &str,
+) -> Vec<Citation> {
     let mut citations = Vec::new();
 
     for output_item in &response.output {
         for content_part in &output_item.content {
             for annotation in &content_part.annotations {
                 let citation = match annotation.r#type.as_str() {
-                    "file_citation" => Citation {
-                        source: CitationSource::File,
-                        title: annotation.title.clone(),
-                        url: None,
-                        attachment_id: annotation.file_id.clone(),
-                        snippet: annotation.text.clone().unwrap_or_default(),
-                        score: None,
-                        span: match (annotation.start_index, annotation.end_index) {
+                    "file_citation" | "url_citation" => {
+                        let snippet = annotation
+                            .text
+                            .clone()
+                            .or_else(|| {
+                                annotation.start_index.zip(annotation.end_index).and_then(
+                                    |(start, end)| {
+                                        accumulated_text.get(start..end).map(ToOwned::to_owned)
+                                    },
+                                )
+                            })
+                            .unwrap_or_default();
+                        let span = match (annotation.start_index, annotation.end_index) {
                             (Some(start), Some(end)) => Some(TextSpan { start, end }),
                             _ => None,
-                        },
-                    },
-                    "url_citation" => Citation {
-                        source: CitationSource::Web,
-                        title: annotation.title.clone(),
-                        url: annotation.url.clone(),
-                        attachment_id: None,
-                        snippet: annotation.text.clone().unwrap_or_default(),
-                        score: None,
-                        span: match (annotation.start_index, annotation.end_index) {
-                            (Some(start), Some(end)) => Some(TextSpan { start, end }),
-                            _ => None,
-                        },
-                    },
+                        };
+
+                        let is_file = annotation.r#type == "file_citation";
+                        Citation {
+                            source: if is_file {
+                                CitationSource::File
+                            } else {
+                                CitationSource::Web
+                            },
+                            title: annotation.title.clone(),
+                            url: if is_file {
+                                None
+                            } else {
+                                annotation.url.clone()
+                            },
+                            attachment_id: if is_file {
+                                annotation.file_id.clone()
+                            } else {
+                                None
+                            },
+                            snippet,
+                            score: None,
+                            span,
+                        }
+                    }
                     _ => continue,
                 };
                 citations.push(citation);
@@ -491,10 +633,15 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
                 // System messages are handled via the `instructions` field above.
                 crate::infra::llm::request::Role::System => unreachable!(),
             };
+            let is_assistant = role == "assistant";
             let content: Vec<serde_json::Value> = msg
                 .content
                 .iter()
                 .map(|part| match part {
+                    MessageContentPart::Text { text } if is_assistant => serde_json::json!({
+                        "type": "output_text",
+                        "text": text
+                    }),
                     MessageContentPart::Text { text } => serde_json::json!({
                         "type": "input_text",
                         "text": text
@@ -524,6 +671,10 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
         body["max_output_tokens"] = serde_json::json!(max_tokens);
     }
 
+    if let Some(max_calls) = request.max_tool_calls {
+        body["max_tool_calls"] = serde_json::json!(max_calls);
+    }
+
     // User field: "{tenant_id}:{user_id}"
     if let Some(ref identity) = request.user_identity {
         body["user"] = serde_json::json!(format!("{}:{}", identity.tenant_id, identity.user_id));
@@ -533,17 +684,42 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
         body["metadata"] = serde_json::to_value(metadata).unwrap_or_default();
     }
 
-    // Map tools: FileSearch → file_search, WebSearch → web_search_preview, Function → drop
+    // Map tools: FileSearch → file_search, WebSearch → web_search, Function → drop
     let tools: Vec<serde_json::Value> = request
         .tools
         .iter()
         .filter_map(|tool| match tool {
-            LlmTool::FileSearch { vector_store_ids } => Some(serde_json::json!({
-                "type": "file_search",
-                "vector_store_ids": vector_store_ids
+            LlmTool::FileSearch {
+                vector_store_ids,
+                filters,
+                max_num_results,
+            } => {
+                // Responses API uses flat format (vector_store_ids at top level),
+                // NOT nested inside a "file_search" key.
+                let mut tool = serde_json::json!({
+                    "type": "file_search",
+                    "vector_store_ids": vector_store_ids
+                });
+                if let Some(f) = filters {
+                    tool["filters"] = serialize_file_search_filter(f);
+                }
+                if let Some(n) = max_num_results {
+                    tool["max_num_results"] = serde_json::json!(n);
+                }
+                Some(tool)
+            }
+            LlmTool::WebSearch {
+                search_context_size,
+            } => Some(serde_json::json!({
+                "type": "web_search",
+                "search_context_size": search_context_size
             })),
-            LlmTool::WebSearch => Some(serde_json::json!({
-                "type": "web_search_preview"
+            LlmTool::CodeInterpreter { file_ids } => Some(serde_json::json!({
+                "type": "code_interpreter",
+                "container": {
+                    "type": "auto",
+                    "file_ids": file_ids
+                }
             })),
             LlmTool::Function { name, .. } => {
                 debug!(tool_name = %name, "Function tool not supported by Responses API, dropping");
@@ -564,7 +740,42 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
         }
     }
 
+    // Responses API uses `reasoning: { effort: "..." }` instead of the
+    // top-level `reasoning_effort` key used by Chat Completions.
+    if let Some(body_obj) = body.as_object_mut()
+        && let Some(effort) = body_obj.remove("reasoning_effort")
+    {
+        body_obj.insert(
+            "reasoning".to_owned(),
+            serde_json::json!({ "effort": effort }),
+        );
+    }
+
     body
+}
+
+/// Serialize a `FileSearchFilter` to the provider's wire JSON format.
+fn serialize_file_search_filter(filter: &FileSearchFilter) -> serde_json::Value {
+    match filter {
+        FileSearchFilter::Eq { key, value } => serde_json::json!({
+            "type": "eq",
+            "key": key,
+            "value": value,
+        }),
+        FileSearchFilter::In { key, values } => serde_json::json!({
+            "type": "in",
+            "key": key,
+            "values": values,
+        }),
+        FileSearchFilter::And(filters) => serde_json::json!({
+            "type": "and",
+            "filters": filters.iter().map(serialize_file_search_filter).collect::<Vec<_>>(),
+        }),
+        FileSearchFilter::Or(filters) => serde_json::json!({
+            "type": "or",
+            "filters": filters.iter().map(serialize_file_search_filter).collect::<Vec<_>>(),
+        }),
+    }
 }
 
 /// Serialize a request body to `Body::Bytes`.
@@ -579,36 +790,36 @@ fn body_to_bytes(body: &serde_json::Value) -> Body {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// `OpenAI` Responses API adapter. Routes all calls through OAGW.
+///
+/// The upstream alias is not stored — it is passed per-request to allow
+/// different tenants to route to different OAGW upstreams.
 #[derive(Clone)]
 pub struct OpenAiResponsesProvider {
     gateway: Arc<dyn ServiceGatewayClientV1>,
-    upstream_alias: String,
 }
 
 impl OpenAiResponsesProvider {
     #[must_use]
-    pub fn new(gateway: Arc<dyn ServiceGatewayClientV1>, upstream_alias: String) -> Self {
-        Self {
-            gateway,
-            upstream_alias,
-        }
+    pub fn new(gateway: Arc<dyn ServiceGatewayClientV1>) -> Self {
+        Self { gateway }
     }
 }
 
 #[async_trait::async_trait]
 impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
     #[tracing::instrument(
-        skip(self, ctx, request, cancel),
-        fields(model = %request.model())
+        skip(self, ctx, request, upstream_alias, cancel),
+        fields(model = %request.model(), upstream = %upstream_alias)
     )]
     async fn stream(
         &self,
         ctx: SecurityContext,
         request: LlmRequest<Streaming>,
+        upstream_alias: &str,
         cancel: CancellationToken,
     ) -> Result<ProviderStream, LlmProviderError> {
         let body = build_request_body(&request, true);
-        let uri = format!("/{}/v1/responses", self.upstream_alias);
+        let uri = format!("/{upstream_alias}");
 
         let http_request = http::Request::builder()
             .method(http::Method::POST)
@@ -669,16 +880,17 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
     }
 
     #[tracing::instrument(
-        skip(self, ctx, request),
-        fields(model = %request.model())
+        skip(self, ctx, request, upstream_alias),
+        fields(model = %request.model(), upstream = %upstream_alias)
     )]
     async fn complete(
         &self,
         ctx: SecurityContext,
         request: LlmRequest<NonStreaming>,
+        upstream_alias: &str,
     ) -> Result<ResponseResult, LlmProviderError> {
         let body = build_request_body(&request, false);
-        let uri = format!("/{}/v1/responses", self.upstream_alias);
+        let uri = format!("/{upstream_alias}");
 
         let http_request = http::Request::builder()
             .method(http::Method::POST)
@@ -708,8 +920,6 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
         let response_obj: ResponseObject =
             serde_json::from_slice(&bytes).map_err(|_| parse_error_response(&bytes))?;
 
-        let citations = extract_citations(&response_obj);
-
         // Extract text content from output
         let content = response_obj
             .output
@@ -720,10 +930,12 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
             .collect::<Vec<_>>()
             .join("");
 
-        let usage = Usage {
-            input_tokens: response_obj.usage.input_tokens,
-            output_tokens: response_obj.usage.output_tokens,
-        };
+        // Note: citations here contain raw provider file_ids, not mapped attachment UUIDs.
+        // The non-streaming complete() path is not used for user-facing requests; if it
+        // ever is, map_citation_ids() must be applied by the caller.
+        let citations = extract_citations(&response_obj, &content);
+
+        let usage = response_obj.usage.to_usage();
 
         let raw = serde_json::to_value(&response_obj).unwrap_or_default();
 
@@ -742,1115 +954,5 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
 // ════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
-#[allow(clippy::str_to_string)]
-mod tests {
-    use super::*;
-    use crate::infra::llm::request::{Feature, RequestMetadata, RequestType};
-    use crate::infra::llm::{LlmMessage, LlmProvider, LlmTool, llm_request};
-
-    use std::sync::Mutex;
-
-    use futures::StreamExt;
-    use oagw_sdk::error::ServiceGatewayError;
-    use oagw_sdk::models::*;
-
-    // ── MockGateway ───────────────────────────────────────────────────────
-
-    /// What the mock should return from `proxy_request`.
-    enum MockResponse {
-        /// Return an SSE stream from raw byte chunks.
-        Sse(Vec<String>),
-        /// Return a JSON body (non-SSE).
-        Json(serde_json::Value),
-        /// Return a `ServiceGatewayError`.
-        Error(ServiceGatewayError),
-    }
-
-    struct MockGateway {
-        response: Mutex<Option<MockResponse>>,
-        last_request: Mutex<Option<(String, String)>>, // (uri, body)
-    }
-
-    impl MockGateway {
-        fn returning_sse(events: Vec<String>) -> Arc<Self> {
-            Arc::new(MockGateway {
-                response: Mutex::new(Some(MockResponse::Sse(events))),
-                last_request: Mutex::new(None),
-            })
-        }
-
-        fn returning_json(json: serde_json::Value) -> Arc<Self> {
-            Arc::new(MockGateway {
-                response: Mutex::new(Some(MockResponse::Json(json))),
-                last_request: Mutex::new(None),
-            })
-        }
-
-        fn returning_error(err: ServiceGatewayError) -> Arc<Self> {
-            Arc::new(MockGateway {
-                response: Mutex::new(Some(MockResponse::Error(err))),
-                last_request: Mutex::new(None),
-            })
-        }
-
-        fn last_request_uri(&self) -> Option<String> {
-            self.last_request
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|(u, _)| u.clone())
-        }
-
-        fn last_request_body(&self) -> Option<String> {
-            self.last_request
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|(_, b)| b.clone())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ServiceGatewayClientV1 for MockGateway {
-        async fn create_upstream(
-            &self,
-            _: SecurityContext,
-            _: CreateUpstreamRequest,
-        ) -> Result<Upstream, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn get_upstream(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-        ) -> Result<Upstream, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn list_upstreams(
-            &self,
-            _: SecurityContext,
-            _: &ListQuery,
-        ) -> Result<Vec<Upstream>, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn update_upstream(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-            _: UpdateUpstreamRequest,
-        ) -> Result<Upstream, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn delete_upstream(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-        ) -> Result<(), ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn create_route(
-            &self,
-            _: SecurityContext,
-            _: CreateRouteRequest,
-        ) -> Result<Route, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn get_route(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-        ) -> Result<Route, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn list_routes(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-            _: &ListQuery,
-        ) -> Result<Vec<Route>, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn update_route(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-            _: UpdateRouteRequest,
-        ) -> Result<Route, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn delete_route(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-        ) -> Result<(), ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn resolve_upstream(
-            &self,
-            _: SecurityContext,
-            _: &str,
-        ) -> Result<Upstream, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn resolve_route(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
-            _: &str,
-            _: &str,
-        ) -> Result<Route, ServiceGatewayError> {
-            unimplemented!()
-        }
-
-        async fn proxy_request(
-            &self,
-            _ctx: SecurityContext,
-            req: http::Request<Body>,
-        ) -> Result<http::Response<Body>, ServiceGatewayError> {
-            let uri = req.uri().to_string();
-            let (_parts, body) = req.into_parts();
-            let body_bytes = body.into_bytes().await.unwrap_or_default();
-            let body_str = String::from_utf8_lossy(&body_bytes).to_string();
-            *self.last_request.lock().unwrap() = Some((uri, body_str));
-
-            let mock_resp = self
-                .response
-                .lock()
-                .unwrap()
-                .take()
-                .expect("MockGateway response already consumed");
-
-            match mock_resp {
-                MockResponse::Sse(events) => {
-                    let mut sse_bytes = String::new();
-                    for event_str in &events {
-                        sse_bytes.push_str(event_str);
-                        sse_bytes.push_str("\n\n");
-                    }
-                    let body = Body::Stream(Box::pin(futures::stream::once(async move {
-                        Ok(Bytes::from(sse_bytes))
-                    })));
-
-                    let response = http::Response::builder()
-                        .status(200)
-                        .header("content-type", "text/event-stream")
-                        .body(body)
-                        .unwrap();
-                    Ok(response)
-                }
-                MockResponse::Json(json) => {
-                    let body = Body::Bytes(Bytes::from(serde_json::to_vec(&json).unwrap()));
-                    let response = http::Response::builder()
-                        .status(200)
-                        .header("content-type", "application/json")
-                        .body(body)
-                        .unwrap();
-                    Ok(response)
-                }
-                MockResponse::Error(err) => Err(err),
-            }
-        }
-    }
-
-    fn test_security_context() -> SecurityContext {
-        SecurityContext::anonymous()
-    }
-
-    fn sse_event(event_type: &str, data: &str) -> String {
-        format!("event: {event_type}\ndata: {data}")
-    }
-
-    // ── Unit tests: request builder ────────────────────────────────────────
-
-    #[test]
-    fn builder_minimal_text_request() {
-        let request = llm_request("gpt-4o")
-            .message(LlmMessage::user("Hello"))
-            .system_instructions("You are helpful")
-            .max_output_tokens(4096)
-            .user_identity("abc", "def")
-            .metadata(RequestMetadata {
-                tenant_id: "abc".into(),
-                user_id: "def".into(),
-                chat_id: "ghi".into(),
-                request_type: RequestType::Chat,
-                feature: Feature::None,
-            })
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["model"], "gpt-4o");
-        assert_eq!(body["stream"], true);
-        assert_eq!(body["store"], false);
-        assert_eq!(body["user"], "abc:def");
-        assert_eq!(body["max_output_tokens"], 4096);
-        assert_eq!(body["instructions"], "You are helpful");
-        assert!(body["previous_response_id"].is_null());
-        assert_eq!(body["metadata"]["tenant_id"], "abc");
-        assert_eq!(body["metadata"]["user_id"], "def");
-        assert_eq!(body["metadata"]["chat_id"], "ghi");
-        assert_eq!(body["metadata"]["request_type"], "chat");
-        assert_eq!(body["metadata"]["feature"], "none");
-    }
-
-    #[test]
-    fn builder_file_search_tool() {
-        let request = llm_request("gpt-4o")
-            .tool(LlmTool::FileSearch {
-                vector_store_ids: vec!["vs-123".into()],
-            })
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["tools"][0]["type"], "file_search");
-        assert_eq!(body["tools"][0]["vector_store_ids"][0], "vs-123");
-    }
-
-    #[test]
-    fn builder_web_search_tool() {
-        let request = llm_request("gpt-4o")
-            .tool(LlmTool::WebSearch)
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["tools"][0]["type"], "web_search_preview");
-    }
-
-    #[test]
-    fn builder_both_tools_and_feature() {
-        let request = llm_request("gpt-4o")
-            .tools(vec![
-                LlmTool::FileSearch {
-                    vector_store_ids: vec!["vs-123".into()],
-                },
-                LlmTool::WebSearch,
-            ])
-            .metadata(RequestMetadata {
-                tenant_id: "t1".into(),
-                user_id: "u1".into(),
-                chat_id: "c1".into(),
-                request_type: RequestType::Chat,
-                feature: Feature::FileSearchAndWebSearch,
-            })
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
-        assert_eq!(body["tools"][0]["type"], "file_search");
-        assert_eq!(body["tools"][1]["type"], "web_search_preview");
-        assert_eq!(body["metadata"]["feature"], "file_search+web_search");
-    }
-
-    #[test]
-    fn builder_multimodal_input() {
-        let request = llm_request("gpt-4o")
-            .message(LlmMessage::user_with_image("Describe this", "file-abc"))
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["input"][0]["type"], "message");
-        assert_eq!(body["input"][0]["role"], "user");
-        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
-        assert_eq!(body["input"][0]["content"][0]["text"], "Describe this");
-        assert_eq!(body["input"][0]["content"][1]["type"], "input_image");
-        assert_eq!(body["input"][0]["content"][1]["file_id"], "file-abc");
-    }
-
-    #[test]
-    fn builder_non_streaming_mode() {
-        let request = llm_request("gpt-4o").build_non_streaming();
-
-        let body = build_request_body(&request, false);
-
-        assert_eq!(body["stream"], false);
-    }
-
-    #[test]
-    fn builder_streaming_mode() {
-        let request = llm_request("gpt-4o").build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["stream"], true);
-    }
-
-    #[test]
-    fn builder_user_field_format() {
-        let request = llm_request("gpt-4o")
-            .user_identity("tenant-1", "user-2")
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        assert_eq!(body["user"], "tenant-1:user-2");
-    }
-
-    #[test]
-    fn builder_function_tool_dropped() {
-        let request = llm_request("gpt-4o")
-            .tool(LlmTool::Function {
-                name: "get_weather".into(),
-                description: "Get weather".into(),
-                parameters: serde_json::json!({}),
-            })
-            .build_streaming();
-
-        let body = build_request_body(&request, true);
-
-        // Function tools are dropped for Responses API
-        assert!(body.get("tools").is_none());
-    }
-
-    // ── Unit tests: FromServerEvent ────────────────────────────────────────
-
-    #[test]
-    fn parse_text_delta_event() {
-        let event = ServerEvent {
-            event: Some("response.output_text.delta".to_string()),
-            data: r#"{"delta":"Hello"}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(
-            matches!(result, ProviderEvent::ResponseOutputTextDelta { delta } if delta == "Hello")
-        );
-    }
-
-    #[test]
-    fn parse_text_done_event() {
-        let event = ServerEvent {
-            event: Some("response.output_text.done".to_string()),
-            data: r#"{"text":"Hello world"}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(
-            matches!(result, ProviderEvent::ResponseOutputTextDone { text } if text == "Hello world")
-        );
-    }
-
-    #[test]
-    fn parse_file_search_searching_event() {
-        let event = ServerEvent {
-            event: Some("response.file_search_call.searching".to_string()),
-            data: "{}".to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(matches!(
-            result,
-            ProviderEvent::ResponseFileSearchCallSearching
-        ));
-    }
-
-    #[test]
-    fn parse_file_search_completed_event() {
-        let event = ServerEvent {
-            event: Some("response.file_search_call.completed".to_string()),
-            data: r#"{"results":[{"file_id":"f1","filename":"test.pdf","score":0.95,"text":"snippet"}]}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        match result {
-            ProviderEvent::ResponseFileSearchCallCompleted { results } => {
-                assert_eq!(results.len(), 1);
-                assert_eq!(results[0].file_id, "f1");
-            }
-            _ => panic!("expected ResponseFileSearchCallCompleted"),
-        }
-    }
-
-    #[test]
-    fn parse_web_search_searching_event() {
-        let event = ServerEvent {
-            event: Some("response.web_search_call.searching".to_string()),
-            data: "{}".to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(matches!(
-            result,
-            ProviderEvent::ResponseWebSearchCallSearching
-        ));
-    }
-
-    #[test]
-    fn parse_web_search_completed_event() {
-        let event = ServerEvent {
-            event: Some("response.web_search_call.completed".to_string()),
-            data: "{}".to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(matches!(
-            result,
-            ProviderEvent::ResponseWebSearchCallCompleted
-        ));
-    }
-
-    #[test]
-    fn parse_response_completed_event() {
-        let event = ServerEvent {
-            event: Some("response.completed".to_string()),
-            data: r#"{"response":{"id":"resp-abc","output":[{"type":"message","content":[{"type":"output_text","text":"Hello","annotations":[]}]}],"usage":{"input_tokens":100,"output_tokens":50}}}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        match result {
-            ProviderEvent::ResponseCompleted { response } => {
-                assert_eq!(response.id, "resp-abc");
-                assert_eq!(response.usage.input_tokens, 100);
-                assert_eq!(response.usage.output_tokens, 50);
-            }
-            _ => panic!("expected ResponseCompleted"),
-        }
-    }
-
-    #[test]
-    fn parse_response_failed_event() {
-        let event = ServerEvent {
-            event: Some("response.failed".to_string()),
-            data: r#"{"error":{"code":"server_error","message":"internal failure"}}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        match result {
-            ProviderEvent::ResponseFailed { error } => {
-                assert_eq!(error.code, "server_error");
-                assert_eq!(error.message, "internal failure");
-            }
-            _ => panic!("expected ResponseFailed"),
-        }
-    }
-
-    #[test]
-    fn parse_response_incomplete_event() {
-        let event = ServerEvent {
-            event: Some("response.incomplete".to_string()),
-            data: r#"{"reason":"max_output_tokens"}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(
-            matches!(result, ProviderEvent::ResponseIncomplete { reason } if reason == "max_output_tokens")
-        );
-    }
-
-    #[test]
-    fn parse_unknown_event_returns_unknown() {
-        let event = ServerEvent {
-            event: Some("response.new_feature.delta".to_string()),
-            data: r#"{"something":"new"}"#.to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event).unwrap();
-        assert!(
-            matches!(result, ProviderEvent::Unknown { event_name } if event_name == "response.new_feature.delta")
-        );
-    }
-
-    #[test]
-    fn parse_malformed_json_in_known_event_returns_error() {
-        let event = ServerEvent {
-            event: Some("response.output_text.delta".to_string()),
-            data: "not valid json".to_string(),
-            id: None,
-            retry: None,
-        };
-        let result = ProviderEvent::from_server_event(event);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            StreamingError::ServerEventsParse { .. }
-        ));
-    }
-
-    // ── Unit tests: translate_provider_event ───────────────────────────────
-
-    #[test]
-    fn translate_text_delta() {
-        let event = ProviderEvent::ResponseOutputTextDelta { delta: "Hi".into() };
-        let translated = translate_provider_event(&event, "");
-        match translated {
-            TranslatedEvent::Sse(ClientSseEvent::Delta { r#type, content }) => {
-                assert_eq!(r#type, "text");
-                assert_eq!(content, "Hi");
-            }
-            _ => panic!("expected Sse(Delta)"),
-        }
-    }
-
-    #[test]
-    fn translate_text_done_is_skip() {
-        let event = ProviderEvent::ResponseOutputTextDone {
-            text: "done".into(),
-        };
-        let translated = translate_provider_event(&event, "");
-        assert!(matches!(translated, TranslatedEvent::Skip));
-    }
-
-    #[test]
-    fn translate_file_search_start() {
-        let event = ProviderEvent::ResponseFileSearchCallSearching;
-        let translated = translate_provider_event(&event, "");
-        match translated {
-            TranslatedEvent::Sse(ClientSseEvent::Tool { phase, name, .. }) => {
-                assert!(matches!(phase, ToolPhase::Start));
-                assert_eq!(name, "file_search");
-            }
-            _ => panic!("expected Sse(Tool)"),
-        }
-    }
-
-    #[test]
-    fn translate_file_search_done_with_count() {
-        let event = ProviderEvent::ResponseFileSearchCallCompleted {
-            results: vec![
-                FileSearchResult {
-                    file_id: "f1".into(),
-                    filename: "a.pdf".into(),
-                    score: 0.9,
-                    text: String::new(),
-                },
-                FileSearchResult {
-                    file_id: "f2".into(),
-                    filename: "b.pdf".into(),
-                    score: 0.8,
-                    text: String::new(),
-                },
-            ],
-        };
-        let translated = translate_provider_event(&event, "");
-        match translated {
-            TranslatedEvent::Sse(ClientSseEvent::Tool {
-                phase,
-                name,
-                details,
-            }) => {
-                assert!(matches!(phase, ToolPhase::Done));
-                assert_eq!(name, "file_search");
-                assert_eq!(details["files_searched"], 2);
-            }
-            _ => panic!("expected Sse(Tool)"),
-        }
-    }
-
-    #[test]
-    fn translate_web_search_start() {
-        let event = ProviderEvent::ResponseWebSearchCallSearching;
-        let translated = translate_provider_event(&event, "");
-        match translated {
-            TranslatedEvent::Sse(ClientSseEvent::Tool { phase, name, .. }) => {
-                assert!(matches!(phase, ToolPhase::Start));
-                assert_eq!(name, "web_search");
-            }
-            _ => panic!("expected Sse(Tool)"),
-        }
-    }
-
-    #[test]
-    fn translate_web_search_done() {
-        let event = ProviderEvent::ResponseWebSearchCallCompleted;
-        let translated = translate_provider_event(&event, "");
-        match translated {
-            TranslatedEvent::Sse(ClientSseEvent::Tool { phase, name, .. }) => {
-                assert!(matches!(phase, ToolPhase::Done));
-                assert_eq!(name, "web_search");
-            }
-            _ => panic!("expected Sse(Tool)"),
-        }
-    }
-
-    #[test]
-    fn translate_completed_returns_terminal() {
-        let event = ProviderEvent::ResponseCompleted {
-            response: ResponseObject {
-                id: "resp-abc".into(),
-                output: vec![],
-                usage: RawUsage {
-                    input_tokens: 500,
-                    output_tokens: 120,
-                },
-            },
-        };
-        let translated = translate_provider_event(&event, "Hello");
-        match translated {
-            TranslatedEvent::Terminal(TerminalOutcome::Completed {
-                usage,
-                response_id,
-                content,
-                ..
-            }) => {
-                assert_eq!(usage.input_tokens, 500);
-                assert_eq!(usage.output_tokens, 120);
-                assert_eq!(response_id, "resp-abc");
-                assert_eq!(content, "Hello");
-            }
-            _ => panic!("expected Terminal(Completed)"),
-        }
-    }
-
-    #[test]
-    fn translate_failed_returns_terminal() {
-        let event = ProviderEvent::ResponseFailed {
-            error: ProviderErrorPayload {
-                code: "err".into(),
-                message: "failed".into(),
-            },
-        };
-        let translated = translate_provider_event(&event, "partial");
-        match translated {
-            TranslatedEvent::Terminal(TerminalOutcome::Failed {
-                partial_content, ..
-            }) => {
-                assert_eq!(partial_content, "partial");
-            }
-            _ => panic!("expected Terminal(Failed)"),
-        }
-    }
-
-    #[test]
-    fn translate_incomplete_returns_terminal() {
-        let event = ProviderEvent::ResponseIncomplete {
-            reason: "max_output_tokens".into(),
-        };
-        let translated = translate_provider_event(&event, "partial");
-        match translated {
-            TranslatedEvent::Terminal(TerminalOutcome::Incomplete {
-                reason,
-                partial_content,
-                ..
-            }) => {
-                assert_eq!(reason, "max_output_tokens");
-                assert_eq!(partial_content, "partial");
-            }
-            _ => panic!("expected Terminal(Incomplete)"),
-        }
-    }
-
-    #[test]
-    fn translate_unknown_is_skip() {
-        let event = ProviderEvent::Unknown {
-            event_name: "response.new".into(),
-        };
-        let translated = translate_provider_event(&event, "");
-        assert!(matches!(translated, TranslatedEvent::Skip));
-    }
-
-    #[test]
-    fn extract_citations_file_citation() {
-        let response = ResponseObject {
-            id: "resp-1".into(),
-            output: vec![OutputItem {
-                r#type: "message".into(),
-                content: vec![ResponseContentPart {
-                    r#type: "output_text".into(),
-                    text: "Hello".into(),
-                    annotations: vec![Annotation {
-                        r#type: "file_citation".into(),
-                        title: "Report.pdf".into(),
-                        url: None,
-                        file_id: Some("file-xyz".into()),
-                        start_index: Some(0),
-                        end_index: Some(5),
-                        text: Some("snippet".into()),
-                    }],
-                }],
-            }],
-            usage: RawUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
-        };
-        let citations = extract_citations(&response);
-        assert_eq!(citations.len(), 1);
-        assert!(matches!(citations[0].source, CitationSource::File));
-        assert_eq!(citations[0].title, "Report.pdf");
-        assert_eq!(citations[0].attachment_id.as_deref(), Some("file-xyz"));
-        assert_eq!(citations[0].span.unwrap().start, 0);
-        assert_eq!(citations[0].span.unwrap().end, 5);
-    }
-
-    #[test]
-    fn extract_citations_url_citation() {
-        let response = ResponseObject {
-            id: "resp-1".into(),
-            output: vec![OutputItem {
-                r#type: "message".into(),
-                content: vec![ResponseContentPart {
-                    r#type: "output_text".into(),
-                    text: "Hello".into(),
-                    annotations: vec![Annotation {
-                        r#type: "url_citation".into(),
-                        title: "Example".into(),
-                        url: Some("https://example.com".into()),
-                        file_id: None,
-                        start_index: None,
-                        end_index: None,
-                        text: None,
-                    }],
-                }],
-            }],
-            usage: RawUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
-        };
-        let citations = extract_citations(&response);
-        assert_eq!(citations.len(), 1);
-        assert!(matches!(citations[0].source, CitationSource::Web));
-        assert_eq!(citations[0].url.as_deref(), Some("https://example.com"));
-        assert_eq!(citations[0].title, "Example");
-    }
-
-    #[test]
-    fn extract_citations_empty_annotations() {
-        let response = ResponseObject {
-            id: "resp-1".into(),
-            output: vec![OutputItem {
-                r#type: "message".into(),
-                content: vec![ResponseContentPart {
-                    r#type: "output_text".into(),
-                    text: "Hello".into(),
-                    annotations: vec![],
-                }],
-            }],
-            usage: RawUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
-        };
-        let citations = extract_citations(&response);
-        assert!(citations.is_empty());
-    }
-
-    // ── Integration tests: streaming ───────────────────────────────────────
-
-    #[tokio::test]
-    async fn stream_yields_events_and_outcome() {
-        let events = vec![
-            sse_event("response.output_text.delta", r#"{"delta":"Hel"}"#),
-            sse_event("response.output_text.delta", r#"{"delta":"lo "}"#),
-            sse_event("response.output_text.delta", r#"{"delta":"world"}"#),
-            sse_event(
-                "response.completed",
-                r#"{"response":{"id":"resp-1","output":[],"usage":{"input_tokens":100,"output_tokens":30}}}"#,
-            ),
-        ];
-
-        let gw = MockGateway::returning_sse(events);
-        let provider = OpenAiResponsesProvider::new(gw.clone(), "openai".into());
-
-        let request = llm_request("gpt-4o")
-            .message(LlmMessage::user("Hello"))
-            .build_streaming();
-
-        let cancel = CancellationToken::new();
-        let stream = provider
-            .stream(test_security_context(), request, cancel)
-            .await
-            .unwrap();
-        let outcome = stream.into_outcome().await;
-
-        match outcome {
-            TerminalOutcome::Completed {
-                content,
-                usage,
-                response_id,
-                ..
-            } => {
-                assert_eq!(content, "Hello world");
-                assert_eq!(usage.input_tokens, 100);
-                assert_eq!(usage.output_tokens, 30);
-                assert_eq!(response_id, "resp-1");
-            }
-            _ => panic!("expected Completed, got {outcome:?}"),
-        }
-
-        assert_eq!(gw.last_request_uri().unwrap(), "/openai/v1/responses");
-    }
-
-    #[tokio::test]
-    async fn stream_interleaved_tool_events() {
-        let events = vec![
-            sse_event("response.output_text.delta", r#"{"delta":"A"}"#),
-            sse_event("response.file_search_call.searching", "{}"),
-            sse_event("response.output_text.delta", r#"{"delta":"B"}"#),
-            sse_event("response.file_search_call.completed", r#"{"results":[]}"#),
-            sse_event("response.output_text.delta", r#"{"delta":"C"}"#),
-            sse_event(
-                "response.completed",
-                r#"{"response":{"id":"resp-2","output":[],"usage":{"input_tokens":50,"output_tokens":10}}}"#,
-            ),
-        ];
-
-        let gw = MockGateway::returning_sse(events);
-        let provider = OpenAiResponsesProvider::new(gw, "openai".into());
-
-        let request = llm_request("gpt-4o").build_streaming();
-        let cancel = CancellationToken::new();
-        let stream = provider
-            .stream(test_security_context(), request, cancel)
-            .await
-            .unwrap();
-        let outcome = stream.into_outcome().await;
-
-        match outcome {
-            TerminalOutcome::Completed { content, .. } => {
-                assert_eq!(content, "ABC");
-            }
-            _ => panic!("expected Completed"),
-        }
-    }
-
-    // ── Integration test: cancellation ─────────────────────────────────────
-
-    #[tokio::test]
-    async fn cancellation_terminates_stream() {
-        let events = vec![
-            sse_event("response.output_text.delta", r#"{"delta":"Hello"}"#),
-            sse_event("response.output_text.delta", r#"{"delta":" world"}"#),
-            sse_event(
-                "response.completed",
-                r#"{"response":{"id":"resp-3","output":[],"usage":{"input_tokens":10,"output_tokens":5}}}"#,
-            ),
-        ];
-
-        let gw = MockGateway::returning_sse(events);
-        let provider = OpenAiResponsesProvider::new(gw, "openai".into());
-
-        let request = llm_request("gpt-4o").build_streaming();
-        let cancel = CancellationToken::new();
-        let mut stream = provider
-            .stream(test_security_context(), request, cancel.clone())
-            .await
-            .unwrap();
-
-        // Read first event
-        let first = stream.next().await;
-        assert!(first.is_some());
-
-        // Cancel
-        cancel.cancel();
-        assert!(stream.is_cancelled());
-
-        // Stream should terminate
-        let _remaining: Vec<_> = stream.collect().await;
-    }
-
-    // ── Integration test: OAGW error paths ─────────────────────────────────
-
-    #[tokio::test]
-    async fn oagw_rate_limit_error() {
-        let gw = MockGateway::returning_error(ServiceGatewayError::RateLimitExceeded {
-            detail: "too many requests".into(),
-            instance: "/test".into(),
-            retry_after_secs: Some(30),
-        });
-        let provider = OpenAiResponsesProvider::new(gw, "openai".into());
-
-        let request = llm_request("gpt-4o").build_streaming();
-        let cancel = CancellationToken::new();
-        let result = provider
-            .stream(test_security_context(), request, cancel)
-            .await;
-
-        assert!(matches!(
-            result.unwrap_err(),
-            LlmProviderError::RateLimited {
-                retry_after_secs: Some(30)
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn oagw_connection_timeout_error() {
-        let gw = MockGateway::returning_error(ServiceGatewayError::ConnectionTimeout {
-            detail: "timed out".into(),
-            instance: "/test".into(),
-        });
-        let provider = OpenAiResponsesProvider::new(gw, "openai".into());
-
-        let request = llm_request("gpt-4o").build_streaming();
-        let cancel = CancellationToken::new();
-        let result = provider
-            .stream(test_security_context(), request, cancel)
-            .await;
-
-        assert!(matches!(result.unwrap_err(), LlmProviderError::Timeout));
-    }
-
-    #[tokio::test]
-    async fn oagw_upstream_disabled_error() {
-        let gw = MockGateway::returning_error(ServiceGatewayError::UpstreamDisabled {
-            detail: "disabled".into(),
-            instance: "/test".into(),
-        });
-        let provider = OpenAiResponsesProvider::new(gw, "openai".into());
-
-        let request = llm_request("gpt-4o").build_streaming();
-        let cancel = CancellationToken::new();
-        let result = provider
-            .stream(test_security_context(), request, cancel)
-            .await;
-
-        assert!(matches!(
-            result.unwrap_err(),
-            LlmProviderError::ProviderUnavailable
-        ));
-    }
-
-    // ── Integration test: non-SSE response ─────────────────────────────────
-
-    #[tokio::test]
-    async fn non_sse_json_error_response() {
-        let gw = MockGateway::returning_json(serde_json::json!({
-            "code": "invalid_request",
-            "message": "Error in resp_xyz123: invalid model at https://api.openai.com/v1"
-        }));
-        let provider = OpenAiResponsesProvider::new(gw, "openai".into());
-
-        let request = llm_request("bad-model").build_streaming();
-        let cancel = CancellationToken::new();
-        let result = provider
-            .stream(test_security_context(), request, cancel)
-            .await;
-
-        match result.unwrap_err() {
-            LlmProviderError::ProviderError {
-                code,
-                message,
-                raw_detail,
-            } => {
-                assert_eq!(code, "invalid_request");
-                assert!(!message.contains("resp_xyz123"));
-                assert!(!message.contains("https://api.openai.com"));
-                assert!(raw_detail.is_some());
-            }
-            other => panic!("expected ProviderError, got {other:?}"),
-        }
-    }
-
-    // ── Integration test: complete ────────────────────────────────────
-
-    #[tokio::test]
-    async fn complete_response_success() {
-        let gw = MockGateway::returning_json(serde_json::json!({
-            "id": "resp-complete-1",
-            "output": [{
-                "type": "message",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Summary of the conversation.",
-                    "annotations": [{
-                        "type": "file_citation",
-                        "title": "Doc.pdf",
-                        "file_id": "file-1",
-                        "start_index": 0,
-                        "end_index": 10,
-                        "text": "snippet"
-                    }]
-                }]
-            }],
-            "usage": {
-                "input_tokens": 500,
-                "output_tokens": 50
-            }
-        }));
-        let provider = OpenAiResponsesProvider::new(gw.clone(), "azure-openai".into());
-
-        let request = llm_request("gpt-4o")
-            .system_instructions("Summarize.")
-            .message(LlmMessage::user("conversation"))
-            .max_output_tokens(1024)
-            .build_non_streaming();
-
-        let result = provider
-            .complete(test_security_context(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(result.content, "Summary of the conversation.");
-        assert_eq!(result.usage.input_tokens, 500);
-        assert_eq!(result.usage.output_tokens, 50);
-        assert_eq!(result.response_id, "resp-complete-1");
-        assert_eq!(result.citations.len(), 1);
-        assert!(matches!(result.citations[0].source, CitationSource::File));
-
-        assert_eq!(gw.last_request_uri().unwrap(), "/azure-openai/v1/responses");
-    }
-
-    // ── Integration test: fluent builder ───────────────────────────────────
-
-    #[tokio::test]
-    async fn fluent_builder_produces_valid_json() {
-        let events = vec![sse_event(
-            "response.completed",
-            r#"{"response":{"id":"resp-fb","output":[],"usage":{"input_tokens":10,"output_tokens":5}}}"#,
-        )];
-
-        let gw = MockGateway::returning_sse(events);
-        let provider = OpenAiResponsesProvider::new(gw.clone(), "openai".into());
-
-        let request = llm_request("gpt-4o")
-            .system_instructions("You are helpful")
-            .message(LlmMessage::user("Hello"))
-            .max_output_tokens(4096)
-            .tools(vec![
-                LlmTool::FileSearch {
-                    vector_store_ids: vec!["vs-123".into()],
-                },
-                LlmTool::WebSearch,
-            ])
-            .user_identity("t1", "u1")
-            .metadata(RequestMetadata {
-                tenant_id: "t1".into(),
-                user_id: "u1".into(),
-                chat_id: "c1".into(),
-                request_type: RequestType::Chat,
-                feature: Feature::FileSearchAndWebSearch,
-            })
-            .build_streaming();
-
-        let cancel = CancellationToken::new();
-        let _stream = provider
-            .stream(test_security_context(), request, cancel)
-            .await
-            .unwrap();
-
-        let body_str = gw.last_request_body().unwrap();
-        let body: serde_json::Value = serde_json::from_str(&body_str).unwrap();
-
-        assert_eq!(body["model"], "gpt-4o");
-        assert_eq!(body["instructions"], "You are helpful");
-        assert_eq!(body["stream"], true);
-        assert_eq!(body["store"], false);
-        assert_eq!(body["max_output_tokens"], 4096);
-        assert_eq!(body["user"], "t1:u1");
-        assert!(body["previous_response_id"].is_null());
-        assert_eq!(body["input"][0]["type"], "message");
-        assert_eq!(body["input"][0]["role"], "user");
-        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
-        assert_eq!(body["input"][0]["content"][0]["text"], "Hello");
-        assert_eq!(body["tools"][0]["type"], "file_search");
-        assert_eq!(body["tools"][0]["vector_store_ids"][0], "vs-123");
-        assert_eq!(body["tools"][1]["type"], "web_search_preview");
-        assert_eq!(body["metadata"]["tenant_id"], "t1");
-        assert_eq!(body["metadata"]["feature"], "file_search+web_search");
-    }
-}
+#[path = "openai_responses_tests.rs"]
+mod openai_responses_tests;

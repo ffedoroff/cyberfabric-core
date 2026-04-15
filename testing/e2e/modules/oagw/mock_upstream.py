@@ -6,9 +6,15 @@ fixture so the OAGW service under test can proxy to it.
 
 Uses only stdlib asyncio — no aiohttp dependency.
 """
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import base64
 import json
 import re
+import struct
+from urllib.parse import parse_qs
 import logging
 
 # ---------------------------------------------------------------------------
@@ -89,13 +95,135 @@ def _sse_end() -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Stateful counters for conditional-response endpoints
+# ---------------------------------------------------------------------------
+
+_endpoint_call_counts: dict[str, int] = {}
+
+
+def _bump_count(key: str) -> int:
+    """Increment and return the call count for *key* (1-indexed)."""
+    _endpoint_call_counts[key] = _endpoint_call_counts.get(key, 0) + 1
+    return _endpoint_call_counts[key]
+
+
+# ---------------------------------------------------------------------------
+# WebSocket helpers (RFC 6455)
+# ---------------------------------------------------------------------------
+
+_WS_MAGIC = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept_key(key: str) -> str:
+    """Compute Sec-WebSocket-Accept from the client's Sec-WebSocket-Key."""
+    digest = hashlib.sha1(key.strip().encode() + _WS_MAGIC).digest()
+    return base64.b64encode(digest).decode()
+
+
+def _ws_upgrade_response(accept_key: str) -> bytes:
+    return (
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Accept: {accept_key}\r\n"
+        "\r\n"
+    ).encode()
+
+
+async def _ws_read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes] | None:
+    """Read a single WebSocket frame. Returns (opcode, payload) or None on EOF."""
+    hdr = await reader.readexactly(2)
+    opcode = hdr[0] & 0x0F
+    masked = bool(hdr[1] & 0x80)
+    length = hdr[1] & 0x7F
+
+    if length == 126:
+        raw = await reader.readexactly(2)
+        length = struct.unpack("!H", raw)[0]
+    elif length == 127:
+        raw = await reader.readexactly(8)
+        length = struct.unpack("!Q", raw)[0]
+
+    mask_key = await reader.readexactly(4) if masked else b"\x00" * 4
+    payload = bytearray(await reader.readexactly(length))
+    if masked:
+        for i in range(length):
+            payload[i] ^= mask_key[i % 4]
+
+    return opcode, bytes(payload)
+
+
+def _ws_write_frame(opcode: int, payload: bytes) -> bytes:
+    """Build an unmasked WebSocket frame."""
+    frame = bytearray()
+    frame.append(0x80 | opcode)  # FIN + opcode
+    length = len(payload)
+    if length < 126:
+        frame.append(length)
+    elif length < 65536:
+        frame.append(126)
+        frame.extend(struct.pack("!H", length))
+    else:
+        frame.append(127)
+        frame.extend(struct.pack("!Q", length))
+    frame.extend(payload)
+    return bytes(frame)
+
+
+async def _ws_echo_loop(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """WebSocket echo loop: read frames from client, echo text/binary back."""
+    try:
+        while True:
+            result = await _ws_read_frame(reader)
+            if result is None:
+                break
+            opcode, payload = result
+
+            if opcode == 0x8:  # Close
+                # Echo the close frame back and exit.
+                writer.write(_ws_write_frame(0x8, payload))
+                await writer.drain()
+                break
+            elif opcode == 0x9:  # Ping → Pong
+                writer.write(_ws_write_frame(0xA, payload))
+                await writer.drain()
+            elif opcode in (0x1, 0x2):  # Text or Binary → echo
+                writer.write(_ws_write_frame(opcode, payload))
+                await writer.drain()
+    except (asyncio.IncompleteReadError, ConnectionError):
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
 
-async def _handle(method: str, path: str, headers: dict, body: bytes, writer: asyncio.StreamWriter) -> None:
+async def _handle(method: str, path: str, headers: dict, body: bytes, writer: asyncio.StreamWriter, reader: asyncio.StreamReader | None = None) -> None:
+    # POST /reset-counters — reset all stateful endpoint call counts
+    if method == "POST" and path == "/reset-counters":
+        _endpoint_call_counts.clear()
+        writer.write(_json_response({"reset": True}))
+
     # GET /health
-    if method == "GET" and path == "/health":
+    elif method == "GET" and path == "/health":
         writer.write(_json_response({"status": "ok"}))
+
+    # POST /oauth2/token — mock OAuth2 token endpoint
+    elif method == "POST" and path == "/oauth2/token":
+        # Parse URL-encoded form body and validate grant_type=client_credentials.
+        parsed = parse_qs(body.decode("utf-8", errors="replace"))
+        form_params = {k: v[0] for k, v in parsed.items() if v}
+        if form_params.get("grant_type") != "client_credentials":
+            writer.write(_json_response(
+                {"error": "unsupported_grant_type", "error_description": "grant_type must be client_credentials"},
+                status=400,
+            ))
+        else:
+            writer.write(_json_response({
+                "access_token": "mock-e2e-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            }))
 
     # POST /echo
     elif method == "POST" and path == "/echo":
@@ -177,6 +305,41 @@ async def _handle(method: str, path: str, headers: dict, body: bytes, writer: as
         code = int(m.group(1))
         writer.write(_json_response({"status": code, "description": f"Status {code}"}, status=code))
 
+    # POST /echo-401-once — returns 401 on first call, 200 thereafter.
+    # Used to exercise the OAGW 401-retry logic.
+    elif method == "POST" and path == "/echo-401-once":
+        call = _bump_count("echo-401-once")
+        if call == 1:
+            writer.write(_json_response(
+                {"error": "invalid_token", "error_description": "token expired"},
+                status=401,
+            ))
+        else:
+            writer.write(_json_response({
+                "headers": headers,
+                "body": body.decode("utf-8", errors="replace"),
+                "call_number": call,
+            }))
+
+    # GET /ws/echo — WebSocket echo endpoint
+    elif method == "GET" and path == "/ws/echo" and "upgrade" in headers.get("connection", "").lower():
+        upgrade_val = headers.get("upgrade", "").lower()
+        ws_key = headers.get("sec-websocket-key", "")
+        ws_version = headers.get("sec-websocket-version", "")
+        if upgrade_val != "websocket" or not ws_key or not ws_version:
+            writer.write(_json_response(
+                {"error": "invalid WebSocket upgrade: missing required headers"},
+                status=400,
+            ))
+            await writer.drain()
+            return
+        accept = _ws_accept_key(ws_key)
+        writer.write(_ws_upgrade_response(accept))
+        await writer.drain()
+        # Run the echo loop; the caller must keep the connection open.
+        await _ws_echo_loop(reader, writer)
+        return  # Connection fully handled — don't close in _client.
+
     # 404 fallback
     else:
         writer.write(_json_response({"error": "not found"}, status=404))
@@ -198,7 +361,7 @@ class MockUpstreamServer:
         async def _client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             try:
                 method, path, headers, body = await _read_request(reader)
-                await _handle(method, path, headers, body, writer)
+                await _handle(method, path, headers, body, writer, reader)
                 await writer.drain()
             except (asyncio.CancelledError, GeneratorExit):
                 raise
@@ -209,7 +372,7 @@ class MockUpstreamServer:
                     writer.close()
                 except RuntimeError:
                     # Event loop may already be closing/shutdown.
-                    return
+                    pass
                 try:
                     await writer.wait_closed()
                 except (ConnectionError, RuntimeError):

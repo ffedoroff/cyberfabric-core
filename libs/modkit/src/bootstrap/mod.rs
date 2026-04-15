@@ -15,6 +15,8 @@
 //! Backend types for spawning `OoP` modules have been moved to `modkit::backends`.
 
 pub mod config;
+#[cfg(feature = "fips")]
+mod crypto;
 pub mod host;
 
 pub mod oop;
@@ -22,9 +24,9 @@ pub mod oop;
 // Re-export commonly used config types at crate root for convenience
 pub use config::{
     AppConfig, CliArgs, ConsoleFormat, LoggingConfig, MODKIT_MODULE_CONFIG_ENV, ModuleConfig,
-    ModuleRuntime, RenderedModuleConfig, RuntimeKind, Section, ServerConfig,
-    dump_effective_modules_config_json, dump_effective_modules_config_yaml, list_module_names,
-    render_effective_modules_config,
+    ModuleRuntime, RenderedModuleConfig, RuntimeKind, Section, ServerConfig, VendorConfig,
+    VendorConfigError, dump_effective_modules_config_json, dump_effective_modules_config_yaml,
+    list_module_names, render_effective_modules_config,
 };
 
 // Re-export host types for convenience
@@ -32,3 +34,6 @@ pub use oop::{OopRunOptions, run_oop_with_options};
 
 mod run;
 pub use run::{run_migrate, run_server};
+
+#[cfg(feature = "fips")]
+pub use crypto::init_fips_crypto_provider;

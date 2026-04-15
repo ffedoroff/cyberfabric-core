@@ -1,9 +1,12 @@
+// Updated: 2026-04-07 by Constructor Tech
 //! Client implementation for the static `AuthN` resolver plugin.
 //!
 //! Implements `AuthNResolverPluginClient` using the domain service.
 
 use async_trait::async_trait;
-use authn_resolver_sdk::{AuthNResolverError, AuthNResolverPluginClient, AuthenticationResult};
+use authn_resolver_sdk::{
+    AuthNResolverError, AuthNResolverPluginClient, AuthenticationResult, ClientCredentialsRequest,
+};
 
 use super::service::Service;
 
@@ -16,33 +19,18 @@ impl AuthNResolverPluginClient for Service {
         self.authenticate(bearer_token)
             .ok_or_else(|| AuthNResolverError::Unauthorized("invalid token".to_owned()))
     }
+
+    async fn exchange_client_credentials(
+        &self,
+        request: &ClientCredentialsRequest,
+    ) -> Result<AuthenticationResult, AuthNResolverError> {
+        self.exchange_client_credentials(request).ok_or_else(|| {
+            AuthNResolverError::TokenAcquisitionFailed("invalid client credentials".to_owned())
+        })
+    }
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-    use crate::config::StaticAuthNPluginConfig;
-
-    #[tokio::test]
-    async fn plugin_trait_accept_all_succeeds() {
-        let service = Service::from_config(&StaticAuthNPluginConfig::default());
-        let plugin: &dyn AuthNResolverPluginClient = &service;
-
-        let result = plugin.authenticate("any-token").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn plugin_trait_empty_token_unauthorized() {
-        let service = Service::from_config(&StaticAuthNPluginConfig::default());
-        let plugin: &dyn AuthNResolverPluginClient = &service;
-
-        let result = plugin.authenticate("").await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            AuthNResolverError::Unauthorized(_) => {}
-            other => panic!("Expected Unauthorized, got: {other:?}"),
-        }
-    }
-}
+#[path = "client_tests.rs"]
+mod client_tests;

@@ -20,6 +20,7 @@ fn minimal_app_config() -> AppConfig {
     AppConfig {
         server: ServerConfig {
             home_dir: std::env::temp_dir().join("modkit_test"),
+            ..Default::default()
         },
         logging: default_logging_config(),
         ..Default::default()
@@ -626,7 +627,7 @@ mod full_oop_config {
                 )]
                 .into(),
             ),
-            tracing: None,
+            opentelemetry: None,
         };
 
         let result = build_oop_config_and_db(&local_config, "test_module", Some(&rendered));
@@ -665,7 +666,7 @@ mod full_oop_config {
                 "another": "setting"
             }),
             logging: None,
-            tracing: None,
+            opentelemetry: None,
         };
 
         let result = build_oop_config_and_db(&local_config, "test_module", Some(&rendered));
@@ -712,7 +713,7 @@ mod full_oop_config {
                 ]
                 .into(),
             ),
-            tracing: None,
+            opentelemetry: None,
         };
 
         let result = build_oop_config_and_db(&local_config, "test_module", Some(&rendered));
@@ -761,7 +762,7 @@ mod full_oop_config {
             database: None,
             config: json!({"master_setting": "value"}),
             logging: None,
-            tracing: None,
+            opentelemetry: None,
         };
 
         let result = build_oop_config_and_db(&local_config, "test_module", Some(&rendered));
@@ -789,7 +790,7 @@ mod full_oop_config {
             database: None,
             config: json!({"master_setting": "value"}),
             logging: None,
-            tracing: None,
+            opentelemetry: None,
         };
 
         let result = build_oop_config_and_db(&local_config, "test_module", Some(&rendered));

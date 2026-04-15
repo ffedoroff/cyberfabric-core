@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +7,7 @@ use authz_resolver_sdk::pep::AccessRequest;
 use bytes::Bytes;
 use credstore_sdk::CredStoreClientV1;
 use futures_util::StreamExt;
-use http::{HeaderMap, HeaderName, HeaderValue};
+use http::{HeaderMap, HeaderValue};
 use modkit_security::SecurityContext;
 use oagw_sdk::body::{Body, BodyStream};
 use pingora_core::apps::HttpServerApp;
@@ -16,18 +15,26 @@ use pingora_proxy::HttpProxy;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
+use crate::config::TokenCacheConfig;
 use crate::domain::error::DomainError;
-use crate::domain::model::{Endpoint, PassthroughMode, PathSuffixMode, Scheme, Upstream};
-use crate::domain::plugin::AuthContext;
+use crate::domain::model::{
+    PassthroughMode, PathSuffixMode, ResponseHeaderRules, Scheme, Upstream,
+};
+use crate::domain::plugin::{
+    AuthContext, GuardContext, GuardDecision, TransformErrorContext, TransformRequestContext,
+    TransformResponseContext,
+};
 use crate::domain::rate_limit::RateLimiter;
-use crate::domain::services::{ControlPlaneService, DataPlaneService, EndpointSelector};
-use crate::infra::plugin::AuthPluginRegistry;
+use crate::domain::services::{
+    ControlPlaneService, DataPlaneService, EndpointSelector, SelectedEndpoint,
+};
+use crate::infra::plugin::{AuthPluginRegistry, GuardPluginRegistry, TransformPluginRegistry};
 use crate::infra::proxy::{actions, resources};
 
 use super::headers;
 use super::pingora_proxy::{
-    H_ENDPOINT_HOST, H_ENDPOINT_PORT, H_ENDPOINT_SCHEME, H_INSTANCE_URI, H_UPSTREAM_ID,
-    PingoraProxy,
+    H_ENDPOINT_HOST, H_ENDPOINT_PORT, H_ENDPOINT_SCHEME, H_INSTANCE_URI, H_RESOLVED_ADDR,
+    H_UPSTREAM_ID, PingoraProxy,
 };
 use super::{request_builder, session_bridge};
 
@@ -44,6 +51,8 @@ pub struct DataPlaneServiceImpl {
     _shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
     auth_registry: AuthPluginRegistry,
+    guard_registry: GuardPluginRegistry,
+    transform_registry: TransformPluginRegistry,
     rate_limiter: RateLimiter,
     request_timeout: Duration,
     /// Enforces authorization policy before proxying each request.
@@ -52,6 +61,14 @@ pub struct DataPlaneServiceImpl {
     allow_http_upstream: bool,
     /// Maximum request body size in bytes (applies to both buffered and streaming bodies).
     max_body_size: usize,
+    /// Idle timeout for WebSocket connections (no data in either direction).
+    websocket_idle_timeout: Duration,
+    /// Timeout for the WebSocket Close frame handshake.
+    websocket_close_timeout: Duration,
+    /// Optional max WebSocket frame payload size (Close 1009 on exceed).
+    websocket_max_frame_size: Option<usize>,
+    /// Idle timeout for SSE streaming connections (no data from upstream).
+    streaming_idle_timeout: Duration,
 }
 
 impl DataPlaneServiceImpl {
@@ -59,10 +76,15 @@ impl DataPlaneServiceImpl {
         cp: Arc<dyn ControlPlaneService>,
         credstore: Arc<dyn CredStoreClientV1>,
         policy_enforcer: PolicyEnforcer,
+        token_http_config: Option<modkit_http::HttpClientConfig>,
+        token_cache_config: TokenCacheConfig,
         backend_selector: Arc<dyn EndpointSelector>,
         proxy: Arc<HttpProxy<PingoraProxy>>,
     ) -> Self {
-        let auth_registry = AuthPluginRegistry::with_builtins(credstore);
+        let auth_registry =
+            AuthPluginRegistry::with_builtins(credstore, token_http_config, token_cache_config);
+        let guard_registry = GuardPluginRegistry::with_builtins();
+        let transform_registry = TransformPluginRegistry::with_builtins();
         let rate_limiter = RateLimiter::new();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -73,11 +95,17 @@ impl DataPlaneServiceImpl {
             _shutdown_tx: shutdown_tx,
             shutdown_rx,
             auth_registry,
+            guard_registry,
+            transform_registry,
             rate_limiter,
             request_timeout: REQUEST_TIMEOUT,
             policy_enforcer,
             allow_http_upstream: false,
             max_body_size: MAX_BODY_SIZE,
+            websocket_idle_timeout: Duration::from_secs(300),
+            websocket_close_timeout: Duration::from_secs(5),
+            websocket_max_frame_size: None,
+            streaming_idle_timeout: Duration::from_secs(300),
         }
     }
 
@@ -102,6 +130,105 @@ impl DataPlaneServiceImpl {
         self
     }
 
+    /// Override the WebSocket idle timeout.
+    #[must_use]
+    pub fn with_websocket_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.websocket_idle_timeout = timeout;
+        self
+    }
+
+    /// Override the WebSocket Close frame handshake timeout.
+    #[must_use]
+    pub fn with_websocket_close_timeout(mut self, timeout: Duration) -> Self {
+        self.websocket_close_timeout = timeout;
+        self
+    }
+
+    /// Override the maximum WebSocket frame payload size.
+    #[must_use]
+    pub fn with_websocket_max_frame_size(mut self, size: Option<usize>) -> Self {
+        self.websocket_max_frame_size = size;
+        self
+    }
+
+    /// Override the SSE streaming idle timeout.
+    #[must_use]
+    pub fn with_streaming_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.streaming_idle_timeout = timeout;
+        self
+    }
+
+    /// Execute the post-response plugin pipeline (guard + transform) and build
+    /// the final proxy response.
+    async fn finalize_response(
+        &self,
+        pipeline: &ResponsePipelineCtx<'_>,
+        status: http::StatusCode,
+        resp_headers: HeaderMap,
+        resp_body_stream: BodyStream,
+        instance_uri: String,
+    ) -> Result<http::Response<Body>, DomainError> {
+        execute_guard_responses(
+            &self.guard_registry,
+            &pipeline.guard_bindings,
+            status,
+            &resp_headers,
+            pipeline.method,
+            pipeline.path_suffix,
+            &instance_uri,
+            pipeline.ctx,
+        )
+        .await?;
+
+        let mut resp_headers = resp_headers;
+        execute_transform_responses(
+            &self.transform_registry,
+            &pipeline.transform_bindings,
+            status,
+            &mut resp_headers,
+            pipeline.ctx,
+        )
+        .await;
+
+        // Inject CORS headers for actual (non-preflight) cross-origin requests.
+        if let Some(cors_config) = pipeline.cors_config
+            && cors_config.enabled
+            && let Some(ref origin) = pipeline.origin
+        {
+            let cors_headers = crate::domain::cors::apply_cors_headers(cors_config, origin);
+            for (name, value) in cors_headers {
+                if let Ok(v) = HeaderValue::from_str(&value)
+                    && let Ok(n) = http::header::HeaderName::from_bytes(name.as_bytes())
+                {
+                    if n == http::header::VARY {
+                        resp_headers.append(n, v);
+                    } else {
+                        resp_headers.insert(n, v);
+                    }
+                }
+            }
+        }
+
+        // Apply response header rules (set/add/remove) from upstream config.
+        if let Some(rules) = pipeline.response_header_rules {
+            headers::apply_response_header_rules(&mut resp_headers, rules);
+        }
+
+        // Apply streaming lifecycle management for SSE responses:
+        // idle timeout and graceful shutdown awareness.
+        let resp_body_stream = if oagw_sdk::sse::is_server_events_response(&resp_headers) {
+            session_bridge::streaming_body_with_lifecycle(
+                resp_body_stream,
+                self.streaming_idle_timeout,
+                self.shutdown_rx.clone(),
+            )
+        } else {
+            resp_body_stream
+        };
+
+        build_proxy_response(status, resp_headers, resp_body_stream, instance_uri)
+    }
+
     /// Two-tier endpoint selection (D1):
     /// 1. `X-OAGW-Target-Host` header → validate against endpoint list
     /// 2. Round-robin via `BackendSelector` for multi-endpoint, direct for single
@@ -110,7 +237,7 @@ impl DataPlaneServiceImpl {
         upstream: &Upstream,
         req_headers: &http::HeaderMap,
         instance_uri: &str,
-    ) -> Result<Endpoint, DomainError> {
+    ) -> Result<SelectedEndpoint, DomainError> {
         let endpoints = &upstream.server.endpoints;
 
         if endpoints.is_empty() {
@@ -137,8 +264,8 @@ impl DataPlaneServiceImpl {
                 });
             }
 
-            // Find matching endpoint by host.
-            return endpoints
+            // Find matching endpoint by host (no LB — no resolved addr).
+            let endpoint = endpoints
                 .iter()
                 .find(|ep| ep.host.eq_ignore_ascii_case(target_host))
                 .cloned()
@@ -157,13 +284,23 @@ impl DataPlaneServiceImpl {
                         ),
                         instance: instance_uri.to_string(),
                     }
-                });
+                })?;
+            return Ok(SelectedEndpoint {
+                endpoint,
+                resolved_addr: None,
+            });
         }
 
         // Tier 2: Automatic selection.
         if endpoints.len() == 1 {
-            // Single-endpoint: use directly, no LB overhead.
-            return Ok(endpoints[0].clone());
+            // Single-endpoint: bypass LB. `resolved_addr` is None, so
+            // `upstream_peer` will fall back to DNS on the request path.
+            // Acceptable trade-off: single-endpoint upstreams don't benefit
+            // from health-checked LB selection anyway.
+            return Ok(SelectedEndpoint {
+                endpoint: endpoints[0].clone(),
+                resolved_addr: None,
+            });
         }
 
         // Multi-endpoint: round-robin via BackendSelector.
@@ -212,7 +349,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
         };
 
         // Parse query parameters with proper URL decoding.
-        let query_params: Vec<(String, String)> = req
+        let mut query_params: Vec<(String, String)> = req
             .uri()
             .query()
             .map(|q| {
@@ -227,18 +364,20 @@ impl DataPlaneService for DataPlaneServiceImpl {
         let method = parts.method;
         let req_headers = parts.headers;
 
-        // Reject WebSocket upgrade requests — the current bridge is unidirectional
-        // and cannot support the bidirectional tunnel that WebSocket requires.
-        if req_headers
-            .get(http::header::UPGRADE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| {
-                v.split(',')
-                    .any(|t| t.trim().eq_ignore_ascii_case("websocket"))
-            })
-        {
-            return Err(DomainError::ProtocolError {
-                detail: "WebSocket upgrade is not supported by the proxy".into(),
+        let is_upgrade = headers::is_websocket_upgrade(&req_headers);
+
+        // Validate Content-Type format if present.
+        if !headers::is_valid_content_type(&req_headers) {
+            return Err(DomainError::Validation {
+                detail: "Content-Type header is not a recognized MIME type".into(),
+                instance: instance_uri,
+            });
+        }
+
+        // Validate Transfer-Encoding — only chunked is supported.
+        if !headers::is_valid_transfer_encoding(&req_headers) {
+            return Err(DomainError::Validation {
+                detail: "unsupported Transfer-Encoding; only chunked is accepted".into(),
                 instance: instance_uri,
             });
         }
@@ -262,14 +401,40 @@ impl DataPlaneService for DataPlaneServiceImpl {
             Body::Stream(s) => (Bytes::new(), Some(s)),
         };
 
-        // 1. Resolve upstream by alias.
-        let upstream = self.cp.resolve_upstream(&ctx, &alias).await?;
-
-        // 2. Resolve route.
-        let route = self
+        // 1+2. Resolve upstream + route in one pass (single hierarchy walk).
+        let (upstream, route) = self
             .cp
-            .resolve_route(&ctx, upstream.id, method.as_ref(), &path_suffix)
+            .resolve_proxy_target(&ctx, &alias, method.as_ref(), &path_suffix)
             .await?;
+
+        // 1c. CORS origin enforcement for actual cross-origin requests.
+        // Preflight is handled permissively at the handler level (no upstream resolution).
+        // Here we validate the Origin against the upstream's CORS config and reject
+        // disallowed origins before the request reaches the upstream.
+        let effective_cors = upstream.cors.clone();
+        let request_origin = req_headers
+            .get(http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        if let Some(ref cors_config) = effective_cors
+            && cors_config.enabled
+            && let Some(ref origin) = request_origin
+        {
+            if !crate::domain::cors::is_origin_allowed(cors_config, origin) {
+                return Err(DomainError::CorsOriginNotAllowed {
+                    origin: origin.clone(),
+                    instance: instance_uri,
+                });
+            }
+
+            if !crate::domain::cors::is_method_allowed(cors_config, method.as_ref()) {
+                return Err(DomainError::CorsMethodNotAllowed {
+                    method: method.to_string(),
+                    instance: instance_uri,
+                });
+            }
+        }
 
         // 2b. Validate query parameters against route's allowlist.
         if let Some(ref http_match) = route.match_rules.http
@@ -317,27 +482,44 @@ impl DataPlaneService for DataPlaneServiceImpl {
             .and_then(|h| h.request.as_ref())
             .map_or_else(Vec::new, |r| r.passthrough_allowlist.clone());
         let mut outbound_headers = headers::apply_passthrough(&req_headers, &mode, &allowlist);
-        headers::strip_hop_by_hop(&mut outbound_headers);
+        if is_upgrade {
+            headers::strip_hop_by_hop_for_upgrade(&mut outbound_headers);
+        } else {
+            headers::strip_hop_by_hop(&mut outbound_headers);
+        }
         headers::strip_internal_headers(&mut outbound_headers);
+
+        // For WebSocket, ensure Upgrade and Sec-WebSocket-* headers are forwarded
+        // even when passthrough mode is None/Allowlist.
+        if is_upgrade {
+            for name in &[
+                "upgrade",
+                "sec-websocket-key",
+                "sec-websocket-version",
+                "sec-websocket-protocol",
+                "sec-websocket-extensions",
+            ] {
+                if let Ok(n) = http::header::HeaderName::from_bytes(name.as_bytes())
+                    && !outbound_headers.contains_key(&n)
+                {
+                    for v in req_headers.get_all(&n) {
+                        outbound_headers.append(n.clone(), v.clone());
+                    }
+                }
+            }
+        }
 
         // 4. Execute auth plugin.
         if let Some(ref auth) = upstream.auth {
+            tracing::debug!(plugin = %auth.plugin_type, "executing auth plugin");
             let plugin = self.auth_registry.resolve(&auth.plugin_type).map_err(|e| {
                 DomainError::AuthenticationFailed {
                     detail: e.to_string(),
                     instance: instance_uri.clone(),
                 }
             })?;
-            let auth_headers: HashMap<String, String> = outbound_headers
-                .iter()
-                .filter_map(|(k, v)| {
-                    v.to_str()
-                        .ok()
-                        .map(|s| (k.as_str().to_string(), s.to_string()))
-                })
-                .collect();
             let mut auth_ctx = AuthContext {
-                headers: auth_headers,
+                headers: headers::header_map_to_hash_map(&outbound_headers),
                 config: auth.config.clone().unwrap_or_default(),
                 security_context: ctx.clone(),
             };
@@ -351,7 +533,8 @@ impl DataPlaneService for DataPlaneServiceImpl {
                             instance: instance_uri.clone(),
                         }
                     }
-                    crate::domain::plugin::PluginError::Rejected(ref msg) => {
+                    crate::domain::plugin::PluginError::Rejected(ref msg)
+                    | crate::domain::plugin::PluginError::InvalidConfig(ref msg) => {
                         DomainError::Validation {
                             detail: msg.clone(),
                             instance: instance_uri.clone(),
@@ -365,28 +548,129 @@ impl DataPlaneService for DataPlaneServiceImpl {
                         }
                     }
                 })?;
-            outbound_headers = HeaderMap::new();
-            for (k, v) in &auth_ctx.headers {
-                if let (Ok(name), Ok(val)) = (
-                    HeaderName::from_bytes(k.as_bytes()),
-                    HeaderValue::from_str(v),
-                ) {
-                    outbound_headers.insert(name, val);
+            outbound_headers = headers::hash_map_to_header_map(&auth_ctx.headers);
+            tracing::debug!(plugin = %auth.plugin_type, "auth plugin succeeded");
+        }
+
+        // 4b. Execute guard plugins (upstream then route).
+        //
+        // Guards are blocking gates: a rejection short-circuits the pipeline
+        // immediately. This is intentional — guards enforce hard policies
+        // (allowlists, rate limits, schema validation). Compare with transforms
+        // (step 5-transform) which use log-and-continue semantics.
+        let guard_bindings =
+            collect_plugin_bindings(&upstream, GuardPluginRegistry::is_guard_plugin);
+
+        let guard_headers = headers::header_map_to_vec(&outbound_headers);
+        for binding in &guard_bindings {
+            let guard = self
+                .guard_registry
+                .resolve(&binding.plugin_ref)
+                .map_err(|e| DomainError::Internal {
+                    message: format!(
+                        "guard plugin '{}' resolution failed: {e}",
+                        binding.plugin_ref
+                    ),
+                })?;
+
+            let guard_ctx = GuardContext {
+                method: method.to_string(),
+                path: path_suffix.clone(),
+                status: None,
+                headers: guard_headers.clone(),
+                config: binding.config.clone(),
+                security_context: ctx.clone(),
+            };
+
+            match guard.guard_request(&guard_ctx).await {
+                Ok(GuardDecision::Allow) => {}
+                Ok(GuardDecision::Reject {
+                    status,
+                    error_code,
+                    detail,
+                }) => {
+                    return Err(DomainError::GuardRejected {
+                        status,
+                        error_code,
+                        detail,
+                        instance: instance_uri,
+                    });
+                }
+                Err(e) => {
+                    return Err(DomainError::Internal {
+                        message: format!("guard plugin error: {e}"),
+                    });
                 }
             }
         }
+
+        // 4c. Collect transform plugin bindings (upstream then route).
+        let transform_bindings =
+            collect_plugin_bindings(&upstream, TransformPluginRegistry::is_transform_plugin);
 
         // 5. Apply header rules + set Host.
         if let Some(ref hc) = upstream.headers
             && let Some(ref rules) = hc.request
         {
-            headers::apply_header_rules(&mut outbound_headers, rules);
+            headers::apply_request_header_rules(&mut outbound_headers, rules);
+        }
+
+        // 5-transform. Execute transform plugins (on_request phase).
+        //
+        // Placed after header rules so transforms have the final word on
+        // outbound headers. Errors are logged and skipped — transforms use
+        // log-and-continue semantics so a single misbehaving transform cannot
+        // block the pipeline. Compare with guards (step 4b) which fail-hard.
+        if !transform_bindings.is_empty() {
+            let mut transform_headers = headers::header_map_to_vec(&outbound_headers);
+            let mut transform_query: Vec<(String, String)> = query_params.clone();
+
+            for binding in &transform_bindings {
+                let mut transform_ctx = TransformRequestContext {
+                    method: method.to_string(),
+                    path: path_suffix.clone(),
+                    query: transform_query.clone(),
+                    headers: transform_headers.clone(),
+                    config: binding.config.clone(),
+                    security_context: ctx.clone(),
+                };
+                match self.transform_registry.resolve(&binding.plugin_ref) {
+                    Ok(transform) => match transform.on_request(&mut transform_ctx).await {
+                        Ok(()) => {
+                            transform_headers = transform_ctx.headers;
+                            transform_query = transform_ctx.query;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                plugin = %binding.plugin_ref,
+                                error = %e,
+                                "transform on_request failed, continuing"
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            plugin = %binding.plugin_ref,
+                            error = %e,
+                            "transform plugin resolution failed, continuing"
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            // Write mutated headers back to outbound_headers.
+            outbound_headers = headers::vec_to_header_map(&transform_headers);
+
+            // Write mutated query params back.
+            query_params = transform_query;
         }
 
         // 5a. Endpoint selection (D1 — two-tier).
-        let endpoint = self
+        let selected = self
             .select_endpoint(&upstream, &req_headers, &instance_uri)
             .await?;
+        let endpoint = &selected.endpoint;
 
         // 5b. Enforce HTTPS-only constraint (cpt-cf-oagw-constraint-https-only).
         if !self.allow_http_upstream && matches!(endpoint.scheme, Scheme::Http) {
@@ -418,7 +702,7 @@ impl DataPlaneService for DataPlaneServiceImpl {
             .map_or("/", |h| h.path.as_str());
         let remaining_suffix = path_suffix.strip_prefix(route_path).unwrap_or("");
         let url = request_builder::build_upstream_url(
-            &endpoint,
+            endpoint,
             route_path,
             remaining_suffix,
             &query_params,
@@ -445,6 +729,112 @@ impl DataPlaneService for DataPlaneServiceImpl {
         if let Ok(v) = HeaderValue::from_str(&instance_uri) {
             outbound_headers.insert(H_INSTANCE_URI, v);
         }
+        if let Some(addr) = selected.resolved_addr
+            && let Ok(v) = HeaderValue::from_str(&addr.to_string())
+        {
+            outbound_headers.insert(H_RESOLVED_ADDR, v);
+        }
+
+        let response_header_rules = upstream
+            .headers
+            .as_ref()
+            .and_then(|hc| hc.response.as_ref());
+
+        let pipeline = ResponsePipelineCtx {
+            guard_bindings,
+            transform_bindings,
+            method: method.as_str(),
+            path_suffix: &path_suffix,
+            ctx: &ctx,
+            cors_config: effective_cors.as_ref(),
+            origin: request_origin,
+            response_header_rules,
+        };
+
+        // 8. WebSocket upgrade path: bypass the normal request/response bridge
+        // and set up a bidirectional raw-byte tunnel through Pingora.
+        if is_upgrade {
+            let (mut client_io, server_io) = tokio::io::duplex(65_536);
+            let session =
+                pingora_core::protocols::http::ServerSession::new_http1(Box::new(server_io));
+            let proxy = self.proxy.clone();
+            let shutdown = self.shutdown_rx.clone();
+            tokio::spawn(async move {
+                proxy.process_new_http(session, &shutdown).await;
+            });
+
+            // Write the upgrade request (Connection: Upgrade, no body).
+            let wire =
+                session_bridge::serialize_upgrade_request_wire(&method, &url, &outbound_headers);
+            client_io
+                .write_all(&wire)
+                .await
+                .map_err(|e| DomainError::DownstreamError {
+                    detail: format!("failed to write upgrade request to proxy bridge: {e}"),
+                    instance: instance_uri.clone(),
+                })?;
+
+            // Parse only the response headers (IO stays intact for bidirectional copy).
+            let upgrade_timeout = self.request_timeout;
+            let (status, resp_headers, leftover) = tokio::time::timeout(
+                upgrade_timeout,
+                session_bridge::parse_upgrade_response(&mut client_io),
+            )
+            .await
+            .map_err(|_| DomainError::RequestTimeout {
+                detail: format!("WebSocket upgrade to {url} timed out after {upgrade_timeout:?}"),
+                instance: instance_uri.clone(),
+            })?
+            .map_err(|e| DomainError::DownstreamError {
+                detail: format!("proxy bridge error during WebSocket upgrade: {e}"),
+                instance: instance_uri.clone(),
+            })?;
+
+            if status != http::StatusCode::SWITCHING_PROTOCOLS {
+                return Err(DomainError::ProtocolError {
+                    detail: format!("upstream rejected WebSocket upgrade with status {status}"),
+                    instance: instance_uri,
+                });
+            }
+
+            // Execute response guards on the 101.
+            execute_guard_responses(
+                &self.guard_registry,
+                &pipeline.guard_bindings,
+                status,
+                &resp_headers,
+                pipeline.method,
+                pipeline.path_suffix,
+                &instance_uri,
+                pipeline.ctx,
+            )
+            .await?;
+
+            // Sanitize response headers, preserving Upgrade/Connection.
+            let mut resp_headers = resp_headers;
+            headers::sanitize_response_headers_for_upgrade(&mut resp_headers);
+
+            // Build the 101 response with the DuplexStream stashed in extensions.
+            let mut resp = http::Response::builder()
+                .status(http::StatusCode::SWITCHING_PROTOCOLS)
+                .body(Body::Empty)
+                .map_err(|e| DomainError::Internal {
+                    message: format!("failed to build WebSocket upgrade response: {e}"),
+                })?;
+            *resp.headers_mut() = resp_headers;
+            resp.extensions_mut()
+                .insert(super::websocket::WebSocketBridgeHandle::new(
+                    super::websocket::WebSocketBridgeIo {
+                        io: client_io,
+                        leftover,
+                        idle_timeout: self.websocket_idle_timeout,
+                        close_timeout: self.websocket_close_timeout,
+                        max_frame_size: self.websocket_max_frame_size,
+                        shutdown_rx: self.shutdown_rx.clone(),
+                    },
+                ));
+            return Ok(resp);
+        }
 
         // 8. Bridge request into Pingora via in-memory DuplexStream.
         let (client_io, server_io) = tokio::io::duplex(65_536);
@@ -463,7 +853,10 @@ impl DataPlaneService for DataPlaneServiceImpl {
         // Write the request and read the response from the client side.
         let timeout = self.request_timeout;
 
-        if let Some(mut body_stream) = body_stream {
+        let upstream_result: Result<http::Response<Body>, DomainError> = if let Some(
+            mut body_stream,
+        ) = body_stream
+        {
             // Streaming path: write headers, then forward body chunks concurrently.
             let (client_read, mut client_write) = tokio::io::split(client_io);
 
@@ -476,16 +869,19 @@ impl DataPlaneService for DataPlaneServiceImpl {
                 }
             })?;
 
-            // Spawn task to forward body stream chunks, then shutdown.
+            // Spawn task to forward body stream chunks with chunked encoding.
             // Enforce max_body_size on the streaming path: signal 413 if exceeded.
+            // Signal abort on stream/write errors so the main select! can fail
+            // fast instead of waiting for the full request timeout.
             let (limit_tx, limit_rx) = tokio::sync::oneshot::channel::<usize>();
+            let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<String>();
             let body_instance_uri = instance_uri.clone();
             tokio::spawn(async move {
                 let mut total_bytes: usize = 0;
                 let mut exceeded = false;
                 while let Some(chunk) = body_stream.next().await {
                     match chunk {
-                        Ok(bytes) => {
+                        Ok(bytes) if !bytes.is_empty() => {
                             total_bytes = total_bytes.saturating_add(bytes.len());
                             if total_bytes > max_body {
                                 tracing::warn!(
@@ -496,41 +892,71 @@ impl DataPlaneService for DataPlaneServiceImpl {
                                 exceeded = true;
                                 break;
                             }
+                            // Chunked transfer encoding: {size_hex}\r\n{data}\r\n
+                            let chunk_header = format!("{:x}\r\n", bytes.len());
+                            if let Err(e) = client_write.write_all(chunk_header.as_bytes()).await {
+                                tracing::debug!(error = %e, "body stream write error");
+                                let _ = abort_tx.send(format!("body stream write error: {e}"));
+                                return;
+                            }
                             if let Err(e) = client_write.write_all(&bytes).await {
                                 tracing::debug!(error = %e, "body stream write error");
-                                break;
+                                let _ = abort_tx.send(format!("body stream write error: {e}"));
+                                return;
+                            }
+                            if let Err(e) = client_write.write_all(b"\r\n").await {
+                                tracing::debug!(error = %e, "body stream write error");
+                                let _ = abort_tx.send(format!("body stream write error: {e}"));
+                                return;
                             }
                         }
+                        Ok(_) => {} // skip empty chunks
                         Err(e) => {
                             tracing::debug!(error = %e, "body stream chunk error");
-                            break;
+                            let _ = abort_tx.send(format!("body stream read error: {e}"));
+                            return;
                         }
                     }
                 }
                 if exceeded {
+                    // Shutdown sends EOF to Pingora's read side before we
+                    // signal the limit breach (drop alone won't close the pipe).
+                    let _ = client_write.shutdown().await;
                     let _ = limit_tx.send(total_bytes);
+                } else {
+                    // Chunked terminator: signals end-of-body to Pingora.
+                    // Only written after a clean end-of-stream — not after
+                    // write failures or stream errors, where the body is
+                    // incomplete and signalling clean EOF would be wrong.
+                    let _ = client_write.write_all(b"0\r\n\r\n").await;
+                    // Do NOT call shutdown() here — Pingora still needs the
+                    // duplex open to send the response. The chunked terminator
+                    // is sufficient to signal end-of-body. Calling shutdown()
+                    // on the write half of a DuplexStream closes it for the
+                    // peer's read, which can cause Pingora to see EOF before
+                    // it finishes proxying (especially with fast streams).
                 }
-                let _ = client_write.shutdown().await;
             });
 
             // 9. Parse response from the read half, but short-circuit to 413
             //    if the body-forwarding task signals a limit breach.
-            //
-            // TODO(hardening): a fast upstream can respond before the body-forwarder
-            // detects the limit breach, causing the client to see 200 instead of 413.
-            // Fix: wrap the write half in a LimitedAsyncWrite that returns io::Error
-            // at the byte limit, so Pingora aborts the exchange before responding.
             let resp_future =
                 tokio::time::timeout(timeout, session_bridge::parse_response_stream(client_read));
             tokio::select! {
                 biased;
                 Ok(total) = limit_rx => {
-                    return Err(DomainError::PayloadTooLarge {
+                    Err(DomainError::PayloadTooLarge {
                         detail: format!(
                             "streaming request body of {total} bytes exceeds maximum of {max_body} bytes"
                         ),
                         instance: body_instance_uri,
-                    });
+                    })
+                }
+                Ok(reason) = abort_rx => {
+                    Err(DomainError::DownstreamError {
+                        detail: format!("streaming request body failed mid-stream: {reason}"),
+                        instance: body_instance_uri,
+                    })
                 }
                 result = resp_future => {
                     let (status, resp_headers, resp_body_stream) = result
@@ -542,7 +968,14 @@ impl DataPlaneService for DataPlaneServiceImpl {
                             detail: format!("proxy bridge error: {e}"),
                             instance: instance_uri.clone(),
                         })?;
-                    Ok(build_proxy_response(status, resp_headers, resp_body_stream, instance_uri)?)
+                    self.finalize_response(
+                        &pipeline,
+                        status,
+                        resp_headers,
+                        resp_body_stream,
+                        instance_uri,
+                    )
+                    .await
                 }
             }
         } else {
@@ -578,17 +1011,290 @@ impl DataPlaneService for DataPlaneServiceImpl {
                         instance: instance_uri.clone(),
                     })?;
 
-            Ok(build_proxy_response(
+            self.finalize_response(
+                &pipeline,
                 status,
                 resp_headers,
                 resp_body_stream,
                 instance_uri,
-            )?)
+            )
+            .await
+        };
+
+        // 9d. Execute transform error plugins on upstream failures.
+        match upstream_result {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                execute_transform_errors(
+                    &self.transform_registry,
+                    &pipeline.transform_bindings,
+                    &err,
+                    pipeline.ctx,
+                )
+                .await;
+                Err(err)
+            }
         }
     }
 
     fn remove_rate_limit_key(&self, key: &str) {
         self.rate_limiter.remove_key(key);
+    }
+}
+
+/// Collect plugin bindings from the effective upstream, filtered by a type predicate.
+///
+/// The upstream already contains merged route plugins (via `compute_effective_config`),
+/// so only the upstream's plugin list is consulted.
+fn collect_plugin_bindings(
+    upstream: &Upstream,
+    predicate: fn(&str) -> bool,
+) -> Vec<&crate::domain::model::PluginBinding> {
+    upstream
+        .plugins
+        .as_ref()
+        .into_iter()
+        .flat_map(|pc| &pc.items)
+        .filter(|b| predicate(&b.plugin_ref))
+        .collect()
+}
+
+/// Execute `guard_response` for all guard bindings, returning the first rejection.
+///
+/// Guards use fail-hard semantics: the first rejection or error terminates the
+/// pipeline. This is intentional — response guards enforce hard policies such as
+/// blocking unexpected content types from compromised upstreams.
+#[allow(clippy::too_many_arguments)]
+async fn execute_guard_responses(
+    guard_registry: &GuardPluginRegistry,
+    guard_bindings: &[&crate::domain::model::PluginBinding],
+    resp_status: http::StatusCode,
+    resp_headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    instance_uri: &str,
+    security_context: &SecurityContext,
+) -> Result<(), DomainError> {
+    let resp_header_map = headers::header_map_to_vec(resp_headers);
+
+    for binding in guard_bindings {
+        let guard =
+            guard_registry
+                .resolve(&binding.plugin_ref)
+                .map_err(|e| DomainError::Internal {
+                    message: format!(
+                        "guard plugin '{}' resolution failed: {e}",
+                        binding.plugin_ref
+                    ),
+                })?;
+
+        let guard_ctx = GuardContext {
+            method: method.to_string(),
+            path: path.to_string(),
+            status: Some(resp_status.as_u16()),
+            headers: resp_header_map.clone(),
+            config: binding.config.clone(),
+            security_context: security_context.clone(),
+        };
+
+        match guard.guard_response(&guard_ctx).await {
+            Ok(GuardDecision::Allow) => {}
+            Ok(GuardDecision::Reject {
+                status,
+                error_code,
+                detail,
+            }) => {
+                return Err(DomainError::GuardRejected {
+                    status,
+                    error_code,
+                    detail,
+                    instance: instance_uri.to_string(),
+                });
+            }
+            Err(e) => {
+                return Err(DomainError::Internal {
+                    message: format!("guard plugin error: {e}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execute `on_response` for all transform bindings, logging errors without aborting.
+///
+/// Unlike guard execution, transform errors are logged and skipped — a single
+/// misbehaving transform must not block the response pipeline.
+async fn execute_transform_responses(
+    transform_registry: &TransformPluginRegistry,
+    transform_bindings: &[&crate::domain::model::PluginBinding],
+    resp_status: http::StatusCode,
+    resp_headers: &mut HeaderMap,
+    security_context: &SecurityContext,
+) {
+    if transform_bindings.is_empty() {
+        return;
+    }
+
+    let mut header_map = headers::header_map_to_vec(resp_headers);
+
+    for binding in transform_bindings {
+        let mut transform_ctx = TransformResponseContext {
+            status: resp_status.as_u16(),
+            headers: header_map.clone(),
+            config: binding.config.clone(),
+            security_context: security_context.clone(),
+        };
+
+        match transform_registry.resolve(&binding.plugin_ref) {
+            Ok(transform) => match transform.on_response(&mut transform_ctx).await {
+                Ok(()) => {
+                    header_map = transform_ctx.headers;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %binding.plugin_ref,
+                        error = %e,
+                        "transform on_response failed, continuing"
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    plugin = %binding.plugin_ref,
+                    error = %e,
+                    "transform plugin resolution failed, continuing"
+                );
+                continue;
+            }
+        }
+    }
+
+    // Write mutated headers back.
+    *resp_headers = headers::vec_to_header_map(&header_map);
+}
+
+/// Per-request plugin pipeline state shared across the streaming and buffered
+/// response paths.
+struct ResponsePipelineCtx<'a> {
+    guard_bindings: Vec<&'a crate::domain::model::PluginBinding>,
+    transform_bindings: Vec<&'a crate::domain::model::PluginBinding>,
+    method: &'a str,
+    path_suffix: &'a str,
+    ctx: &'a SecurityContext,
+    cors_config: Option<&'a crate::domain::model::CorsConfig>,
+    origin: Option<String>,
+    response_header_rules: Option<&'a ResponseHeaderRules>,
+}
+
+/// Execute `on_error` for all transform bindings, logging errors without aborting.
+///
+/// Called when the upstream exchange fails (timeout, downstream error, guard
+/// rejection, etc.). Transforms can enrich error details or inject diagnostic
+/// headers. The original `DomainError` is not modified — transforms operate on
+/// a snapshot via `TransformErrorContext`.
+async fn execute_transform_errors(
+    transform_registry: &TransformPluginRegistry,
+    transform_bindings: &[&crate::domain::model::PluginBinding],
+    err: &DomainError,
+    security_context: &SecurityContext,
+) {
+    if transform_bindings.is_empty() {
+        return;
+    }
+
+    let status = domain_error_status(err);
+    let error_type = domain_error_type_name(err);
+
+    for binding in transform_bindings {
+        let mut transform_ctx = TransformErrorContext {
+            error_type: error_type.to_string(),
+            status,
+            detail: err.to_string(),
+            config: binding.config.clone(),
+            security_context: security_context.clone(),
+        };
+
+        match transform_registry.resolve(&binding.plugin_ref) {
+            Ok(transform) => {
+                if let Err(e) = transform.on_error(&mut transform_ctx).await {
+                    tracing::warn!(
+                        plugin = %binding.plugin_ref,
+                        error = %e,
+                        "transform on_error failed, continuing"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    plugin = %binding.plugin_ref,
+                    error = %e,
+                    "transform plugin resolution failed, continuing"
+                );
+                continue;
+            }
+        }
+    }
+}
+
+/// Map a `DomainError` to its HTTP status code (proxy-layer only).
+fn domain_error_status(err: &DomainError) -> u16 {
+    match err {
+        DomainError::Validation { .. }
+        | DomainError::MissingTargetHost { .. }
+        | DomainError::InvalidTargetHost { .. }
+        | DomainError::UnknownTargetHost { .. } => 400,
+        DomainError::AuthenticationFailed { .. } => 401,
+        DomainError::Forbidden { .. } => 403,
+        DomainError::NotFound { .. } => 404,
+        DomainError::Conflict { .. } => 409,
+        DomainError::PayloadTooLarge { .. } => 413,
+        DomainError::RateLimitExceeded { .. } => 429,
+        DomainError::SecretNotFound { .. } | DomainError::Internal { .. } => 500,
+        DomainError::DownstreamError { .. } | DomainError::ProtocolError { .. } => 502,
+        DomainError::UpstreamDisabled { .. }
+        | DomainError::LinkUnavailable { .. }
+        | DomainError::CircuitBreakerOpen { .. } => 503,
+        DomainError::ConnectionTimeout { .. }
+        | DomainError::RequestTimeout { .. }
+        | DomainError::IdleTimeout { .. } => 504,
+        DomainError::StreamAborted { .. } => 502,
+        DomainError::PluginNotFound { .. } => 404,
+        DomainError::PluginInUse { .. } => 409,
+        DomainError::GuardRejected { status, .. } => *status,
+        DomainError::CorsOriginNotAllowed { .. } | DomainError::CorsMethodNotAllowed { .. } => 403,
+    }
+}
+
+/// Short discriminant name for a `DomainError` variant.
+fn domain_error_type_name(err: &DomainError) -> &'static str {
+    match err {
+        DomainError::Validation { .. } => "ValidationError",
+        DomainError::Conflict { .. } => "Conflict",
+        DomainError::MissingTargetHost { .. } => "MissingTargetHost",
+        DomainError::InvalidTargetHost { .. } => "InvalidTargetHost",
+        DomainError::UnknownTargetHost { .. } => "UnknownTargetHost",
+        DomainError::AuthenticationFailed { .. } => "AuthenticationFailed",
+        DomainError::NotFound { .. } => "NotFound",
+        DomainError::PayloadTooLarge { .. } => "PayloadTooLarge",
+        DomainError::RateLimitExceeded { .. } => "RateLimitExceeded",
+        DomainError::SecretNotFound { .. } => "SecretNotFound",
+        DomainError::DownstreamError { .. } => "DownstreamError",
+        DomainError::ProtocolError { .. } => "ProtocolError",
+        DomainError::UpstreamDisabled { .. } => "UpstreamDisabled",
+        DomainError::ConnectionTimeout { .. } => "ConnectionTimeout",
+        DomainError::RequestTimeout { .. } => "RequestTimeout",
+        DomainError::Internal { .. } => "Internal",
+        DomainError::GuardRejected { .. } => "GuardRejected",
+        DomainError::CorsOriginNotAllowed { .. } => "CorsOriginNotAllowed",
+        DomainError::CorsMethodNotAllowed { .. } => "CorsMethodNotAllowed",
+        DomainError::StreamAborted { .. } => "StreamAborted",
+        DomainError::LinkUnavailable { .. } => "LinkUnavailable",
+        DomainError::CircuitBreakerOpen { .. } => "CircuitBreakerOpen",
+        DomainError::IdleTimeout { .. } => "IdleTimeout",
+        DomainError::PluginNotFound { .. } => "PluginNotFound",
+        DomainError::PluginInUse { .. } => "PluginInUse",
+        DomainError::Forbidden { .. } => "Forbidden",
     }
 }
 
@@ -693,6 +1399,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
         }
     }
@@ -716,9 +1423,16 @@ mod tests {
 
     #[async_trait]
     impl EndpointSelector for MockSelector {
-        async fn select(&self, _upstream_id: Uuid, endpoints: &[Endpoint]) -> Option<Endpoint> {
+        async fn select(
+            &self,
+            _upstream_id: Uuid,
+            endpoints: &[Endpoint],
+        ) -> Option<SelectedEndpoint> {
             let idx = self.call_count.fetch_add(1, Ordering::Relaxed) % endpoints.len();
-            Some(endpoints[idx].clone())
+            Some(SelectedEndpoint {
+                endpoint: endpoints[idx].clone(),
+                resolved_addr: None,
+            })
         }
 
         fn invalidate(&self, _upstream_id: Uuid) {}
@@ -822,7 +1536,7 @@ mod tests {
             async fn list_routes(
                 &self,
                 _: &SecurityContext,
-                _: Uuid,
+                _: Option<Uuid>,
                 _: &ListQuery,
             ) -> Result<Vec<Route>, DomainError> {
                 unimplemented!()
@@ -838,20 +1552,13 @@ mod tests {
             async fn delete_route(&self, _: &SecurityContext, _: Uuid) -> Result<(), DomainError> {
                 unimplemented!()
             }
-            async fn resolve_upstream(
+            async fn resolve_proxy_target(
                 &self,
                 _: &SecurityContext,
                 _: &str,
-            ) -> Result<Upstream, DomainError> {
-                unimplemented!()
-            }
-            async fn resolve_route(
-                &self,
-                _: &SecurityContext,
-                _: Uuid,
                 _: &str,
                 _: &str,
-            ) -> Result<Route, DomainError> {
+            ) -> Result<(Upstream, Route), DomainError> {
                 unimplemented!()
             }
         }
@@ -861,13 +1568,22 @@ mod tests {
         let pingora = crate::infra::proxy::pingora_proxy::PingoraProxy::new(
             Duration::from_secs(10),
             Duration::from_secs(30),
+            Duration::from_secs(3600),
         );
         let proxy = Arc::new(crate::infra::proxy::pingora_proxy::new_http_proxy(
             &server_conf,
             pingora,
         ));
 
-        DataPlaneServiceImpl::new(cp, credstore, policy_enforcer, selector, proxy)
+        DataPlaneServiceImpl::new(
+            cp,
+            credstore,
+            policy_enforcer,
+            None,
+            TokenCacheConfig::default(),
+            selector,
+            proxy,
+        )
     }
 
     // P2 #12: Alias extraction happens on raw path, then suffix is normalized.
@@ -920,7 +1636,7 @@ mod tests {
         // after select_endpoint returns. Verify the endpoint is returned here (enforcement
         // is at a higher level).
         assert!(err.is_ok(), "select_endpoint should return the endpoint");
-        assert_eq!(err.unwrap().scheme, Scheme::Http);
+        assert_eq!(err.unwrap().endpoint.scheme, Scheme::Http);
     }
 
     // positive-2.2 (custom-header-routing): X-OAGW-Target-Host matches an endpoint.
@@ -937,7 +1653,7 @@ mod tests {
             .select_endpoint(&upstream, &headers, "/test")
             .await
             .unwrap();
-        assert_eq!(result.host, "a.com");
+        assert_eq!(result.endpoint.host, "a.com");
         assert_eq!(selector.calls(), 0, "BackendSelector should not be called");
     }
 
@@ -1024,8 +1740,8 @@ mod tests {
             "BackendSelector should be called for multi-endpoint"
         );
         // MockSelector returns endpoints in order: [0], [1], [0], ...
-        assert_eq!(ep1.host, "a.com");
-        assert_eq!(ep2.host, "b.com");
+        assert_eq!(ep1.endpoint.host, "a.com");
+        assert_eq!(ep2.endpoint.host, "b.com");
     }
 
     // positive-1.1 (custom-header-routing): Single-endpoint bypass (no header, no BackendSelector call).
@@ -1040,7 +1756,7 @@ mod tests {
             .select_endpoint(&upstream, &headers, "/test")
             .await
             .unwrap();
-        assert_eq!(result.host, "only.com");
+        assert_eq!(result.endpoint.host, "only.com");
         assert_eq!(
             selector.calls(),
             0,
@@ -1061,7 +1777,7 @@ mod tests {
             .select_endpoint(&upstream, &headers, "/test")
             .await
             .unwrap();
-        assert_eq!(result.host, "a.com");
+        assert_eq!(result.endpoint.host, "a.com");
 
         // Invalid header not matching → UnknownTargetHost.
         let mut headers = HeaderMap::new();

@@ -59,7 +59,6 @@ async fn get_upstream_by_gts_id() {
                 },
                 "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
             )
-            .alias("openai")
             .build(),
         )
         .await
@@ -68,7 +67,7 @@ async fn get_upstream_by_gts_id() {
     let gts_id = format_upstream_gts(upstream.id);
     let resp = h.api_v1().get_upstream(&gts_id).expect_status(200).await;
     let json = resp.json();
-    assert_eq!(json["alias"].as_str().unwrap(), "openai");
+    assert_eq!(json["alias"].as_str().unwrap(), "api.openai.com");
 }
 
 // 7.9: GET with invalid GTS format -> 400.
@@ -111,7 +110,7 @@ async fn update_upstream_preserves_id() {
                 oagw_sdk::Server {
                     endpoints: vec![oagw_sdk::Endpoint {
                         scheme: oagw_sdk::Scheme::Https,
-                        host: "api.openai.com".into(),
+                        host: "10.0.0.1".into(),
                         port: 443,
                     }],
                 },
@@ -127,8 +126,16 @@ async fn update_upstream_preserves_id() {
 
     let resp = h
         .api_v1()
-        .patch_upstream(&gts_id)
-        .with_body(serde_json::json!({"alias": "openai-v2"}))
+        .put_upstream(&gts_id)
+        .with_body(serde_json::json!({
+            "server": {
+                "endpoints": [{"host": "10.0.0.1", "port": 443, "scheme": "https"}]
+            },
+            "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            "alias": "openai-v2",
+            "enabled": true,
+            "tags": []
+        }))
         .expect_status(200)
         .await;
 
@@ -156,7 +163,6 @@ async fn delete_upstream_returns_204() {
                 },
                 "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
             )
-            .alias("to-delete")
             .build(),
         )
         .await
@@ -186,7 +192,6 @@ async fn create_route_success() {
                 },
                 "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
             )
-            .alias("openai")
             .build(),
         )
         .await
@@ -196,7 +201,7 @@ async fn create_route_success() {
         .api_v1()
         .post_route()
         .with_body(serde_json::json!({
-            "upstream_id": upstream.id,
+            "upstream_id": format_upstream_gts(upstream.id),
             "match": {
                 "http": {
                     "methods": ["POST"],
@@ -239,7 +244,6 @@ async fn list_upstreams_with_pagination() {
                     },
                     "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
                 )
-                .alias(format!("host{i}"))
                 .build(),
             )
             .await
@@ -275,13 +279,6 @@ async fn error_mapper_produces_problem_details() {
     assert!(json.get("detail").is_some());
 }
 
-/// Extract the UUID portion from a GTS ID string (e.g. "gts.x.core.oagw.upstream.v1~<uuid>")
-/// and return it in standard hyphenated format.
-fn gts_uuid(gts_id: &str) -> String {
-    let raw = gts_id.rsplit('~').next().unwrap();
-    Uuid::parse_str(raw).unwrap().to_string()
-}
-
 // 13.3: GET route by ID -> 200 with correct fields.
 #[tokio::test]
 async fn get_route_by_gts_id() {
@@ -295,7 +292,6 @@ async fn get_route_by_gts_id() {
                 "endpoints": [{"host": "api.openai.com", "port": 443, "scheme": "https"}]
             },
             "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
-            "alias": "route-get-test",
             "enabled": true,
             "tags": []
         }))
@@ -303,13 +299,12 @@ async fn get_route_by_gts_id() {
         .await;
 
     let upstream_gts_id = upstream_resp.json()["id"].as_str().unwrap().to_string();
-    let upstream_uuid = gts_uuid(&upstream_gts_id);
 
     let route_resp = h
         .api_v1()
         .post_route()
         .with_body(serde_json::json!({
-            "upstream_id": upstream_uuid,
+            "upstream_id": upstream_gts_id,
             "match": {
                 "http": {
                     "methods": ["POST"],
@@ -329,7 +324,7 @@ async fn get_route_by_gts_id() {
 
     let json = resp.json();
     assert_eq!(json["id"].as_str().unwrap(), route_gts_id);
-    assert_eq!(json["upstream_id"].as_str().unwrap(), upstream_uuid);
+    assert_eq!(json["upstream_id"].as_str().unwrap(), upstream_gts_id);
     assert_eq!(json["priority"].as_i64().unwrap(), 5);
     assert!(json["enabled"].as_bool().unwrap());
     assert_eq!(json["tags"][0].as_str().unwrap(), "test-tag");
@@ -352,21 +347,19 @@ async fn update_route_changes_fields() {
                 "endpoints": [{"host": "api.openai.com", "port": 443, "scheme": "https"}]
             },
             "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
-            "alias": "route-update-test",
             "enabled": true,
             "tags": []
         }))
         .expect_status(201)
         .await;
 
-    let upstream_json = upstream_resp.json();
-    let upstream_uuid = gts_uuid(upstream_json["id"].as_str().unwrap());
+    let upstream_gts_id = upstream_resp.json()["id"].as_str().unwrap().to_string();
 
     let route_resp = h
         .api_v1()
         .post_route()
         .with_body(serde_json::json!({
-            "upstream_id": upstream_uuid,
+            "upstream_id": upstream_gts_id,
             "match": {
                 "http": {
                     "methods": ["POST"],
@@ -384,8 +377,14 @@ async fn update_route_changes_fields() {
 
     let resp = h
         .api_v1()
-        .patch_route(&route_gts_id)
+        .put_route(&route_gts_id)
         .with_body(serde_json::json!({
+            "match": {
+                "http": {
+                    "methods": ["POST"],
+                    "path": "/v1/chat/completions"
+                }
+            },
             "priority": 10,
             "tags": ["updated"],
             "enabled": false
@@ -413,21 +412,19 @@ async fn delete_route_returns_204_then_get_returns_404() {
                 "endpoints": [{"host": "api.openai.com", "port": 443, "scheme": "https"}]
             },
             "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
-            "alias": "route-delete-test",
             "enabled": true,
             "tags": []
         }))
         .expect_status(201)
         .await;
 
-    let upstream_json = upstream_resp.json();
-    let upstream_uuid = gts_uuid(upstream_json["id"].as_str().unwrap());
+    let upstream_gts_id = upstream_resp.json()["id"].as_str().unwrap().to_string();
 
     let route_resp = h
         .api_v1()
         .post_route()
         .with_body(serde_json::json!({
-            "upstream_id": upstream_uuid,
+            "upstream_id": upstream_gts_id,
             "match": {
                 "http": {
                     "methods": ["GET"],
@@ -458,10 +455,7 @@ async fn list_routes_filters_by_upstream() {
 
     // Create 2 upstreams with distinct hosts.
     let mut upstream_gts_ids = Vec::new();
-    for (alias, host) in [
-        ("upstream-a", "api.openai.com"),
-        ("upstream-b", "api.anthropic.com"),
-    ] {
+    for host in ["api.openai.com", "api.anthropic.com"] {
         let resp = h
             .api_v1()
             .post_upstream()
@@ -470,7 +464,6 @@ async fn list_routes_filters_by_upstream() {
                     "endpoints": [{"host": host, "port": 443, "scheme": "https"}]
                 },
                 "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
-                "alias": alias,
                 "enabled": true,
                 "tags": []
             }))
@@ -480,15 +473,12 @@ async fn list_routes_filters_by_upstream() {
         upstream_gts_ids.push(resp.json()["id"].as_str().unwrap().to_string());
     }
 
-    let uuid_a = gts_uuid(&upstream_gts_ids[0]);
-    let uuid_b = gts_uuid(&upstream_gts_ids[1]);
-
     // Create 2 routes on upstream A.
     for path in ["/v1/a1", "/v1/a2"] {
         h.api_v1()
             .post_route()
             .with_body(serde_json::json!({
-                "upstream_id": uuid_a,
+                "upstream_id": &upstream_gts_ids[0],
                 "match": { "http": { "methods": ["GET"], "path": path } },
                 "tags": [], "priority": 0, "enabled": true
             }))
@@ -500,7 +490,7 @@ async fn list_routes_filters_by_upstream() {
     h.api_v1()
         .post_route()
         .with_body(serde_json::json!({
-            "upstream_id": uuid_b,
+            "upstream_id": &upstream_gts_ids[1],
             "match": { "http": { "methods": ["GET"], "path": "/v1/b1" } },
             "tags": [], "priority": 0, "enabled": true
         }))
@@ -509,7 +499,7 @@ async fn list_routes_filters_by_upstream() {
 
     let resp = h
         .api_v1()
-        .list_routes(&upstream_gts_ids[0])
+        .list_routes(Some(&upstream_gts_ids[0]))
         .expect_status(200)
         .await;
 
@@ -517,6 +507,6 @@ async fn list_routes_filters_by_upstream() {
     let arr = routes.as_array().unwrap();
     assert_eq!(arr.len(), 2);
     for route in arr {
-        assert_eq!(route["upstream_id"].as_str().unwrap(), uuid_a);
+        assert_eq!(route["upstream_id"].as_str().unwrap(), upstream_gts_ids[0]);
     }
 }

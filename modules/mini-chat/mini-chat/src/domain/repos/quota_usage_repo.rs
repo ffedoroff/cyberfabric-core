@@ -33,6 +33,10 @@ pub struct SettleParams {
     /// Token telemetry — only applied on `total` bucket.
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Web search calls to increment — only applied on `total` bucket.
+    pub web_search_calls: u32,
+    /// Code interpreter calls to increment — only applied on `total` bucket.
+    pub code_interpreter_calls: u32,
 }
 
 /// Repository trait for quota usage persistence operations.
@@ -55,7 +59,7 @@ pub trait QuotaUsageRepository: Send + Sync {
         params: SettleParams,
     ) -> Result<(), DomainError>;
 
-    /// SELECT all `quota_usage` rows for a user across periods and buckets.
+    /// `SELECT` all `quota_usage` rows for a user across periods and buckets.
     async fn find_bucket_rows<C: DBRunner>(
         &self,
         runner: &C,
@@ -63,4 +67,38 @@ pub trait QuotaUsageRepository: Send + Sync {
         tenant_id: Uuid,
         user_id: Uuid,
     ) -> Result<Vec<QuotaUsageModel>, DomainError>;
+
+    /// `SELECT` `quota_usage` rows with pessimistic locking (`FOR UPDATE` on Postgres,
+    /// plain `SELECT` on `SQLite`). Filters by `period_types` and `period_starts`.
+    async fn find_bucket_rows_for_update<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        period_types: &[PeriodType],
+        period_starts: &[time::Date],
+    ) -> Result<Vec<QuotaUsageModel>, DomainError>;
+
+    /// Sum `web_search_calls` for a user's daily `total` bucket on the given date.
+    /// Returns 0 if no row exists.
+    async fn get_daily_web_search_calls<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        period_start: time::Date,
+    ) -> Result<u32, DomainError>;
+
+    /// Sum `code_interpreter_calls` for a user's daily `total` bucket on the given date.
+    /// Returns 0 if no row exists.
+    async fn get_daily_code_interpreter_calls<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        period_start: time::Date,
+    ) -> Result<u32, DomainError>;
 }

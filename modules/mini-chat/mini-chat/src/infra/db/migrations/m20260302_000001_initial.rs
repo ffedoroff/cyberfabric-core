@@ -31,10 +31,10 @@ impl MigrationTrait for Migration {
 
 const DOWN: &str = r"
 DROP TABLE IF EXISTS message_reactions;
-DROP TABLE IF EXISTS user_model_prefs;
 DROP TABLE IF EXISTS quota_usage;
 DROP TABLE IF EXISTS chat_vector_stores;
 DROP TABLE IF EXISTS thread_summaries;
+DROP TABLE IF EXISTS message_attachments;
 DROP TABLE IF EXISTS attachments;
 DROP TABLE IF EXISTS chat_turns;
 DROP TABLE IF EXISTS messages;
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS chats (
     id          UUID PRIMARY KEY NOT NULL,
     tenant_id   UUID NOT NULL,
     user_id     UUID NOT NULL,
-    model       VARCHAR(64) NOT NULL,
+    model       VARCHAR(1024) NOT NULL,
     title       VARCHAR(255),
     is_temporary BOOLEAN NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ NOT NULL,
@@ -73,7 +73,10 @@ CREATE TABLE IF NOT EXISTS messages (
     features_used       JSONB NOT NULL DEFAULT '[]',
     input_tokens        BIGINT NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
     output_tokens       BIGINT NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
-    model               VARCHAR(64),
+    cache_read_input_tokens  BIGINT NOT NULL DEFAULT 0 CHECK (cache_read_input_tokens >= 0),
+    cache_write_input_tokens BIGINT NOT NULL DEFAULT 0 CHECK (cache_write_input_tokens >= 0),
+    reasoning_tokens         BIGINT NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+    model               VARCHAR(1024),
     is_compressed       BOOLEAN NOT NULL DEFAULT FALSE,
     created_at          TIMESTAMPTZ NOT NULL,
     deleted_at          TIMESTAMPTZ
@@ -84,6 +87,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_request_role
 CREATE INDEX IF NOT EXISTS idx_messages_chat_created
     ON messages (chat_id, created_at)
     WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_id_chat_id
+    ON messages (id, chat_id);
 
 -- 3. chat_turns
 CREATE TABLE IF NOT EXISTS chat_turns (
@@ -103,7 +108,7 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     max_output_tokens_applied   INT,
     reserved_credits_micro      BIGINT,
     policy_version_applied      BIGINT,
-    effective_model             VARCHAR(64),
+    effective_model             VARCHAR(1024),
     minimal_generation_floor_applied INT,
     deleted_at                  TIMESTAMPTZ,
     replaced_by_request_id      UUID,
@@ -133,20 +138,25 @@ CREATE TABLE IF NOT EXISTS attachments (
     storage_backend         VARCHAR(32) NOT NULL DEFAULT 'azure',
     provider_file_id        VARCHAR(128),
     status                  VARCHAR(16) NOT NULL,
+    error_code              VARCHAR(64),
     attachment_kind         VARCHAR(16) NOT NULL,
     doc_summary             TEXT,
     img_thumbnail           BYTEA,
     img_thumbnail_width     INT CHECK (img_thumbnail_width >= 0),
     img_thumbnail_height    INT CHECK (img_thumbnail_height >= 0),
-    summary_model           VARCHAR(64),
+    summary_model           VARCHAR(1024),
     summary_updated_at      TIMESTAMPTZ,
     cleanup_status          VARCHAR(16),
     cleanup_attempts        INT NOT NULL DEFAULT 0 CHECK (cleanup_attempts >= 0),
     last_cleanup_error      TEXT,
     cleanup_updated_at      TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    for_file_search         BOOLEAN NOT NULL DEFAULT false,
+    for_code_interpreter    BOOLEAN NOT NULL DEFAULT false,
     deleted_at              TIMESTAMPTZ,
-    CHECK (attachment_kind IN ('document', 'image'))
+    CHECK (attachment_kind IN ('document', 'image')),
+    CHECK (status IN ('pending', 'uploaded', 'ready', 'failed'))
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_tenant_chat
     ON attachments (tenant_id, chat_id)
@@ -154,6 +164,24 @@ CREATE INDEX IF NOT EXISTS idx_attachments_tenant_chat
 CREATE INDEX IF NOT EXISTS idx_attachments_cleanup
     ON attachments (cleanup_status)
     WHERE cleanup_status IS NOT NULL AND deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_id_chat_id
+    ON attachments (id, chat_id);
+
+-- 4a. message_attachments
+CREATE TABLE IF NOT EXISTS message_attachments (
+    tenant_id       UUID NOT NULL,
+    chat_id         UUID NOT NULL,
+    message_id      UUID NOT NULL,
+    attachment_id   UUID NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (chat_id, message_id, attachment_id),
+    FOREIGN KEY (message_id, chat_id) REFERENCES messages(id, chat_id) ON DELETE CASCADE,
+    FOREIGN KEY (attachment_id, chat_id) REFERENCES attachments(id, chat_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_tenant_chat
+    ON message_attachments (tenant_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_attachment_chat
+    ON message_attachments (attachment_id, chat_id);
 
 -- 5. thread_summaries
 CREATE TABLE IF NOT EXISTS thread_summaries (
@@ -195,6 +223,7 @@ CREATE TABLE IF NOT EXISTS quota_usage (
     output_tokens           BIGINT NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
     file_search_calls       INT NOT NULL DEFAULT 0 CHECK (file_search_calls >= 0),
     web_search_calls        INT NOT NULL DEFAULT 0 CHECK (web_search_calls >= 0),
+    code_interpreter_calls  INT NOT NULL DEFAULT 0 CHECK (code_interpreter_calls >= 0),
     rag_retrieval_calls     INT NOT NULL DEFAULT 0 CHECK (rag_retrieval_calls >= 0),
     image_inputs            INT NOT NULL DEFAULT 0 CHECK (image_inputs >= 0),
     image_upload_bytes      BIGINT NOT NULL DEFAULT 0 CHECK (image_upload_bytes >= 0),
@@ -202,20 +231,7 @@ CREATE TABLE IF NOT EXISTS quota_usage (
     UNIQUE (tenant_id, user_id, period_type, period_start, bucket)
 );
 
--- 8. user_model_prefs
-CREATE TABLE IF NOT EXISTS user_model_prefs (
-    tenant_id   UUID NOT NULL,
-    user_id     UUID NOT NULL,
-    model_id    VARCHAR(64) NOT NULL,
-    is_enabled  BOOLEAN NOT NULL DEFAULT TRUE,
-    overrides   JSONB NOT NULL DEFAULT '{}',
-    updated_at  TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (tenant_id, user_id, model_id)
-);
-CREATE INDEX IF NOT EXISTS idx_user_model_prefs_tenant_user
-    ON user_model_prefs (tenant_id, user_id);
-
--- 9. message_reactions
+-- 8. message_reactions
 CREATE TABLE IF NOT EXISTS message_reactions (
     id          UUID PRIMARY KEY NOT NULL,
     tenant_id   UUID NOT NULL,
@@ -260,6 +276,9 @@ CREATE TABLE IF NOT EXISTS messages (
     features_used       TEXT NOT NULL DEFAULT '[]',
     input_tokens        INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
     output_tokens       INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cache_read_input_tokens  INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_input_tokens >= 0),
+    cache_write_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_input_tokens >= 0),
+    reasoning_tokens         INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
     model               TEXT,
     is_compressed       INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL,
@@ -271,6 +290,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_request_role
 CREATE INDEX IF NOT EXISTS idx_messages_chat_created
     ON messages (chat_id, created_at)
     WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_id_chat_id
+    ON messages (id, chat_id);
 
 -- 3. chat_turns
 CREATE TABLE IF NOT EXISTS chat_turns (
@@ -320,6 +341,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     storage_backend         TEXT NOT NULL DEFAULT 'azure',
     provider_file_id        TEXT,
     status                  TEXT NOT NULL,
+    error_code              TEXT,
     attachment_kind         TEXT NOT NULL,
     doc_summary             TEXT,
     img_thumbnail           BLOB,
@@ -332,8 +354,12 @@ CREATE TABLE IF NOT EXISTS attachments (
     last_cleanup_error      TEXT,
     cleanup_updated_at      TEXT,
     created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    for_file_search         INTEGER NOT NULL DEFAULT 0,
+    for_code_interpreter    INTEGER NOT NULL DEFAULT 0,
     deleted_at              TEXT,
-    CHECK (attachment_kind IN ('document', 'image'))
+    CHECK (attachment_kind IN ('document', 'image')),
+    CHECK (status IN ('pending', 'uploaded', 'ready', 'failed'))
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_tenant_chat
     ON attachments (tenant_id, chat_id)
@@ -341,6 +367,24 @@ CREATE INDEX IF NOT EXISTS idx_attachments_tenant_chat
 CREATE INDEX IF NOT EXISTS idx_attachments_cleanup
     ON attachments (cleanup_status)
     WHERE cleanup_status IS NOT NULL AND deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_id_chat_id
+    ON attachments (id, chat_id);
+
+-- 4a. message_attachments
+CREATE TABLE IF NOT EXISTS message_attachments (
+    tenant_id       TEXT NOT NULL,
+    chat_id         TEXT NOT NULL,
+    message_id      TEXT NOT NULL,
+    attachment_id   TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id, attachment_id),
+    FOREIGN KEY (message_id, chat_id) REFERENCES messages(id, chat_id) ON DELETE CASCADE,
+    FOREIGN KEY (attachment_id, chat_id) REFERENCES attachments(id, chat_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_tenant_chat
+    ON message_attachments (tenant_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_attachment_chat
+    ON message_attachments (attachment_id, chat_id);
 
 -- 5. thread_summaries
 CREATE TABLE IF NOT EXISTS thread_summaries (
@@ -382,6 +426,7 @@ CREATE TABLE IF NOT EXISTS quota_usage (
     output_tokens           INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
     file_search_calls       INTEGER NOT NULL DEFAULT 0 CHECK (file_search_calls >= 0),
     web_search_calls        INTEGER NOT NULL DEFAULT 0 CHECK (web_search_calls >= 0),
+    code_interpreter_calls  INTEGER NOT NULL DEFAULT 0 CHECK (code_interpreter_calls >= 0),
     rag_retrieval_calls     INTEGER NOT NULL DEFAULT 0 CHECK (rag_retrieval_calls >= 0),
     image_inputs            INTEGER NOT NULL DEFAULT 0 CHECK (image_inputs >= 0),
     image_upload_bytes      INTEGER NOT NULL DEFAULT 0 CHECK (image_upload_bytes >= 0),
@@ -389,20 +434,7 @@ CREATE TABLE IF NOT EXISTS quota_usage (
     UNIQUE (tenant_id, user_id, period_type, period_start, bucket)
 );
 
--- 8. user_model_prefs
-CREATE TABLE IF NOT EXISTS user_model_prefs (
-    tenant_id   TEXT NOT NULL,
-    user_id     TEXT NOT NULL,
-    model_id    TEXT NOT NULL,
-    is_enabled  INTEGER NOT NULL DEFAULT 1,
-    overrides   TEXT NOT NULL DEFAULT '{}',
-    updated_at  TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, user_id, model_id)
-);
-CREATE INDEX IF NOT EXISTS idx_user_model_prefs_tenant_user
-    ON user_model_prefs (tenant_id, user_id);
-
--- 9. message_reactions
+-- 8. message_reactions
 CREATE TABLE IF NOT EXISTS message_reactions (
     id          TEXT PRIMARY KEY NOT NULL,
     tenant_id   TEXT NOT NULL,

@@ -40,12 +40,44 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// Whether this endpoint's port is the standard port for its scheme.
+    ///
+    /// Standard ports (omitted from derived aliases):
+    /// - HTTP: 80
+    /// - HTTPS / WSS / WT / gRPC: 443
+    #[must_use]
+    pub fn is_standard_port(&self) -> bool {
+        match self.scheme {
+            Scheme::Http => self.port == 80,
+            Scheme::Https | Scheme::Wss | Scheme::Wt | Scheme::Grpc => self.port == 443,
+        }
+    }
+
+    /// The normalized host: brackets stripped (IPv6), lowercased, trailing dots stripped.
+    #[must_use]
+    pub fn normalized_host(&self) -> String {
+        let h = self
+            .host
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(&self.host);
+        h.to_ascii_lowercase().trim_end_matches('.').to_string()
+    }
+
+    /// Whether this endpoint's host is an IP address (v4 or v6).
+    #[must_use]
+    pub fn is_ip(&self) -> bool {
+        self.normalized_host().parse::<std::net::IpAddr>().is_ok()
+    }
+
+    /// Single-endpoint alias contribution: `host` if standard port, `host:port` otherwise.
     #[must_use]
     pub fn alias_contribution(&self) -> String {
-        if self.port == 443 || self.port == 80 {
-            self.host.clone()
+        let host = self.normalized_host();
+        if self.is_standard_port() {
+            host
         } else {
-            format!("{}:{}", self.host, self.port)
+            format!("{host}:{}", self.port)
         }
     }
 }
@@ -174,14 +206,48 @@ pub enum RateLimitStrategy {
 }
 
 // ---------------------------------------------------------------------------
-// PluginsConfig
+// CorsConfig
 // ---------------------------------------------------------------------------
+
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CorsHttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+#[domain_model]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorsConfig {
+    pub sharing: SharingMode,
+    pub enabled: bool,
+    pub allowed_origins: Vec<String>,
+    pub allowed_methods: Vec<CorsHttpMethod>,
+    pub expose_headers: Vec<String>,
+    pub allow_credentials: bool,
+}
+
+// ---------------------------------------------------------------------------
+// PluginBinding / PluginsConfig
+// ---------------------------------------------------------------------------
+
+#[domain_model]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginBinding {
+    pub plugin_ref: String,
+    pub config: HashMap<String, String>,
+}
 
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PluginsConfig {
     pub sharing: SharingMode,
-    pub items: Vec<String>,
+    pub items: Vec<PluginBinding>,
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +308,7 @@ pub struct Route {
     pub match_rules: MatchRules,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
     pub tags: Vec<String>,
     pub priority: i32,
     pub enabled: bool,
@@ -260,6 +327,7 @@ pub struct Upstream {
     pub headers: Option<HeadersConfig>,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
     pub tags: Vec<String>,
 }
 
@@ -294,22 +362,24 @@ pub struct CreateUpstreamRequest {
     pub headers: Option<HeadersConfig>,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
     pub tags: Vec<String>,
     pub enabled: bool,
 }
 
 #[domain_model]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdateUpstreamRequest {
-    pub server: Option<Server>,
-    pub protocol: Option<String>,
+    pub server: Server,
+    pub protocol: String,
     pub alias: Option<String>,
     pub auth: Option<AuthConfig>,
     pub headers: Option<HeadersConfig>,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
-    pub tags: Option<Vec<String>>,
-    pub enabled: Option<bool>,
+    pub cors: Option<CorsConfig>,
+    pub tags: Vec<String>,
+    pub enabled: bool,
 }
 
 #[domain_model]
@@ -319,18 +389,20 @@ pub struct CreateRouteRequest {
     pub match_rules: MatchRules,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
     pub tags: Vec<String>,
     pub priority: i32,
     pub enabled: bool,
 }
 
 #[domain_model]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdateRouteRequest {
-    pub match_rules: Option<MatchRules>,
+    pub match_rules: MatchRules,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
-    pub tags: Option<Vec<String>>,
-    pub priority: Option<i32>,
-    pub enabled: Option<bool>,
+    pub cors: Option<CorsConfig>,
+    pub tags: Vec<String>,
+    pub priority: i32,
+    pub enabled: bool,
 }

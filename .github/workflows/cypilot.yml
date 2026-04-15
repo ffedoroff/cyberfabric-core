@@ -1,3 +1,4 @@
+# Updated: 2026-03-27 by Constructor Tech
 name: Cypilot
 
 on:
@@ -7,7 +8,9 @@ on:
       - '**/*.md'
       - 'docs/**'
       - 'modules/**/docs/**'
-      - '.cypilot-adapter/**'
+      - 'modules/**/src/**'
+      - 'modules/**/tests/**'
+      - '.cypilot/config/**'
       - 'Makefile'
   workflow_call:
   workflow_dispatch:

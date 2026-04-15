@@ -11,33 +11,47 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::repos::{ChatRepository, ModelResolver, ThreadSummaryRepository};
+use crate::domain::repos::{
+    AttachmentRepository, ChatRepository, CleanupReason, ModelResolver, OutboxEnqueuer,
+    ThreadSummaryRepository,
+};
 
 use super::{DbProvider, actions, resources};
 
 /// Service handling chat CRUD operations.
 #[domain_model]
-pub struct ChatService<CR: ChatRepository> {
+pub struct ChatService<CR: ChatRepository, AR: AttachmentRepository, TSR: ThreadSummaryRepository> {
     db: Arc<DbProvider>,
     chat_repo: Arc<CR>,
+    attachment_repo: Arc<AR>,
     #[allow(dead_code)]
-    thread_summary_repo: Arc<dyn ThreadSummaryRepository>,
+    thread_summary_repo: Arc<TSR>,
+    outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
     enforcer: PolicyEnforcer,
     model_resolver: Arc<dyn ModelResolver>,
 }
 
-impl<CR: ChatRepository> ChatService<CR> {
+impl<
+    CR: ChatRepository + 'static,
+    AR: AttachmentRepository + 'static,
+    TSR: ThreadSummaryRepository + 'static,
+> ChatService<CR, AR, TSR>
+{
     pub(crate) fn new(
         db: Arc<DbProvider>,
         chat_repo: Arc<CR>,
-        thread_summary_repo: Arc<dyn ThreadSummaryRepository>,
+        attachment_repo: Arc<AR>,
+        thread_summary_repo: Arc<TSR>,
+        outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
         enforcer: PolicyEnforcer,
         model_resolver: Arc<dyn ModelResolver>,
     ) -> Self {
         Self {
             db,
             chat_repo,
+            attachment_repo,
             thread_summary_repo,
+            outbox_enqueuer,
             enforcer,
             model_resolver,
         }
@@ -70,10 +84,11 @@ impl<CR: ChatRepository> ChatService<CR> {
             )
             .await?;
 
-        let model = self
+        let resolved = self
             .model_resolver
-            .resolve_model(tenant_id, &new.model)
+            .resolve_model(ctx.subject_id(), new.model)
             .await?;
+        let model = resolved.model_id;
 
         let now = OffsetDateTime::now_utc();
         let id = Uuid::now_v7();
@@ -114,18 +129,20 @@ impl<CR: ChatRepository> ChatService<CR> {
 
         let conn = self.db.conn().map_err(DomainError::from)?;
 
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::READ, Some(id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
         let chat = self
             .chat_repo
-            .get(&conn, &scope, id)
+            .get(&conn, &chat_scope, id)
             .await?
             .ok_or_else(|| DomainError::chat_not_found(id))?;
 
-        let message_count = self.chat_repo.count_messages(&conn, &scope, id).await?;
+        let msg_scope = chat_scope.tenant_only();
+        let message_count = self.chat_repo.count_messages(&conn, &msg_scope, id).await?;
 
         tracing::debug!("Successfully retrieved chat");
         Ok(Self::to_detail(chat, message_count))
@@ -142,20 +159,22 @@ impl<CR: ChatRepository> ChatService<CR> {
 
         let conn = self.db.conn().map_err(DomainError::from)?;
 
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::LIST, None)
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
-        let page = self.chat_repo.list_page(&conn, &scope, query).await?;
+        let page = self.chat_repo.list_page(&conn, &chat_scope, query).await?;
 
-        // Batch count: single GROUP BY query for all chat IDs
+        // Batch count: single GROUP BY query for all chat IDs.
+        let msg_scope = chat_scope.tenant_only();
         let chat_ids: Vec<Uuid> = page.items.iter().map(|c| c.id).collect();
         let counts = if chat_ids.is_empty() {
             std::collections::HashMap::new()
         } else {
             self.chat_repo
-                .count_messages_batch(&conn, &scope, &chat_ids)
+                .count_messages_batch(&conn, &msg_scope, &chat_ids)
                 .await?
         };
 
@@ -190,48 +209,120 @@ impl<CR: ChatRepository> ChatService<CR> {
             validate_title(Some(title.as_str()))?;
         }
 
-        let conn = self.db.conn().map_err(DomainError::from)?;
-
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::UPDATE, Some(id))
-            .await?;
-
-        let mut chat = self
-            .chat_repo
-            .get(&conn, &scope, id)
             .await?
-            .ok_or_else(|| DomainError::chat_not_found(id))?;
+            .ensure_owner(ctx.subject_id());
 
-        // Apply patch
-        if let Some(title_opt) = patch.title {
-            chat.title = title_opt.map(|t| t.trim().to_owned());
-        }
-        chat.updated_at = OffsetDateTime::now_utc();
+        let chat_repo = Arc::clone(&self.chat_repo);
+        let (updated, message_count) = self
+            .db
+            .transaction(|tx| {
+                let scope = chat_scope.clone();
+                Box::pin(async move {
+                    let map = |e: DomainError| modkit_db::DbError::Other(anyhow::Error::new(e));
 
-        let updated = self.chat_repo.update(&conn, &scope, chat).await?;
-        let message_count = self.chat_repo.count_messages(&conn, &scope, id).await?;
+                    let mut chat = chat_repo
+                        .get(tx, &scope, id)
+                        .await
+                        .map_err(map)?
+                        .ok_or_else(|| map(DomainError::chat_not_found(id)))?;
+
+                    // Apply patch
+                    if let Some(title_opt) = patch.title {
+                        chat.title = title_opt.map(|t| t.trim().to_owned());
+                    }
+                    chat.updated_at = OffsetDateTime::now_utc();
+
+                    let updated = chat_repo.update(tx, &scope, chat).await.map_err(map)?;
+                    let msg_scope = scope.tenant_only();
+                    let message_count = chat_repo
+                        .count_messages(tx, &msg_scope, id)
+                        .await
+                        .map_err(map)?;
+
+                    Ok((updated, message_count))
+                })
+            })
+            .await
+            .map_err(|e| match e {
+                modkit_db::DbError::Other(err) => match err.downcast::<DomainError>() {
+                    Ok(domain_err) => domain_err,
+                    Err(err) => DomainError::from(modkit_db::DbError::Other(err)),
+                },
+                other => DomainError::from(other),
+            })?;
 
         tracing::debug!("Successfully updated chat title");
         Ok(Self::to_detail(updated, message_count))
     }
 
     /// Soft-delete a chat.
+    ///
+    /// Atomically: soft-deletes the chat, marks all attachments as `cleanup_status = 'pending'`,
+    /// and enqueues a [`ChatCleanupEvent`] for async provider resource cleanup.
     #[instrument(skip(self, ctx), fields(chat_id = %id))]
     pub async fn delete_chat(&self, ctx: &SecurityContext, id: Uuid) -> Result<(), DomainError> {
         tracing::debug!("Deleting chat");
 
-        let conn = self.db.conn().map_err(DomainError::from)?;
-
-        let scope = self
+        let chat_scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::DELETE, Some(id))
-            .await?;
+            .await?
+            .ensure_owner(ctx.subject_id());
 
-        let deleted = self.chat_repo.soft_delete(&conn, &scope, id).await?;
-        if !deleted {
-            return Err(DomainError::chat_not_found(id));
-        }
+        let tenant_id = ctx.subject_tenant_id();
+        let chat_repo = Arc::clone(&self.chat_repo);
+        let attachment_repo = Arc::clone(&self.attachment_repo);
+        let outbox_enqueuer = Arc::clone(&self.outbox_enqueuer);
+        let scope_tx = chat_scope.clone();
+
+        self.db
+            .transaction(move |tx| {
+                Box::pin(async move {
+                    let map = |e: DomainError| modkit_db::DbError::Other(anyhow::Error::new(e));
+
+                    let deleted = chat_repo
+                        .soft_delete(tx, &scope_tx, id)
+                        .await
+                        .map_err(map)?;
+                    if !deleted {
+                        return Err(map(DomainError::chat_not_found(id)));
+                    }
+
+                    // Mark all active attachments as pending cleanup.
+                    attachment_repo
+                        .mark_attachments_pending_for_chat(tx, id)
+                        .await
+                        .map_err(map)?;
+
+                    // Enqueue chat-level cleanup event (per DESIGN.md line 1758).
+                    let event = crate::domain::repos::ChatCleanupEvent {
+                        reason: CleanupReason::ChatSoftDelete,
+                        tenant_id,
+                        chat_id: id,
+                        system_request_id: Uuid::new_v4(),
+                        chat_deleted_at: time::OffsetDateTime::now_utc(),
+                    };
+                    outbox_enqueuer
+                        .enqueue_chat_cleanup(tx, event)
+                        .await
+                        .map_err(map)?;
+
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|e| match e {
+                modkit_db::DbError::Other(err) => match err.downcast::<DomainError>() {
+                    Ok(domain_err) => domain_err,
+                    Err(err) => DomainError::from(modkit_db::DbError::Other(err)),
+                },
+                other => DomainError::from(other),
+            })?;
+
+        self.outbox_enqueuer.flush();
 
         tracing::debug!("Successfully deleted chat");
         Ok(())

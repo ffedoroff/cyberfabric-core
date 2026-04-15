@@ -1,6 +1,6 @@
 [package]
 name = "cf-modkit-macros-tests"
-version.workspace = true
+version = "0.6.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -28,4 +28,5 @@ inventory = { workspace = true }
 modkit = { workspace = true }
 modkit-security = { workspace = true }
 modkit-transport-grpc = { workspace = true }
+serde = { workspace = true }
 tonic = { workspace = true }

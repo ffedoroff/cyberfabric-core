@@ -122,7 +122,7 @@ mod tx_error;
 
 // Core types
 pub use entity_traits::ScopableEntity;
-pub use error::ScopeError;
+pub use error::{ScopeError, is_unique_violation};
 
 // Security types from modkit-security
 pub use modkit_security::{
@@ -151,7 +151,7 @@ pub use tx_config::{TxAccessMode, TxConfig, TxIsolationLevel};
 // Select operations
 pub use select::{
     Scoped, SecureEntityExt, SecureFindRelatedExt, SecureSelect, SecureSelectTwo,
-    SecureSelectTwoMany, Unscoped, exec_custom_all,
+    SecureSelectTwoMany, Unscoped,
 };
 
 // Update/Delete/Insert operations
