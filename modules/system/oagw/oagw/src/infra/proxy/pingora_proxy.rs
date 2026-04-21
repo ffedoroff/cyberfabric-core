@@ -848,12 +848,26 @@ mod tests {
         }
     }
 
+    // Workspace-wide feature unification activates both `aws-lc-rs` and `ring`
+    // on rustls (via gts → jsonschema), so rustls 0.23 cannot auto-determine
+    // the process-wide CryptoProvider and panics on first TLS construction
+    // (pingora LoadBalancer). nextest runs each test in its own process, so
+    // every test must install a provider explicitly.
+    fn ensure_crypto_provider() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
+    }
+
     // Note: PingoraBackendSelector uses Pingora's LoadBalancer which resolves
     // addresses via ToSocketAddrs during construction. Tests must use real IP
     // addresses (e.g. 127.0.0.1) with distinct ports to differentiate endpoints.
 
     #[tokio::test]
     async fn select_round_robin_distribution() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
         let endpoints = vec![
@@ -877,6 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalidate_causes_rebuild() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
 
@@ -893,6 +908,7 @@ mod tests {
 
     #[tokio::test]
     async fn select_single_endpoint() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
         let endpoints = vec![ep("127.0.0.1", 30001, Scheme::Http)];
@@ -907,6 +923,7 @@ mod tests {
     /// Verify the scheme survives the Pingora Backend round-trip.
     #[tokio::test]
     async fn select_preserves_scheme() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
         // All endpoints share the same scheme (upstream-level invariant).
@@ -947,6 +964,7 @@ mod tests {
     /// must match the resolved key in endpoints_by_addr.
     #[tokio::test]
     async fn select_resolves_hostname_for_reverse_lookup() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
         // Use "localhost" — a hostname that resolves to 127.0.0.1.
@@ -1085,6 +1103,7 @@ mod tests {
     /// select() returns None when the endpoint list is empty.
     #[tokio::test]
     async fn select_empty_endpoints_returns_none() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
 
@@ -1100,6 +1119,7 @@ mod tests {
     /// (build_entry returns None because addr_map stays empty).
     #[tokio::test]
     async fn select_unresolvable_endpoints_returns_none() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
 
@@ -1115,6 +1135,7 @@ mod tests {
     /// addr_map reflects the updated endpoints (simulates config change).
     #[tokio::test]
     async fn invalidate_rebuilds_with_new_addr_map() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
 
@@ -1282,6 +1303,7 @@ mod tests {
 
     #[tokio::test]
     async fn select_populates_resolved_addr() {
+        ensure_crypto_provider();
         let selector = PingoraEndpointSelector::new();
         let id = Uuid::new_v4();
         // IP-based endpoint — resolved_addr should be populated.

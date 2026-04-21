@@ -1350,6 +1350,18 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
 
+    // See pingora_proxy::tests::ensure_crypto_provider — same rationale.
+    // `build_svc` constructs a pingora HTTP proxy, which initializes rustls;
+    // nextest runs each test in its own process, so the provider must be
+    // installed explicitly before any pingora-backed svc is built.
+    fn ensure_crypto_provider() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
+    }
+
     #[test]
     fn normalize_collapses_double_slashes() {
         assert_eq!(normalize_path("/alias//v1//chat"), "/alias/v1/chat");
@@ -1619,6 +1631,7 @@ mod tests {
     // P2: HTTPS-only — Http scheme endpoint must be rejected.
     #[tokio::test]
     async fn select_endpoint_rejects_http_scheme() {
+        ensure_crypto_provider();
         let selector = Arc::new(MockSelector::new());
         let svc = build_svc(selector);
 
@@ -1642,6 +1655,7 @@ mod tests {
     // positive-2.2 (custom-header-routing): X-OAGW-Target-Host matches an endpoint.
     #[tokio::test]
     async fn select_endpoint_target_host_matches() {
+        ensure_crypto_provider();
         let selector = Arc::new(MockSelector::new());
         let svc = build_svc(selector.clone());
         let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
@@ -1660,6 +1674,7 @@ mod tests {
     // negative-2.1 (custom-header-routing): X-OAGW-Target-Host does not match any endpoint.
     #[tokio::test]
     async fn select_endpoint_target_host_unknown() {
+        ensure_crypto_provider();
         let svc = build_svc(Arc::new(MockSelector::new()));
         let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
 
@@ -1679,6 +1694,7 @@ mod tests {
     // negative-1.2..1.4 (custom-header-routing): X-OAGW-Target-Host with invalid format.
     #[tokio::test]
     async fn select_endpoint_target_host_invalid_format() {
+        ensure_crypto_provider();
         let svc = build_svc(Arc::new(MockSelector::new()));
         let upstream = upstream_with(vec![ep("a.com", 443)]);
 
@@ -1720,6 +1736,7 @@ mod tests {
     // positive-2.1 (custom-header-routing): Round-robin fallback for multi-endpoint (no header).
     #[tokio::test]
     async fn select_endpoint_round_robin_fallback() {
+        ensure_crypto_provider();
         let selector = Arc::new(MockSelector::new());
         let svc = build_svc(selector.clone());
         let upstream = upstream_with(vec![ep("a.com", 443), ep("b.com", 443)]);
@@ -1747,6 +1764,7 @@ mod tests {
     // positive-1.1 (custom-header-routing): Single-endpoint bypass (no header, no BackendSelector call).
     #[tokio::test]
     async fn select_endpoint_single_endpoint_bypass() {
+        ensure_crypto_provider();
         let selector = Arc::new(MockSelector::new());
         let svc = build_svc(selector.clone());
         let upstream = upstream_with(vec![ep("only.com", 443)]);
@@ -1767,6 +1785,7 @@ mod tests {
     // positive-1.2 (custom-header-routing): Single-endpoint upstream validates header if present.
     #[tokio::test]
     async fn select_endpoint_single_endpoint_validates_header() {
+        ensure_crypto_provider();
         let svc = build_svc(Arc::new(MockSelector::new()));
         let upstream = upstream_with(vec![ep("a.com", 443)]);
 
