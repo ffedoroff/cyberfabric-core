@@ -375,3 +375,8 @@ fn filter_descendants_by_barrier(
 
     result
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "service_tests.rs"]
+mod service_tests;
