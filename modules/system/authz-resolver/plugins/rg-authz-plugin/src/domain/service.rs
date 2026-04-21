@@ -1,0 +1,250 @@
+//! Service implementation for the RG `AuthZ` resolver plugin.
+//!
+//! Resolves tenant hierarchy via `ResourceGroupReadHierarchy` and produces
+//! `InGroup` / `InGroupSubtree` predicates based on the caller's tenant scope.
+
+use std::sync::Arc;
+
+use authz_resolver_sdk::{
+    Constraint, EvaluationRequest, EvaluationResponse, EvaluationResponseContext, InGroupPredicate,
+    InGroupSubtreePredicate, InPredicate, Predicate,
+};
+use modkit_odata::ODataQuery;
+use modkit_security::pep_properties;
+use resource_group_sdk::api::ResourceGroupReadHierarchy;
+use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+/// RG-based `AuthZ` resolver service.
+///
+/// Resolves tenant hierarchy via `ResourceGroupReadHierarchy`:
+/// 1. Extracts tenant root from request context
+/// 2. Calls `get_group_descendants` to resolve the tenant subtree
+/// 3. Filters barrier tenants (`metadata.self_managed` = true) from scope
+/// 4. Returns `In(owner_tenant_id, visible_tenants)` + optional `InGroup`/`InGroupSubtree`
+#[modkit_macros::domain_model]
+pub struct Service {
+    rg: Arc<dyn ResourceGroupReadHierarchy>,
+}
+
+impl Service {
+    pub fn new(rg: Arc<dyn ResourceGroupReadHierarchy>) -> Self {
+        Self { rg }
+    }
+
+    /// Evaluate an authorization request with RG hierarchy resolution.
+    #[allow(clippy::cognitive_complexity)]
+    pub async fn evaluate(&self, request: &EvaluationRequest) -> EvaluationResponse {
+        info!(
+            action = %request.action.name,
+            resource_type = %request.resource.resource_type,
+            "rg-authz: evaluate called"
+        );
+
+        let tenant_id = request
+            .context
+            .tenant_context
+            .as_ref()
+            .and_then(|t| t.root_id)
+            .or_else(|| {
+                request
+                    .subject
+                    .properties
+                    .get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            });
+
+        let Some(tid) = tenant_id else {
+            warn!("rg-authz: No tenant resolvable -- deny");
+            return Self::deny();
+        };
+
+        info!(tenant_id = %tid, "rg-authz: tenant resolved");
+
+        if tid == Uuid::default() {
+            debug!("Nil UUID tenant -- deny");
+            return Self::deny();
+        }
+
+        // Root tenant provisioning: create + is_tenant + no parent.
+        // Allow without hierarchy check -- root tenants bootstrap from empty DB.
+        // TODO: add ACL/permission check when vendor policy engine is available.
+        let props = &request.resource.properties;
+        let is_tenant = props
+            .get("is_tenant")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let has_parent = props.contains_key("parent_id") && !props["parent_id"].is_null();
+        if request.action.name == "create" && is_tenant && !has_parent {
+            debug!(tenant_id = %tid, "Root tenant provisioning -- allow without hierarchy check");
+            return Self::allow_single_tenant(tid);
+        }
+
+        // Resolve tenant subtree via RG hierarchy.
+        // No fallback: if tenant not in RG or RG error -- deny (fail-closed).
+        let ctx = modkit_security::SecurityContext::anonymous();
+        let visible_tenants = match self.resolve_tenant_subtree(&ctx, tid).await {
+            Ok(tenants) => tenants,
+            Err(e) => {
+                warn!(error = %e, tenant_id = %tid, "Failed to resolve tenant hierarchy -- deny");
+                return Self::deny();
+            }
+        };
+
+        if visible_tenants.is_empty() {
+            warn!(tenant_id = %tid, "rg-authz: Empty tenant subtree -- deny");
+            return Self::deny();
+        }
+
+        info!(tenant_id = %tid, visible = visible_tenants.len(), "rg-authz: allow");
+
+        // Build predicates
+        let mut predicates = vec![Predicate::In(InPredicate::new(
+            pep_properties::OWNER_TENANT_ID,
+            visible_tenants,
+        ))];
+
+        // If request includes group context, add group predicates
+        let props = &request.resource.properties;
+        if let Some(group_ids) = props.get("group_ids")
+            && let Some(ids) = Self::parse_uuid_array(group_ids)
+            && !ids.is_empty()
+        {
+            predicates.push(Predicate::InGroup(InGroupPredicate::new("id", ids)));
+        }
+        if let Some(ancestor_ids) = props.get("ancestor_group_ids")
+            && let Some(ids) = Self::parse_uuid_array(ancestor_ids)
+            && !ids.is_empty()
+        {
+            predicates.push(Predicate::InGroupSubtree(InGroupSubtreePredicate::new(
+                "id", ids,
+            )));
+        }
+
+        EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint { predicates }],
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Resolve the tenant subtree: call `get_group_descendants` and filter barriers.
+    ///
+    /// A barrier group and ALL its descendants are excluded from the visible scope.
+    /// This matches `tenant_closure` semantics: `barrier = 1` for any row where a
+    /// barrier group is on the path between ancestor and descendant.
+    async fn resolve_tenant_subtree(
+        &self,
+        ctx: &modkit_security::SecurityContext,
+        tenant_id: Uuid,
+    ) -> Result<Vec<Uuid>, String> {
+        // Drain all pages — a single RG query only returns one page of
+        // descendants, which would silently truncate the tenant subtree
+        // for hierarchies larger than the default page size.
+        let mut items = Vec::new();
+        let mut query = ODataQuery::default();
+        loop {
+            let page = self
+                .rg
+                .get_group_descendants(ctx, tenant_id, &query)
+                .await
+                .map_err(|e| format!("RG hierarchy error: {e}"))?;
+            items.extend(page.items);
+            match page.page_info.next_cursor {
+                Some(cursor_str) => {
+                    let cursor = modkit_odata::CursorV1::decode(&cursor_str)
+                        .map_err(|e| format!("Invalid cursor: {e}"))?;
+                    query = query.with_cursor(cursor);
+                }
+                None => break,
+            }
+        }
+
+        // Build lookup: id -> (parent_id, is_barrier)
+        let groups: std::collections::HashMap<Uuid, (Option<Uuid>, bool)> = items
+            .iter()
+            .map(|g| (g.id, (g.hierarchy.parent_id, Self::is_barrier(g))))
+            .collect();
+
+        // Collect barrier IDs
+        let barrier_ids: std::collections::HashSet<Uuid> = groups
+            .iter()
+            .filter(|(_, (_, is_b))| *is_b)
+            .map(|(id, _)| *id)
+            .collect();
+
+        // For each group, walk up parent chain to check if any ancestor is a barrier.
+        // If so, this group is "behind" the barrier and excluded.
+        let visible: Vec<Uuid> = items
+            .iter()
+            .filter(|g| {
+                if barrier_ids.contains(&g.id) {
+                    return false; // barrier itself excluded
+                }
+                // Walk up parent chain within the result set
+                let mut current = g.hierarchy.parent_id;
+                while let Some(pid) = current {
+                    if barrier_ids.contains(&pid) {
+                        return false; // behind a barrier
+                    }
+                    current = groups.get(&pid).and_then(|(p, _)| *p);
+                }
+                true
+            })
+            .map(|g| g.id)
+            .collect();
+
+        debug!(
+            tenant_id = %tenant_id,
+            total = items.len(),
+            barriers = barrier_ids.len(),
+            visible = visible.len(),
+            "Resolved tenant subtree"
+        );
+
+        Ok(visible)
+    }
+
+    /// Check if a group has barrier metadata (`self_managed = true`).
+    fn is_barrier(group: &resource_group_sdk::models::ResourceGroupWithDepth) -> bool {
+        group
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("self_managed"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    fn allow_single_tenant(tid: Uuid) -> EvaluationResponse {
+        EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        pep_properties::OWNER_TENANT_ID,
+                        [tid],
+                    ))],
+                }],
+                ..Default::default()
+            },
+        }
+    }
+
+    fn deny() -> EvaluationResponse {
+        EvaluationResponse {
+            decision: false,
+            context: EvaluationResponseContext::default(),
+        }
+    }
+
+    fn parse_uuid_array(value: &serde_json::Value) -> Option<Vec<Uuid>> {
+        value.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                .collect()
+        })
+    }
+}
