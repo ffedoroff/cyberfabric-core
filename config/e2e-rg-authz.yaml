@@ -1,4 +1,10 @@
-# Updated: 2026-04-16 by Constructor Tech
+# !! KEEP THIS FILE IDENTICAL TO e2e-local.yaml EXCEPT for the
+# !! rg-authz-plugin priority override below.
+#
+# This config activates rg-authz-plugin (priority=90) over static-authz-plugin
+# (default priority=100). rg-authz-plugin resolves tenant hierarchy via
+# Resource Group module instead of returning hardcoded tenant predicates.
+#
 # HyperSpot Server Configuration
 #
 # Database Architecture Overview:
@@ -124,11 +130,15 @@ modules:
       vendor: "hyperspot"
       priority: 20
       tenants:
-        # Root tenant used by oagw + credstore e2e tests. The tenant tree has
-        # exactly one root; the hierarchy sub-root below hangs off this anchor.
+        # Root tenant used by oagw + credstore e2e tests
         - id: "00000000-df51-5b42-9538-d2b56b7ee953"
           name: "e2e-root"
           parent_id: null
+          status: active
+        # Tenant B for cross-tenant E2E tests
+        - id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+          name: "e2e-tenant-b"
+          parent_id: "00000000-df51-5b42-9538-d2b56b7ee953"
           status: active
         # Hierarchy sub-root
         - id: "00000000-0000-0000-0000-000000000001"
@@ -247,11 +257,11 @@ modules:
         - client_id: "mini-chat"
           client_secret: "mini-chat-dev-secret"
 
-  static-authz-plugin:
+  rg-authz-plugin:
     config:
       vendor: "hyperspot"
-      priority: 100
-  
+      priority: 90  # Below static-authz-plugin default (100), so rg-authz is selected
+
   mini-chat:
     # Module-specific database configuration
     database:
