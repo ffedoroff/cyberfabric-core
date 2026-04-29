@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use modkit_odata::ast::{CompareOperator, Expr, Value};
 use modkit_odata::{ODataQuery, Page, PageInfo};
 use modkit_security::SecurityContext;
 use resource_group_sdk::TENANT_RG_TYPE_PATH;
@@ -122,19 +123,23 @@ impl ResourceGroupReadHierarchy for MockRgHierarchy {
     async fn list_groups(
         &self,
         _ctx: &SecurityContext,
-        _query: &ODataQuery,
+        query: &ODataQuery,
     ) -> Result<Page<ResourceGroup>, ResourceGroupError> {
         // Flatten every `ResourceGroupWithDepth` known to the mock (ancestors
         // + descendants + per-id dispatches) into `ResourceGroup` entries,
-        // deduplicated by id. Ignores the OData filter — tests populate the
-        // mock with only the groups they care about, so a simple "return
-        // everything" is an acceptable stub for `id in (…)` queries.
+        // deduplicated by id, then apply the `OData $filter` predicate so
+        // tests cannot pass merely because the mock returned everything.
+        // See `group_matches_filter` for the predicate subset honoured.
         let mut seen = std::collections::HashSet::new();
         let mut items: Vec<ResourceGroup> = Vec::new();
+        let filter_expr = query.filter();
         let flatten = |src: &[ResourceGroupWithDepth],
                        seen: &mut std::collections::HashSet<Uuid>,
                        items: &mut Vec<ResourceGroup>| {
             for g in src {
+                if filter_expr.is_some_and(|e| !group_matches_filter(g, e)) {
+                    continue;
+                }
                 if seen.insert(g.id) {
                     items.push(ResourceGroup {
                         id: g.id,
@@ -165,6 +170,60 @@ impl ResourceGroupReadHierarchy for MockRgHierarchy {
                 limit: 100,
             },
         })
+    }
+}
+
+/// Lightweight `OData $filter` evaluator for the mock `list_groups`.
+///
+/// Honours the predicate subset the rg-tr-plugin service actually emits:
+///   * `id eq <uuid>` / `id ne <uuid>`
+///   * `id in (<uuid>, …)`
+///   * `hierarchy/parent_id eq <uuid>` / `... ne <uuid>` / `... in (…)`
+///   * `And` / `Or` / `Not` over the above
+///
+/// Predicates on identifiers the mock does not understand (e.g. `type eq …`,
+/// `name eq …`) are treated as `true` — the mock has only one type-fixture
+/// per test, so type filtering would be a no-op anyway. This keeps the
+/// evaluator small while still catching regressions where the service stops
+/// passing the `id`-style predicates that batch reads depend on.
+fn group_matches_filter(g: &ResourceGroupWithDepth, expr: &Expr) -> bool {
+    match expr {
+        Expr::And(l, r) => group_matches_filter(g, l) && group_matches_filter(g, r),
+        Expr::Or(l, r) => group_matches_filter(g, l) || group_matches_filter(g, r),
+        Expr::Not(inner) => !group_matches_filter(g, inner),
+        Expr::Compare(lhs, op, rhs) => match (lhs.as_ref(), rhs.as_ref()) {
+            (Expr::Identifier(name), Expr::Value(Value::Uuid(u))) => {
+                let actual = match name.as_str() {
+                    "id" => Some(g.id),
+                    "hierarchy/parent_id" => g.hierarchy.parent_id,
+                    _ => return true, // unknown identifier — treat as no-op
+                };
+                match op {
+                    CompareOperator::Eq => actual == Some(*u),
+                    CompareOperator::Ne => actual != Some(*u),
+                    _ => true, // ordering ops are not used on UUIDs
+                }
+            }
+            _ => true,
+        },
+        Expr::In(lhs, values) => {
+            let Expr::Identifier(name) = lhs.as_ref() else {
+                return true;
+            };
+            let actual = match name.as_str() {
+                "id" => Some(g.id),
+                "hierarchy/parent_id" => g.hierarchy.parent_id,
+                _ => return true,
+            };
+            let Some(actual) = actual else { return false };
+            values
+                .iter()
+                .any(|v| matches!(v, Expr::Value(Value::Uuid(u)) if *u == actual))
+        }
+        // Other AST shapes (Function, bare Identifier/Value) are not produced
+        // by the rg-tr-plugin service today; treat them as pass-through to
+        // keep the mock minimal but forward-compatible.
+        _ => true,
     }
 }
 
@@ -245,17 +304,19 @@ async fn get_tenant_not_found() {
 
 #[tokio::test]
 async fn get_tenants_deduplicates_and_filters_status() {
-    // Two tenants in storage with distinct statuses:
+    // Three tenants in storage:
     //   - `t_active`    — requested, Active    → must be in the result
     //   - `t_suspended` — requested, Suspended → must be filtered by status
+    //   - `t_other`     — NOT requested, Active → must be filtered by ID
     // The input list contains `t_active` twice to verify input-dedup.
     //
-    // The mock's `list_groups` does not honour the OData `id in (...)`
-    // filter (it returns every stored row), so the test deliberately stores
-    // ONLY the tenants under examination. This isolates the assertions to
-    // the two behaviours we care about: status filtering and input dedup.
+    // The mock's `list_groups` honours the OData `id in (...)` filter (see
+    // `group_matches_filter`), so `t_other` is excluded by the mock unless
+    // the service stops emitting that filter, and `t_suspended` is excluded
+    // by the service-side status filter on top.
     let t_active = Uuid::now_v7();
     let t_suspended = Uuid::now_v7();
+    let t_other = Uuid::now_v7();
     let mock = MockRgHierarchy::ancestors_only(vec![
         make_group(
             t_active,
@@ -270,6 +331,13 @@ async fn get_tenants_deduplicates_and_filters_status() {
             None,
             0,
             Some(serde_json::json!({"status": "suspended"})),
+        ),
+        make_group(
+            t_other,
+            "Other",
+            None,
+            0,
+            Some(serde_json::json!({"status": "active"})),
         ),
     ]);
     let svc = service_with(mock);
@@ -299,6 +367,10 @@ async fn get_tenants_deduplicates_and_filters_status() {
     assert!(
         !result.iter().any(|t| t.id == TenantId(t_suspended)),
         "Suspended tenant must be excluded by status filter"
+    );
+    assert!(
+        !result.iter().any(|t| t.id == TenantId(t_other)),
+        "Tenant not present in the request must not leak through, even when stored"
     );
 }
 
