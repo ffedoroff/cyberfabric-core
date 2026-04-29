@@ -245,28 +245,61 @@ async fn get_tenant_not_found() {
 
 #[tokio::test]
 async fn get_tenants_deduplicates_and_filters_status() {
-    let t1 = Uuid::now_v7();
-    let mock = MockRgHierarchy::ancestors_only(vec![make_group(
-        t1,
-        "Active",
-        None,
-        0,
-        Some(serde_json::json!({"status": "active"})),
-    )]);
+    // Two tenants in storage with distinct statuses:
+    //   - `t_active`    — requested, Active    → must be in the result
+    //   - `t_suspended` — requested, Suspended → must be filtered by status
+    // The input list contains `t_active` twice to verify input-dedup.
+    //
+    // The mock's `list_groups` does not honour the OData `id in (...)`
+    // filter (it returns every stored row), so the test deliberately stores
+    // ONLY the tenants under examination. This isolates the assertions to
+    // the two behaviours we care about: status filtering and input dedup.
+    let t_active = Uuid::now_v7();
+    let t_suspended = Uuid::now_v7();
+    let mock = MockRgHierarchy::ancestors_only(vec![
+        make_group(
+            t_active,
+            "Active",
+            None,
+            0,
+            Some(serde_json::json!({"status": "active"})),
+        ),
+        make_group(
+            t_suspended,
+            "Suspended",
+            None,
+            0,
+            Some(serde_json::json!({"status": "suspended"})),
+        ),
+    ]);
     let svc = service_with(mock);
 
-    // Duplicate IDs should be deduplicated
     let result = svc
         .get_tenants(
             &ctx(),
-            &[TenantId(t1), TenantId(t1)],
+            &[
+                TenantId(t_active),
+                TenantId(t_active),
+                TenantId(t_suspended),
+            ],
             &GetTenantsOptions {
                 status: vec![TenantStatus::Active],
             },
         )
         .await
         .unwrap();
-    assert_eq!(result.len(), 1);
+
+    assert_eq!(
+        result.len(),
+        1,
+        "expected exactly one tenant after status filter + dedup"
+    );
+    assert_eq!(result[0].id, TenantId(t_active));
+    assert_eq!(result[0].status, TenantStatus::Active);
+    assert!(
+        !result.iter().any(|t| t.id == TenantId(t_suspended)),
+        "Suspended tenant must be excluded by status filter"
+    );
 }
 
 #[tokio::test]

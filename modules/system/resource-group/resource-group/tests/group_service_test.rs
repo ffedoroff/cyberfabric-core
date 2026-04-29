@@ -2181,12 +2181,12 @@ async fn adr_tenant_rejects_course_membership() {
         .await
         .unwrap_err();
 
-    let msg = err.to_string();
     assert!(
-        msg.contains("not in allowed_membership_types")
-            || msg.contains("allowed_membership_types")
-            || msg.contains("Validation"),
-        "Expected membership validation error, got: {msg}"
+        matches!(
+            &err,
+            DomainError::Validation { message } if message.contains("allowed_membership_types")
+        ),
+        "Expected DomainError::Validation mentioning allowed_membership_types, got: {err:?}"
     );
 }
 
@@ -2362,14 +2362,12 @@ async fn security_group_metadata_large_payload() {
                 "1MB payload should roundtrip"
             );
         }
-        Err(e) => {
-            // Acceptable to reject large payloads
-            let msg = e.to_string();
-            assert!(
-                !msg.contains("panic"),
-                "Should not panic on large metadata: {msg}"
-            );
-        }
+        // Deterministic deny classes are acceptable: validation rejects oversize
+        // payloads up-front, and the storage layer may reject through the DB
+        // (e.g. SQLite parameter-size limits). Any other error class indicates
+        // a regression.
+        Err(DomainError::Validation { .. } | DomainError::Database(_)) => {}
+        Err(e) => panic!("unexpected error class for large metadata payload: {e:?}"),
     }
 }
 

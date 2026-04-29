@@ -233,11 +233,7 @@ async fn barrier_handled_by_tr_only_visible_returned() {
     assert!(resp.decision);
     let preds = &resp.context.constraints[0].predicates;
     if let Predicate::In(p) = &preds[0] {
-        let got: std::collections::HashSet<_> = p
-            .values
-            .iter()
-            .filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
-            .collect();
+        let got: std::collections::HashSet<_> = p.values.iter().map(parse_uuid_value).collect();
         let expected: std::collections::HashSet<_> = [t1, t_normal].into_iter().collect();
         assert_eq!(
             got, expected,
@@ -474,6 +470,10 @@ fn build_r_request(
 
 /// Assert that the response is `allow` with a single `In(owner_tenant_id, …)`
 /// predicate whose values equal `expected` as a set.
+///
+/// UUID parsing is strict: a non-string predicate value or a malformed UUID
+/// fails the test (rather than being silently dropped) — otherwise tests
+/// could pass with bad predicate payloads.
 fn assert_allow_in(resp: &EvaluationResponse, expected: &[Uuid]) {
     assert!(resp.decision, "expected allow, got deny");
     let preds = &resp.context.constraints[0].predicates;
@@ -481,13 +481,18 @@ fn assert_allow_in(resp: &EvaluationResponse, expected: &[Uuid]) {
     let Predicate::In(p) = &preds[0] else {
         panic!("expected In predicate");
     };
-    let got: std::collections::HashSet<_> = p
-        .values
-        .iter()
-        .filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
-        .collect();
+    let got: std::collections::HashSet<_> = p.values.iter().map(parse_uuid_value).collect();
     let want: std::collections::HashSet<_> = expected.iter().copied().collect();
     assert_eq!(got, want, "predicate values mismatch");
+}
+
+/// Strict UUID parser for test predicate values. Panics with a descriptive
+/// message on non-string values or invalid UUIDs.
+fn parse_uuid_value(v: &serde_json::Value) -> Uuid {
+    let s = v
+        .as_str()
+        .unwrap_or_else(|| panic!("expected predicate value to be a string, got: {v:?}"));
+    Uuid::parse_str(s).unwrap_or_else(|e| panic!("invalid UUID in predicate values: {s:?} ({e})"))
 }
 
 // ── R1: single, root_id, root_only ─────────────────────────────────────

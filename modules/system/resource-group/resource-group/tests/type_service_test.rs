@@ -726,10 +726,11 @@ async fn meta_object_schema_roundtrip() {
     }
 }
 
-/// TC-META-02: Type metadata_schema with non-Object (array) -> wrap/unwrap behavior.
-/// Documents actual behavior: array is wrapped in __user_schema, so it is NOT
-/// recoverable as a plain array after round-trip (it becomes None because
-/// __user_schema starts with __ and gets stripped).
+/// TC-META-02: Type `metadata_schema` with a non-Object (array) shape.
+/// Behavior asserted: the schema fails JSON-Schema validation up-front, so
+/// the create call returns a `Validation`-class error mentioning
+/// "not a valid JSON Schema". (No round-trip ever happens — the schema is
+/// rejected at the API boundary; the legacy "wrap/unwrap" comment was stale.)
 #[tokio::test]
 async fn meta_non_object_array_roundtrip() {
     let db = common::test_db().await;
@@ -759,8 +760,10 @@ async fn meta_non_object_array_roundtrip() {
     );
 }
 
-/// TC-META-03: Type metadata_schema with non-Object (string) -> wrap issue.
-/// Documents actual behavior: string is wrapped similarly and lost.
+/// TC-META-03: Type `metadata_schema` with a non-Object (string) shape.
+/// Behavior asserted: same as TC-META-02 — early validation rejection with
+/// "not a valid JSON Schema". The previous "wrap and lose data" comment was
+/// stale; nothing is wrapped, the schema is rejected before storage.
 #[tokio::test]
 async fn meta_non_object_string_roundtrip() {
     let db = common::test_db().await;

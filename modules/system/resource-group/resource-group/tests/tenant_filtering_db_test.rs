@@ -441,14 +441,18 @@ async fn group_based_in_group_predicate_produces_combined_scope() {
     assert_eq!(scope.constraints().len(), 1);
     assert_eq!(scope.constraints()[0].filters().len(), 2);
 
-    // First filter: tenant
+    // Tenant filter must be present (order-independent).
     assert!(scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant_id));
 
-    // Second filter: InGroup
-    let group_filter = &scope.constraints()[0].filters()[1];
+    // At least one InGroup filter must be present. We do not assume the
+    // ordering of filters within a constraint — predicate compilation may
+    // reorder them and the semantics are unaffected.
+    let filters = scope.constraints()[0].filters();
     assert!(
-        matches!(group_filter, modkit_security::ScopeFilter::InGroup(_)),
-        "expected InGroup filter, got: {group_filter:?}"
+        filters
+            .iter()
+            .any(|f| matches!(f, modkit_security::ScopeFilter::InGroup(_))),
+        "expected at least one InGroup filter, got: {filters:?}"
     );
 }
 
