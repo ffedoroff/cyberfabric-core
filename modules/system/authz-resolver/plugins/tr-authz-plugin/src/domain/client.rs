@@ -1,3 +1,6 @@
+// Created: 2026-02-09 by Constructor Tech
+// Updated: 2026-04-29 by Constructor Tech
+
 //! Client implementation for the TR `AuthZ` resolver plugin.
 
 use async_trait::async_trait;
