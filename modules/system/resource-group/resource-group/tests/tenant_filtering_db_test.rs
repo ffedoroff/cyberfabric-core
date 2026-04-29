@@ -70,7 +70,7 @@ impl AuthZResolverClient for TenantScopingAuthZ {
 
 /// Build a `GroupService` with the file-local `TenantScopingAuthZ` mock.
 ///
-/// Differs from `common::make_group_service` only by the AuthZ implementation:
+/// Differs from `common::make_group_service` only by the `AuthZ` implementation:
 /// `common` uses `AllowAllAuthZ`, while these tests need explicit tenant
 /// scoping via `In(OWNER_TENANT_ID)` to exercise the `AccessScope` path.
 fn make_group_service(
