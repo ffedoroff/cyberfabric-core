@@ -19,6 +19,9 @@ use uuid::Uuid;
 use cf_resource_group::domain::error::DomainError;
 use cf_resource_group::domain::group_service::{GroupService, QueryProfile};
 use cf_resource_group::domain::type_service::TypeService;
+use cf_resource_group::infra::storage::entity::gts_type::{
+    Column as GtsTypeColumn, Entity as GtsTypeEntity,
+};
 use cf_resource_group::infra::storage::entity::resource_group::{
     Column as RgColumn, Entity as RgEntity,
 };
@@ -893,12 +896,24 @@ async fn group_delete_with_memberships_no_force() {
     let root =
         common::create_root_group(&group_svc, &ctx, &root_type.code, "Root", tenant_id).await;
 
-    // Insert membership directly
+    // Insert membership directly. Resolve the surrogate `gts_type_id` from the
+    // type we just created instead of hard-coding `1` — that hard-code would
+    // silently break if `common::test_db()` ever seeds base types or if the
+    // SMALLINT IDENTITY sequence behaviour changes.
     let conn = db.conn().expect("conn");
     let scope = AccessScope::allow_all();
+    let root_type_id = GtsTypeEntity::find()
+        .filter(GtsTypeColumn::SchemaId.eq(&root_type.code))
+        .secure()
+        .scope_with(&scope)
+        .one(&conn)
+        .await
+        .expect("query gts_type")
+        .expect("type row exists")
+        .id;
     let membership = membership_entity::ActiveModel {
         group_id: Set(root.id),
-        gts_type_id: Set(1),
+        gts_type_id: Set(root_type_id),
         resource_id: Set("resource-1".to_owned()),
         ..Default::default()
     };
@@ -953,12 +968,22 @@ async fn group_force_delete_subtree() {
     )
     .await;
 
-    // Add a membership to child (direct insert)
+    // Add a membership to child (direct insert). Resolve the surrogate
+    // `gts_type_id` from the actual type row instead of hard-coding `1`.
     let conn = db.conn().expect("conn");
     let scope = AccessScope::allow_all();
+    let root_type_id = GtsTypeEntity::find()
+        .filter(GtsTypeColumn::SchemaId.eq(&root_type.code))
+        .secure()
+        .scope_with(&scope)
+        .one(&conn)
+        .await
+        .expect("query gts_type")
+        .expect("type row exists")
+        .id;
     let membership = membership_entity::ActiveModel {
         group_id: Set(child.id),
-        gts_type_id: Set(1),
+        gts_type_id: Set(root_type_id),
         resource_id: Set("resource-m".to_owned()),
         ..Default::default()
     };

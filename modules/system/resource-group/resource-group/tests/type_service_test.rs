@@ -793,7 +793,14 @@ async fn meta_non_object_string_roundtrip() {
     );
 }
 
-/// TC-META-04: Type metadata_schema with non-Object (number) -> verify round-trip.
+/// TC-META-04: Type `metadata_schema` with a non-Object (number) shape.
+/// Behavior asserted: same as TC-META-02/03 — early validation rejection
+/// with "not a valid JSON Schema". Together with TC-META-11
+/// (`meta_any_object_schema_accepted`) the suite documents the actual
+/// contract: `metadata_schema` must be a JSON Schema, which means an
+/// **object** (or boolean) at the root; non-object roots are rejected,
+/// while *any* object — even with arbitrary user-defined keys — is
+/// accepted without keyword-level validation.
 #[tokio::test]
 async fn meta_non_object_number_roundtrip() {
     let db = common::test_db().await;
@@ -1118,13 +1125,18 @@ async fn meta_can_be_root_fallback_no_stored_key() {
     );
 }
 
-/// TC-META-11: metadata_schema not validated as JSON Schema -- any JSON accepted.
+/// TC-META-11: `metadata_schema` keyword-validation — any **object**
+/// (regardless of which JSON-Schema keywords it does or does not use) is
+/// accepted at the API boundary. The root-shape constraint is still
+/// enforced (see TC-META-02/03/04 for non-object rejection); this test
+/// covers the complementary "no keyword whitelist" guarantee.
 #[tokio::test]
-async fn meta_any_json_accepted() {
+async fn meta_any_object_schema_accepted() {
     let db = common::test_db().await;
     let type_svc = TypeService::new(db.clone(), Arc::new(TypeRepository));
 
-    // Pass arbitrary JSON that is not a valid JSON Schema
+    // The root is an object — required by the schema shape rule. Inside,
+    // arbitrary keys are tolerated (no keyword-level validation).
     let code = type_code("anyjson");
     let schema = json!({
         "banana": true,
@@ -1141,7 +1153,7 @@ async fn meta_any_json_accepted() {
             metadata_schema: Some(schema.clone()),
         })
         .await
-        .expect("any JSON should be accepted");
+        .expect("any object schema should be accepted");
 
     assert_eq!(rg_type.metadata_schema, Some(schema));
 }
@@ -1513,14 +1525,12 @@ async fn security_metadata_schema_huge_payload() {
             );
             assert!(rg_type.can_be_root);
         }
-        Err(e) => {
-            // Acceptable to reject large payloads
-            let msg = e.to_string();
-            assert!(
-                !msg.contains("panic"),
-                "Should not panic on large schema: {msg}"
-            );
-        }
+        // Deterministic deny classes are acceptable: validation rejects
+        // oversize payloads up-front, and the storage layer may reject
+        // through the DB (e.g. SQLite TEXT/JSON limits). Any other error
+        // class indicates a regression.
+        Err(DomainError::Validation { .. } | DomainError::Database(_)) => {}
+        Err(e) => panic!("unexpected error class for large metadata schema: {e:?}"),
     }
 }
 
@@ -1548,19 +1558,16 @@ async fn security_metadata_schema_deep_nesting() {
         })
         .await;
 
-    // Should not panic regardless of outcome
+    // Should not panic regardless of outcome; tightened to accept only the
+    // deterministic deny classes. A deep-nesting payload may legitimately
+    // be rejected by validation (depth/size limits) or by the DB layer.
     match result {
         Ok(_) => {
             let loaded = type_svc.get_type(&code).await.expect("get type");
             assert!(loaded.metadata_schema.is_some());
         }
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                !msg.contains("panic"),
-                "Should not panic on deep nesting: {msg}"
-            );
-        }
+        Err(DomainError::Validation { .. } | DomainError::Database(_)) => {}
+        Err(e) => panic!("unexpected error class for deeply nested metadata: {e:?}"),
     }
 }
 
@@ -1581,8 +1588,13 @@ async fn security_metadata_schema_special_values() {
             metadata_schema: Some(json!(null)),
         })
         .await;
-    // null schema is accepted or rejected; no panic
-    assert!(t1.is_ok() || !t1.unwrap_err().to_string().contains("panic"));
+    // null schema is accepted or rejected with a deterministic deny class.
+    if let Err(e) = t1 {
+        assert!(
+            matches!(e, DomainError::Validation { .. } | DomainError::Database(_)),
+            "unexpected error class for null metadata_schema: {e:?}"
+        );
+    }
 
     // Test with bare true
     let code2 = type_code("atk06b");
@@ -1595,7 +1607,12 @@ async fn security_metadata_schema_special_values() {
             metadata_schema: Some(json!(true)),
         })
         .await;
-    assert!(t2.is_ok() || !t2.unwrap_err().to_string().contains("panic"));
+    if let Err(e) = t2 {
+        assert!(
+            matches!(e, DomainError::Validation { .. } | DomainError::Database(_)),
+            "unexpected error class for `true` metadata_schema: {e:?}"
+        );
+    }
 }
 
 /// TC-META-ATK-07: SQL column name keys in metadata -- no collision.

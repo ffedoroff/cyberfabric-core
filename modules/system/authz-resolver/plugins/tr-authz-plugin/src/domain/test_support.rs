@@ -27,7 +27,16 @@ use crate::domain::service::Service;
 ///
 /// Behavior is selected via the field configuration:
 ///
-/// - `parent` empty → `EmptyTr`-style: every call returns "not found" / empty.
+/// - `parent` empty → `EmptyTr`-style:
+///     * `get_tenant` and `get_root_tenant` return `TenantNotFound`.
+///     * `get_tenants` returns an empty vector.
+///     * `get_descendants` returns an empty descendant list.
+///     * `is_ancestor` returns `false` (no relationships).
+///     * `get_ancestors` is the one exception: it returns the requested id
+///       wrapped in a synthetic active `TenantRef` with an empty ancestor
+///       chain. The legacy `EmptyTr` did the same; treating it as
+///       "not found" would break the AuthZ-plugin code path that walks
+///       the ancestor chain to find a tenant root.
 /// - `parent` populated → `HierarchyMock`-style: `get_descendants` and
 ///   `is_ancestor` traverse the in-memory parent map.
 /// - `descendants_error == true` → `FailingOnDescendants`-style: every

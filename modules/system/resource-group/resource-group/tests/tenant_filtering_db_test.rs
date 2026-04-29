@@ -271,15 +271,18 @@ async fn tenant_isolation_hierarchy_scoped() {
         .get_group_descendants(&ctx_b, parent.id, &query)
         .await;
     if let Ok(page) = cross_tenant {
-        let leaked: Vec<&str> = page
-            .items
-            .iter()
-            .map(|g| g.name.as_str())
-            .filter(|n| *n == "A Parent" || *n == "A Child")
-            .collect();
+        // The success path of cross-tenant hierarchy reads is access-scope's
+        // "deny via empty page" pattern (existence is not disclosed). Anything
+        // else -- including B's own groups bleeding through because the service
+        // ignored the requested root -- is a regression. Asserting strict
+        // emptiness is stronger than the previous "no A names leaked" check.
         assert!(
-            leaked.is_empty(),
-            "tenant B must not see any of tenant A's groups, leaked: {leaked:?}",
+            page.items.is_empty(),
+            "cross-tenant hierarchy lookup must return an empty page, got: {:?}",
+            page.items
+                .iter()
+                .map(|g| (g.id, g.name.clone()))
+                .collect::<Vec<_>>(),
         );
     }
     // Err path: explicit denial is equally acceptable.
@@ -318,6 +321,19 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
     assert!(
         result.is_err(),
         "Tenant B should not be able to update tenant A's group"
+    );
+
+    // `is_err()` alone does not catch a partial write followed by an error —
+    // re-read the row as tenant A and verify the original state is untouched.
+    let after = group_svc
+        .get_group(&ctx_a, ga.id)
+        .await
+        .expect("tenant A must still see the original group");
+    assert_eq!(after.name, "A's group", "name must not have been hijacked");
+    assert_eq!(after.metadata, None, "metadata must remain None");
+    assert_eq!(
+        after.hierarchy.parent_id, None,
+        "parent_id must remain None"
     );
 }
 
