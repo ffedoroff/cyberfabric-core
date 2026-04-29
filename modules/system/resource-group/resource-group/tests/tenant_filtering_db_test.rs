@@ -21,19 +21,17 @@ use authz_resolver_sdk::{
     EvaluationResponseContext, PolicyEnforcer,
     constraints::{Constraint, InGroupPredicate, InPredicate, Predicate},
 };
-use modkit_db::{
-    ConnectOpts, DBProvider, DbError, connect_db, migration_runner::run_migrations_for_testing,
-};
+use modkit_db::{DBProvider, DbError};
 use modkit_odata::ODataQuery;
-use modkit_security::{SecurityContext, pep_properties};
-use sea_orm_migration::MigratorTrait;
+use modkit_security::pep_properties;
 
 use cf_resource_group::domain::group_service::{GroupService, QueryProfile};
 use cf_resource_group::domain::type_service::TypeService;
 use cf_resource_group::infra::storage::group_repo::GroupRepository;
 use cf_resource_group::infra::storage::membership_repo::MembershipRepository;
-use cf_resource_group::infra::storage::migrations::Migrator;
 use cf_resource_group::infra::storage::type_repo::TypeRepository;
+
+use common::{make_ctx, test_db};
 
 // ── Mock AuthZ: tenant-scoping (like static-authz-plugin) ───────────────
 
@@ -70,31 +68,11 @@ impl AuthZResolverClient for TenantScopingAuthZ {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-fn make_ctx(tenant_id: Uuid) -> SecurityContext {
-    SecurityContext::builder()
-        .subject_id(Uuid::now_v7())
-        .subject_tenant_id(tenant_id)
-        .build()
-        .expect("valid SecurityContext")
-}
-
-async fn test_db() -> Arc<DBProvider<DbError>> {
-    let opts = ConnectOpts {
-        max_conns: Some(1),
-        min_conns: Some(1),
-        ..Default::default()
-    };
-    let db = connect_db("sqlite::memory:", opts)
-        .await
-        .expect("connect to in-memory SQLite");
-
-    run_migrations_for_testing(&db, Migrator::migrations())
-        .await
-        .expect("run migrations");
-
-    Arc::new(DBProvider::new(db))
-}
-
+/// Build a `GroupService` with the file-local `TenantScopingAuthZ` mock.
+///
+/// Differs from `common::make_group_service` only by the AuthZ implementation:
+/// `common` uses `AllowAllAuthZ`, while these tests need explicit tenant
+/// scoping via `In(OWNER_TENANT_ID)` to exercise the `AccessScope` path.
 fn make_group_service(
     db: Arc<DBProvider<DbError>>,
 ) -> GroupService<GroupRepository, TypeRepository> {
@@ -133,67 +111,35 @@ async fn tenant_isolation_list_groups() {
     let ctx_b = make_ctx(tenant_b);
 
     // Create a type (types are not tenant-scoped)
-    let type_code = format!(
-        "gts.cf.core.rg.type.v1~x.test.dbiso{}.v1~",
-        Uuid::now_v7().as_simple()
-    );
-    type_svc
-        .create_type(resource_group_sdk::CreateTypeRequest {
-            code: type_code.clone(),
-            can_be_root: true,
-            allowed_parent_types: vec![],
-            allowed_membership_types: vec![],
-            metadata_schema: None,
-        })
-        .await
-        .expect("create type");
+    let type_code = common::create_root_type(&type_svc, "dbiso").await.code;
 
     // Tenant A creates 2 groups
-    let ga1 = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: type_code.clone(),
-                name: "Tenant A - Group 1".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create group A1");
-
-    let ga2 = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: type_code.clone(),
-                name: "Tenant A - Group 2".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create group A2");
+    let ga1 = common::create_root_group(
+        &group_svc,
+        &ctx_a,
+        &type_code,
+        "Tenant A - Group 1",
+        tenant_a,
+    )
+    .await;
+    let ga2 = common::create_root_group(
+        &group_svc,
+        &ctx_a,
+        &type_code,
+        "Tenant A - Group 2",
+        tenant_a,
+    )
+    .await;
 
     // Tenant B creates 1 group
-    let gb1 = group_svc
-        .create_group(
-            &ctx_b,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: type_code.clone(),
-                name: "Tenant B - Group 1".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_b,
-        )
-        .await
-        .expect("create group B1");
+    let gb1 = common::create_root_group(
+        &group_svc,
+        &ctx_b,
+        &type_code,
+        "Tenant B - Group 1",
+        tenant_b,
+    )
+    .await;
 
     let query = ODataQuery::default();
 
@@ -244,36 +190,12 @@ async fn tenant_isolation_get_group_cross_tenant_invisible() {
     let ctx_b = make_ctx(tenant_b);
 
     // Create type
-    let type_code = format!(
-        "gts.cf.core.rg.type.v1~x.test.xget{}.v1~",
-        Uuid::now_v7().as_simple()
-    );
-    type_svc
-        .create_type(resource_group_sdk::CreateTypeRequest {
-            code: type_code.clone(),
-            can_be_root: true,
-            allowed_parent_types: vec![],
-            allowed_membership_types: vec![],
-            metadata_schema: None,
-        })
-        .await
-        .expect("create type");
+    let type_code = common::create_root_type(&type_svc, "xget").await.code;
 
     // Tenant A creates a group
-    let ga = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: type_code,
-                name: "A's secret group".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create group for tenant A");
+    let ga =
+        common::create_root_group(&group_svc, &ctx_a, &type_code, "A's secret group", tenant_a)
+            .await;
 
     // Tenant B tries to get tenant A's group → should fail
     let result = group_svc.get_group(&ctx_b, ga.id).await;
@@ -297,83 +219,27 @@ async fn tenant_isolation_hierarchy_scoped() {
     let ctx_b = make_ctx(tenant_b);
 
     // Create parent and child types
-    let parent_type = format!(
-        "gts.cf.core.rg.type.v1~x.test.hierp{}.v1~",
-        Uuid::now_v7().as_simple()
-    );
-    let child_type = format!(
-        "gts.cf.core.rg.type.v1~x.test.hierc{}.v1~",
-        Uuid::now_v7().as_simple()
-    );
-
-    type_svc
-        .create_type(resource_group_sdk::CreateTypeRequest {
-            code: parent_type.clone(),
-            can_be_root: true,
-            allowed_parent_types: vec![],
-            allowed_membership_types: vec![],
-            metadata_schema: None,
-        })
+    let parent_type = common::create_root_type(&type_svc, "hierp").await.code;
+    let child_type = common::create_child_type(&type_svc, "hierc", &[&parent_type], &[])
         .await
-        .expect("create parent type");
-
-    type_svc
-        .create_type(resource_group_sdk::CreateTypeRequest {
-            code: child_type.clone(),
-            can_be_root: false,
-            allowed_parent_types: vec![parent_type.clone()],
-            allowed_membership_types: vec![],
-            metadata_schema: None,
-        })
-        .await
-        .expect("create child type");
+        .code;
 
     // Tenant A: parent + child
-    let parent = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: parent_type.clone(),
-                name: "A Parent".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create parent");
-
-    let _child = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: child_type.clone(),
-                name: "A Child".to_owned(),
-                parent_id: Some(parent.id),
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create child");
+    let parent =
+        common::create_root_group(&group_svc, &ctx_a, &parent_type, "A Parent", tenant_a).await;
+    let _child = common::create_child_group(
+        &group_svc,
+        &ctx_a,
+        &child_type,
+        parent.id,
+        "A Child",
+        tenant_a,
+    )
+    .await;
 
     // Tenant B: unrelated group (same parent type, different tenant)
-    let _b_group = group_svc
-        .create_group(
-            &ctx_b,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: parent_type,
-                name: "B Unrelated".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_b,
-        )
-        .await
-        .expect("create B group");
+    let _b_group =
+        common::create_root_group(&group_svc, &ctx_b, &parent_type, "B Unrelated", tenant_b).await;
 
     // Tenant A lists hierarchy from parent — should NOT include B's group
     let query = ODataQuery::default();
@@ -432,36 +298,10 @@ async fn tenant_isolation_update_cross_tenant_blocked() {
     let ctx_a = make_ctx(tenant_a);
     let ctx_b = make_ctx(tenant_b);
 
-    let type_code = format!(
-        "gts.cf.core.rg.type.v1~x.test.xupd{}.v1~",
-        Uuid::now_v7().as_simple()
-    );
-    type_svc
-        .create_type(resource_group_sdk::CreateTypeRequest {
-            code: type_code.clone(),
-            can_be_root: true,
-            allowed_parent_types: vec![],
-            allowed_membership_types: vec![],
-            metadata_schema: None,
-        })
-        .await
-        .expect("create type");
+    let type_code = common::create_root_type(&type_svc, "xupd").await.code;
 
     // Tenant A creates a group
-    let ga = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: type_code.clone(),
-                name: "A's group".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create group for tenant A");
+    let ga = common::create_root_group(&group_svc, &ctx_a, &type_code, "A's group", tenant_a).await;
 
     // Tenant B tries to update tenant A's group → should fail
     let result = group_svc
@@ -494,36 +334,17 @@ async fn tenant_isolation_delete_cross_tenant_blocked() {
     let ctx_a = make_ctx(tenant_a);
     let ctx_b = make_ctx(tenant_b);
 
-    let type_code = format!(
-        "gts.cf.core.rg.type.v1~x.test.xdel{}.v1~",
-        Uuid::now_v7().as_simple()
-    );
-    type_svc
-        .create_type(resource_group_sdk::CreateTypeRequest {
-            code: type_code.clone(),
-            can_be_root: true,
-            allowed_parent_types: vec![],
-            allowed_membership_types: vec![],
-            metadata_schema: None,
-        })
-        .await
-        .expect("create type");
+    let type_code = common::create_root_type(&type_svc, "xdel").await.code;
 
     // Tenant A creates a group
-    let ga = group_svc
-        .create_group(
-            &ctx_a,
-            resource_group_sdk::CreateGroupRequest {
-                id: None,
-                code: type_code,
-                name: "A's group to delete".to_owned(),
-                parent_id: None,
-                metadata: None,
-            },
-            tenant_a,
-        )
-        .await
-        .expect("create group for tenant A");
+    let ga = common::create_root_group(
+        &group_svc,
+        &ctx_a,
+        &type_code,
+        "A's group to delete",
+        tenant_a,
+    )
+    .await;
 
     // Tenant B tries to delete tenant A's group → should fail
     let result = group_svc.delete_group(&ctx_b, ga.id, false).await;
