@@ -44,6 +44,41 @@ pub fn validate_type_code(code: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
+/// Validate a GTS type code used as a membership resource type.
+///
+/// Same length and emptiness rules as [`validate_type_code`], but does
+/// NOT require the `gts.cf.core.rg.type.v1~` prefix. Per `DESIGN.md`
+/// ("RG type prefix requirement"), `allowed_memberships` entries are
+/// external domain types (e.g. `gts.cf.core.idp.user.v1~`,
+/// `gts.cf.vendor.lms.course.v1~`) and need not live in the RG
+/// type-registry namespace.
+///
+/// Deeper GTS-syntax validation is intentionally not enforced here —
+/// it stays consistent with the pre-existing leniency of
+/// [`validate_type_code`], which also only checks emptiness and length.
+/// The DB-level `resolve_ids` call (called after validation) still
+/// ensures the code corresponds to a registered type.
+///
+/// # Errors
+///
+/// Returns [`DomainError::validation`] if the code is empty or exceeds
+/// the 1024-character limit.
+pub fn validate_membership_type_code(code: &str) -> Result<(), DomainError> {
+    let code = code.trim().to_lowercase();
+    let code = code.as_str();
+    if code.is_empty() {
+        return Err(DomainError::validation(
+            "Membership type code must not be empty",
+        ));
+    }
+    if code.chars().count() > 1024 {
+        return Err(DomainError::validation(
+            "Membership type code must not exceed 1024 characters",
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that a `metadata_schema` value is a valid JSON Schema.
 ///
 /// Attempts to compile the schema via `jsonschema::validator_for`. If the value

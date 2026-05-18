@@ -96,6 +96,50 @@ fn validate_type_code_rejects_prefix_only() {
     assert!(result.is_ok());
 }
 
+// ── validate_membership_type_code ───────────────────────────────────────
+
+#[test]
+fn validate_membership_type_code_accepts_non_rg_prefix() {
+    // Per DESIGN.md, membership resource types are external domain types
+    // and do NOT require the `gts.cf.core.rg.type.v1~` prefix.
+    let result = validation::validate_membership_type_code("gts.cf.core.idp.user.v1~");
+    assert!(result.is_ok(), "Expected ok, got {result:?}");
+}
+
+#[test]
+fn validate_membership_type_code_accepts_rg_prefixed() {
+    // Backwards compatibility: RG-prefixed codes still validate.
+    let code = format!("{RG_TYPE_PREFIX}y.core.tn.tenant.v1~");
+    let result = validation::validate_membership_type_code(&code);
+    assert!(result.is_ok(), "Expected ok, got {result:?}");
+}
+
+#[test]
+fn validate_membership_type_code_rejects_empty() {
+    let result = validation::validate_membership_type_code("");
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+}
+
+#[test]
+fn validate_membership_type_code_rejects_too_long() {
+    let long_code = format!("gts.cf.core.idp.user.v1~{}", "a".repeat(1100));
+    assert!(long_code.len() > 1024);
+    let result = validation::validate_membership_type_code(&long_code);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), DomainError::Validation { .. }));
+}
+
+#[test]
+fn validate_membership_type_code_accepts_arbitrary_string_within_limits() {
+    // Membership validation is intentionally lenient — it mirrors the
+    // pre-existing leniency of `validate_type_code` (no strict GTS-syntax
+    // check), only the RG-prefix requirement is dropped. Deeper format
+    // checking is deferred to the DB-side `resolve_ids` call.
+    let result = validation::validate_membership_type_code("anything-non-empty");
+    assert!(result.is_ok(), "Expected ok, got {result:?}");
+}
+
 // ── validate_metadata_schema ────────────────────────────────────────────
 
 #[test]
