@@ -2810,6 +2810,7 @@ dependencies = [
  "cyberware-modkit-security",
  "cyberware-resource-group-sdk",
  "cyberware-types-registry-sdk",
+ "gts",
  "http",
  "http-body-util",
  "inventory",
