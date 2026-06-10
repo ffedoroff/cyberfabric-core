@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
 use simple_user_settings_sdk::models::{
     SimpleUserSettings, SimpleUserSettingsPatch, SimpleUserSettingsUpdate,
@@ -54,7 +54,7 @@ impl Default for ServiceConfig {
 pub struct Service<R: SettingsRepository> {
     db: Arc<DbProvider>,
     repo: Arc<R>,
-    policy_enforcer: PolicyEnforcer,
+    policy_enforcer: Arc<dyn Enforce>,
     config: ServiceConfig,
 }
 
@@ -62,13 +62,13 @@ impl<R: SettingsRepository> Service<R> {
     pub fn new(
         db: Arc<DbProvider>,
         repo: Arc<R>,
-        policy_enforcer: PolicyEnforcer,
+        policy_enforcer: impl Enforce + 'static,
         config: ServiceConfig,
     ) -> Self {
         Self {
             db,
             repo,
-            policy_enforcer,
+            policy_enforcer: Arc::new(policy_enforcer),
             config,
         }
     }

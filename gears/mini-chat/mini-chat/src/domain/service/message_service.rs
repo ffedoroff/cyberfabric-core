@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use toolkit_macros::domain_model;
 use toolkit_odata::{ODataQuery, Page};
 use toolkit_security::SecurityContext;
@@ -21,7 +21,7 @@ pub struct MessageService<MR: MessageRepository, CR: ChatRepository, RR: Reactio
     message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
     reaction_repo: Arc<RR>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
 }
 
 impl<MR: MessageRepository, CR: ChatRepository, RR: ReactionRepository> MessageService<MR, CR, RR> {
@@ -30,14 +30,14 @@ impl<MR: MessageRepository, CR: ChatRepository, RR: ReactionRepository> MessageS
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
         reaction_repo: Arc<RR>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
     ) -> Self {
         Self {
             db,
             message_repo,
             chat_repo,
             reaction_repo,
-            enforcer,
+            enforcer: Arc::new(enforcer),
         }
     }
 

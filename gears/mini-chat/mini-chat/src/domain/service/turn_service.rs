@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::current_otel_trace_id;
-use authz_resolver_sdk::{EnforcerError, PolicyEnforcer};
+use authz_resolver_sdk::{Enforce, EnforcerError};
 use toolkit_macros::domain_model;
 use toolkit_security::{AccessScope, SecurityContext};
 use tracing::info;
@@ -135,7 +135,7 @@ pub struct TurnService<
     pub(crate) message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
     message_attachment_repo: Arc<MAR>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
     metrics: Arc<dyn MiniChatMetricsPort>,
 }
@@ -154,7 +154,7 @@ impl<
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
         message_attachment_repo: Arc<MAR>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
         metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
@@ -164,7 +164,7 @@ impl<
             message_repo,
             chat_repo,
             message_attachment_repo,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             outbox_enqueuer,
             metrics,
         }

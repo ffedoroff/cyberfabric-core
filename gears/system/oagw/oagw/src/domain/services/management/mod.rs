@@ -34,7 +34,7 @@ use validation::{
 };
 
 use async_trait::async_trait;
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use credstore_sdk::CredStoreClientV1;
 use tenant_resolver_sdk::TenantResolverClient;
 use toolkit_macros::domain_model;
@@ -47,7 +47,7 @@ pub(crate) struct ControlPlaneServiceImpl {
     upstreams: Arc<dyn UpstreamRepository>,
     routes: Arc<dyn RouteRepository>,
     tenant_resolver: Arc<dyn TenantResolverClient>,
-    policy_enforcer: PolicyEnforcer,
+    policy_enforcer: Arc<dyn Enforce>,
     credstore: Arc<dyn CredStoreClientV1>,
     ssrf_guard: Arc<SsrfGuard>,
 }
@@ -58,7 +58,7 @@ impl ControlPlaneServiceImpl {
         upstreams: Arc<dyn UpstreamRepository>,
         routes: Arc<dyn RouteRepository>,
         tenant_resolver: Arc<dyn TenantResolverClient>,
-        policy_enforcer: PolicyEnforcer,
+        policy_enforcer: impl Enforce + 'static,
         credstore: Arc<dyn CredStoreClientV1>,
         ssrf_guard: Arc<SsrfGuard>,
     ) -> Self {
@@ -66,7 +66,7 @@ impl ControlPlaneServiceImpl {
             upstreams,
             routes,
             tenant_resolver,
-            policy_enforcer,
+            policy_enforcer: Arc::new(policy_enforcer),
             credstore,
             ssrf_guard,
         }

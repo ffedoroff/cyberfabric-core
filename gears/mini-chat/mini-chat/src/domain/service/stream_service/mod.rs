@@ -7,7 +7,7 @@ pub use types::{StreamError, StreamOutcome};
 
 use std::sync::Arc;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use toolkit_macros::domain_model;
@@ -60,7 +60,7 @@ pub struct StreamService<
     turn_repo: Arc<TR>,
     message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     provider_resolver: Arc<ProviderResolver>,
     streaming_config: StreamingConfig,
     finalization: Arc<crate::domain::service::finalization_service::FinalizationService<TR, MR>>,
@@ -93,7 +93,7 @@ impl<
         turn_repo: Arc<TR>,
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         provider_resolver: Arc<ProviderResolver>,
         streaming_config: StreamingConfig,
         finalization: Arc<
@@ -115,7 +115,7 @@ impl<
             turn_repo,
             message_repo,
             chat_repo,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             provider_resolver,
             streaming_config,
             finalization,

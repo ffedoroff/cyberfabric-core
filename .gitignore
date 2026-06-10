@@ -63,3 +63,6 @@ testing/e2e/logs/
 
 # Cypilot per-task working data (scratch reviews, logs, prompts; not tracked)
 .cypilot/work/
+
+# Code Ranker analysis reports / review plans (local artifacts; not tracked)
+.code-ranker/

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use authz_resolver_sdk::pep::{PolicyEnforcer, ResourceType};
+use authz_resolver_sdk::pep::{Enforce, ResourceType};
 use resource_group_sdk::models::ResourceGroupMembership;
 use toolkit_odata::{ODataQuery, Page};
 use toolkit_security::{SecurityContext, pep_properties};
@@ -40,7 +40,7 @@ pub struct MembershipService<
     MR: MembershipRepositoryTrait,
 > {
     db: Arc<DbProvider>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     group_repo: Arc<GR>,
     type_repo: Arc<TR>,
     membership_repo: Arc<MR>,
@@ -54,14 +54,14 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepository
     #[must_use]
     pub fn new(
         db: Arc<DbProvider>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         group_repo: Arc<GR>,
         type_repo: Arc<TR>,
         membership_repo: Arc<MR>,
     ) -> Self {
         Self {
             db,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             group_repo,
             type_repo,
             membership_repo,

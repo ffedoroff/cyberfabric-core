@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::AccessRequest;
 use toolkit_macros::domain_model;
 use toolkit_security::SecurityContext;
@@ -16,19 +16,19 @@ use super::{DbProvider, actions, resources};
 #[domain_model]
 pub struct ModelService {
     _db: Arc<DbProvider>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     model_resolver: Arc<dyn ModelResolver>,
 }
 
 impl ModelService {
     pub(crate) fn new(
         db: Arc<DbProvider>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         model_resolver: Arc<dyn ModelResolver>,
     ) -> Self {
         Self {
             _db: db,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             model_resolver,
         }
     }

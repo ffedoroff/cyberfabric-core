@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use bytes::Bytes;
 use toolkit_macros::domain_model;
 use toolkit_security::{AccessScope, SecurityContext};
@@ -173,7 +173,7 @@ pub struct AttachmentService<
     chat_repo: Arc<CR>,
     vector_store_repo: Arc<VSR>,
     outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     file_storage: Arc<dyn FileStorageProvider>,
     vector_store: Arc<dyn VectorStoreProvider>,
     provider_resolver: Arc<ProviderResolver>,
@@ -201,7 +201,7 @@ impl<
         chat_repo: Arc<CR>,
         vector_store_repo: Arc<VSR>,
         outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         file_storage: Arc<dyn FileStorageProvider>,
         vector_store: Arc<dyn VectorStoreProvider>,
         provider_resolver: Arc<ProviderResolver>,
@@ -219,7 +219,7 @@ impl<
             chat_repo,
             vector_store_repo,
             outbox_enqueuer,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             file_storage,
             vector_store,
             provider_resolver,

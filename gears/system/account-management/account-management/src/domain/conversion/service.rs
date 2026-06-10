@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::ResourceType;
 use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
@@ -379,7 +379,7 @@ pub struct ConversionService {
     /// [`Self::authorize`] before any state read. The `PolicyEnforcer`
     /// is owned by-value (it is `Clone`); the gear wiring clones it
     /// from the shared instance used by sibling services.
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     now_fn: NowFn,
     approval_ttl: StdDuration,
     resolved_retention: StdDuration,
@@ -422,7 +422,7 @@ impl ConversionService {
         repo: Arc<dyn ConversionRepo>,
         tenant_repo: Arc<dyn TenantRepo>,
         tenant_type_checker: Arc<dyn TenantTypeChecker + Send + Sync>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         approval_ttl: StdDuration,
         resolved_retention: StdDuration,
     ) -> Self {
@@ -430,7 +430,7 @@ impl ConversionService {
             repo,
             tenant_repo,
             tenant_type_checker,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             now_fn: Arc::new(OffsetDateTime::now_utc),
             approval_ttl,
             resolved_retention,

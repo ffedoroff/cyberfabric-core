@@ -45,7 +45,7 @@
 use std::sync::Arc;
 
 use account_management_sdk::{MetadataEntry, UpsertMetadataRequest};
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::ResourceType;
 use gts::GtsTypeId;
 use std::collections::HashMap;
@@ -159,7 +159,7 @@ pub struct MetadataService {
     metadata_repo: Arc<dyn MetadataRepo>,
     tenant_repo: Arc<dyn TenantRepo>,
     schema_registry: Arc<dyn MetadataSchemaRegistry>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     now_fn: NowFn,
     /// Per-deployment `$top` cap; override via
     /// [`Self::with_listing_max_top`] from `cfg.listing.max_top`.
@@ -181,13 +181,13 @@ impl MetadataService {
         metadata_repo: Arc<dyn MetadataRepo>,
         tenant_repo: Arc<dyn TenantRepo>,
         schema_registry: Arc<dyn MetadataSchemaRegistry>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
     ) -> Self {
         Self {
             metadata_repo,
             tenant_repo,
             schema_registry,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             now_fn: Arc::new(OffsetDateTime::now_utc),
             max_listing_top: DEFAULT_MAX_LISTING_TOP,
         }

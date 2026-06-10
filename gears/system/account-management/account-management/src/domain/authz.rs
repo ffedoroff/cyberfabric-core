@@ -19,7 +19,7 @@
 //! `AccessRequest` extension (e.g. `MetadataService` adds
 //! `TYPE_ID`).
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
 use toolkit_security::{AccessScope, SecurityContext, pep_properties};
 use uuid::Uuid;
@@ -57,7 +57,7 @@ use crate::domain::error::DomainError;
 ///   fails — DESIGN §4.3 mandates fail-closed; AM does not provide a
 ///   local authorization fallback.
 pub async fn authz_scope<F>(
-    enforcer: &PolicyEnforcer,
+    enforcer: &impl Enforce,
     ctx: &SecurityContext,
     resource_type: &ResourceType,
     action: &str,

@@ -6,7 +6,7 @@ use tracing::{debug, info, instrument};
 use crate::domain::error::DomainError;
 use crate::domain::repos::{AddressesRepository, UsersRepository};
 use crate::domain::service::DbProvider;
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::AccessRequest;
 
 use super::{actions, resources};
@@ -22,7 +22,7 @@ pub struct AddressesService<R: AddressesRepository, U: UsersRepository> {
     db: Arc<DbProvider>,
     repo: Arc<R>,
     users_repo: Arc<U>,
-    policy_enforcer: PolicyEnforcer,
+    policy_enforcer: Arc<dyn Enforce>,
 }
 
 impl<R: AddressesRepository, U: UsersRepository> AddressesService<R, U> {
@@ -30,13 +30,13 @@ impl<R: AddressesRepository, U: UsersRepository> AddressesService<R, U> {
         db: Arc<DbProvider>,
         repo: Arc<R>,
         users_repo: Arc<U>,
-        policy_enforcer: PolicyEnforcer,
+        policy_enforcer: impl Enforce + 'static,
     ) -> Self {
         Self {
             db,
             repo,
             users_repo,
-            policy_enforcer,
+            policy_enforcer: Arc::new(policy_enforcer),
         }
     }
 }

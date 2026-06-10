@@ -1,7 +1,7 @@
 use crate::domain::error::DomainError;
 use crate::domain::model::Upstream;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
 use credstore_sdk::CredStoreClientV1;
 use toolkit_security::SecurityContext;
@@ -44,7 +44,7 @@ pub(in crate::domain::services) struct BindOverrides<'a> {
 /// - `inherit` → allowed with permission
 pub(in crate::domain::services) async fn validate_bind_constraints(
     ctx: &SecurityContext,
-    enforcer: &PolicyEnforcer,
+    enforcer: &impl Enforce,
     ancestor: &Upstream,
     overrides: &BindOverrides<'_>,
 ) -> Result<(), DomainError> {
@@ -186,7 +186,7 @@ pub(in crate::domain::services) async fn validate_secret_ref_accessible(
 pub(in crate::domain::services) async fn validate_ancestor_bind(
     ctx: &SecurityContext,
     upstreams: &dyn crate::domain::repo::UpstreamRepository,
-    enforcer: &PolicyEnforcer,
+    enforcer: &impl Enforce,
     tenant_chain: &[uuid::Uuid],
     alias: &str,
     overrides: &BindOverrides<'_>,

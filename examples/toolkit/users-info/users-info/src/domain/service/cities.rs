@@ -6,7 +6,7 @@ use tracing::{debug, info, instrument};
 use crate::domain::error::DomainError;
 use crate::domain::repos::CitiesRepository;
 use crate::domain::service::DbProvider;
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::AccessRequest;
 
 use super::{actions, resources};
@@ -31,15 +31,15 @@ use uuid::Uuid;
 pub struct CitiesService<R: CitiesRepository> {
     db: Arc<DbProvider>,
     repo: Arc<R>,
-    policy_enforcer: PolicyEnforcer,
+    policy_enforcer: Arc<dyn Enforce>,
 }
 
 impl<R: CitiesRepository> CitiesService<R> {
-    pub fn new(db: Arc<DbProvider>, repo: Arc<R>, policy_enforcer: PolicyEnforcer) -> Self {
+    pub fn new(db: Arc<DbProvider>, repo: Arc<R>, policy_enforcer: impl Enforce + 'static) -> Self {
         Self {
             db,
             repo,
-            policy_enforcer,
+            policy_enforcer: Arc::new(policy_enforcer),
         }
     }
 }

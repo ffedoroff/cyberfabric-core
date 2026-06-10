@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use toolkit_macros::domain_model;
 use toolkit_security::SecurityContext;
 use tracing::instrument;
@@ -22,7 +22,7 @@ pub struct ReactionService<RR: ReactionRepository, MR: MessageRepository, CR: Ch
     reaction_repo: Arc<RR>,
     message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
 }
 
 impl<RR: ReactionRepository, MR: MessageRepository, CR: ChatRepository>
@@ -33,14 +33,14 @@ impl<RR: ReactionRepository, MR: MessageRepository, CR: ChatRepository>
         reaction_repo: Arc<RR>,
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
     ) -> Self {
         Self {
             db,
             reaction_repo,
             message_repo,
             chat_repo,
-            enforcer,
+            enforcer: Arc::new(enforcer),
         }
     }
 

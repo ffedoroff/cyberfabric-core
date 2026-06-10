@@ -47,7 +47,7 @@ use account_management_sdk::{
     IdpDeprovisionUserRequest, IdpListUsersRequest, IdpNewUser, IdpPluginClient,
     IdpProvisionUserRequest, IdpTenantContext, IdpUser, IdpUserFilterField, ListUsersQuery,
 };
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::ResourceType;
 use resource_group_sdk::{ResourceGroupClient, ResourceGroupError};
 use std::time::Duration;
@@ -145,7 +145,7 @@ pub struct UserService {
     /// catalogue rather than duplicated in code.
     types_registry: Arc<dyn TypesRegistryClient>,
     /// PEP gate run before any `IdP` / RG round trip.
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     /// RG client for `delete_user` membership cleanup. `None` in
     /// tests that don't exercise the cleanup path; production wiring
     /// always sets it.
@@ -208,13 +208,13 @@ impl UserService {
         tenant_repo: Arc<dyn TenantRepo>,
         idp_user: Arc<dyn IdpPluginClient>,
         types_registry: Arc<dyn TypesRegistryClient>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
     ) -> Self {
         Self {
             tenant_repo,
             idp_user,
             types_registry,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             rg_client: None,
             max_listing_top: account_management_sdk::IdpUserPagination::MAX_TOP,
         }

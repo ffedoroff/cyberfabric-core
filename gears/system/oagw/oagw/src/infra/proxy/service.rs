@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::AccessRequest;
 use bytes::Bytes;
 use credstore_sdk::CredStoreClientV1;
@@ -63,7 +63,7 @@ pub struct DataPlaneServiceImpl {
     rate_limiter: RateLimiter,
     request_timeout: Duration,
     /// Enforces authorization policy before proxying each request.
-    policy_enforcer: PolicyEnforcer,
+    policy_enforcer: Arc<dyn Enforce>,
     /// When true, allow HTTP (non-TLS) upstream connections.
     allow_http_upstream: bool,
     /// Maximum request body size in bytes (applies to both buffered and streaming bodies).
@@ -85,7 +85,7 @@ impl DataPlaneServiceImpl {
     pub fn new(
         cp: Arc<dyn ControlPlaneService>,
         credstore: Arc<dyn CredStoreClientV1>,
-        policy_enforcer: PolicyEnforcer,
+        policy_enforcer: impl Enforce + 'static,
         token_http_config: Option<toolkit_http::HttpClientConfig>,
         token_cache_config: TokenCacheConfig,
         backend_selector: Arc<dyn EndpointSelector>,
@@ -110,7 +110,7 @@ impl DataPlaneServiceImpl {
             transform_registry,
             rate_limiter,
             request_timeout: REQUEST_TIMEOUT,
-            policy_enforcer,
+            policy_enforcer: Arc::new(policy_enforcer),
             allow_http_upstream: false,
             max_body_size: MAX_BODY_SIZE,
             websocket_idle_timeout: Duration::from_secs(300),

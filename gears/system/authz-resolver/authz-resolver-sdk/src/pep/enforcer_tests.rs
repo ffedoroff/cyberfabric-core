@@ -1,9 +1,14 @@
 // Created: 2026-04-14 by Constructor Tech
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use super::*;
 use crate::constraints::{Constraint, InPredicate, Predicate};
-use crate::models::{EvaluationResponse, EvaluationResponseContext};
+use crate::error::AuthZResolverError;
+use crate::models::{
+    BarrierMode, EvaluationResponse, EvaluationResponseContext, TenantContext, TenantMode,
+};
 use toolkit_security::pep_properties;
 
 fn uuid(s: &str) -> Uuid {

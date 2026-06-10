@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use authz_resolver_sdk::pep::{PolicyEnforcer, ResourceType};
+use authz_resolver_sdk::pep::{Enforce, ResourceType};
 use resource_group_sdk::TENANT_RG_TYPE_PATH;
 use resource_group_sdk::models::{
     CreateGroupRequest, ResourceGroup, ResourceGroupWithDepth, UpdateGroupRequest,
@@ -66,7 +66,7 @@ impl Default for QueryProfile {
 pub struct GroupService<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait> {
     db: Arc<DbProvider>,
     profile: QueryProfile,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     group_repo: Arc<GR>,
     type_repo: Arc<TR>,
     types_registry: Arc<dyn types_registry_sdk::TypesRegistryClient>,
@@ -79,7 +79,7 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait> GroupService<GR, TR> {
     pub fn new(
         db: Arc<DbProvider>,
         profile: QueryProfile,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         group_repo: Arc<GR>,
         type_repo: Arc<TR>,
         types_registry: Arc<dyn types_registry_sdk::TypesRegistryClient>,
@@ -87,7 +87,7 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait> GroupService<GR, TR> {
         Self {
             db,
             profile,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             group_repo,
             type_repo,
             types_registry,
@@ -122,7 +122,7 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait> GroupService<GR, TR> {
                     &RG_GROUP_RESOURCE,
                     "create",
                     None,
-                    &authz_resolver_sdk::pep::enforcer::AccessRequest::default()
+                    &authz_resolver_sdk::pep::AccessRequest::default()
                         .resource_properties(std::collections::HashMap::from([
                             ("is_tenant".to_owned(), serde_json::Value::Bool(is_tenant)),
                             (

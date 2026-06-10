@@ -11,7 +11,7 @@ use crate::domain::ports::{AuditPort, EventPublisher, UsersMetricsPort};
 use crate::domain::repos::{AddressesRepository, CitiesRepository, UsersRepository};
 use crate::domain::service::DbProvider;
 use crate::domain::service::{AddressesService, CitiesService, ServiceConfig};
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::AccessRequest;
 
 use super::{actions, resources};
@@ -39,7 +39,7 @@ pub struct UsersService<R: UsersRepository + 'static, CR: CitiesRepository, AR: 
     repo: Arc<R>,
     events: Arc<dyn EventPublisher<UserDomainEvent>>,
     audit: Arc<dyn AuditPort>,
-    policy_enforcer: PolicyEnforcer,
+    policy_enforcer: Arc<dyn Enforce>,
     config: ServiceConfig,
     cities: Arc<CitiesService<CR>>,
     addresses: Arc<AddressesService<AR, R>>,
@@ -55,7 +55,7 @@ impl<R: UsersRepository + 'static, CR: CitiesRepository, AR: AddressesRepository
         repo: Arc<R>,
         events: Arc<dyn EventPublisher<UserDomainEvent>>,
         audit: Arc<dyn AuditPort>,
-        policy_enforcer: PolicyEnforcer,
+        policy_enforcer: impl Enforce + 'static,
         config: ServiceConfig,
         cities: Arc<CitiesService<CR>>,
         addresses: Arc<AddressesService<AR, R>>,
@@ -66,7 +66,7 @@ impl<R: UsersRepository + 'static, CR: CitiesRepository, AR: AddressesRepository
             repo,
             events,
             audit,
-            policy_enforcer,
+            policy_enforcer: Arc::new(policy_enforcer),
             config,
             cities,
             addresses,

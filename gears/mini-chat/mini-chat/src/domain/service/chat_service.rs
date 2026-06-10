@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::models::{Chat, ChatDetail, ChatPatch, NewChat};
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::AccessRequest;
 use time::OffsetDateTime;
 use toolkit_macros::domain_model;
@@ -27,7 +27,7 @@ pub struct ChatService<CR: ChatRepository, AR: AttachmentRepository, TSR: Thread
     #[allow(dead_code)]
     thread_summary_repo: Arc<TSR>,
     outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
     model_resolver: Arc<dyn ModelResolver>,
     provider_resolver: Arc<crate::infra::llm::provider_resolver::ProviderResolver>,
 }
@@ -45,7 +45,7 @@ impl<
         attachment_repo: Arc<AR>,
         thread_summary_repo: Arc<TSR>,
         outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         model_resolver: Arc<dyn ModelResolver>,
         provider_resolver: Arc<crate::infra::llm::provider_resolver::ProviderResolver>,
     ) -> Self {
@@ -55,7 +55,7 @@ impl<
             attachment_repo,
             thread_summary_repo,
             outbox_enqueuer,
-            enforcer,
+            enforcer: Arc::new(enforcer),
             model_resolver,
             provider_resolver,
         }

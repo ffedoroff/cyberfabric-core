@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::Enforce;
 use authz_resolver_sdk::pep::ResourceType;
 use parking_lot::Mutex as PlMutex;
 use time::OffsetDateTime;
@@ -189,7 +189,7 @@ pub struct TenantService<R: TenantRepo> {
     /// layer. The Tenant Resolver Plugin (separate PR in this
     /// stack) feeds the PDP the tenant hierarchy via the standard
     /// `in_tenant_subtree` constraint.
-    enforcer: PolicyEnforcer,
+    enforcer: Arc<dyn Enforce>,
 }
 
 pub(super) mod reaper;
@@ -212,7 +212,7 @@ impl<R: TenantRepo> TenantService<R> {
         idp: Arc<dyn IdpPluginClient>,
         resource_checker: Arc<dyn ResourceOwnershipChecker>,
         tenant_type_checker: Arc<dyn TenantTypeChecker + Send + Sync>,
-        enforcer: PolicyEnforcer,
+        enforcer: impl Enforce + 'static,
         cfg: AccountManagementConfig,
     ) -> Self {
         Self {
@@ -223,7 +223,7 @@ impl<R: TenantRepo> TenantService<R> {
             resource_checker,
             tenant_type_checker,
             types_registry: None,
-            enforcer,
+            enforcer: Arc::new(enforcer),
         }
     }
 

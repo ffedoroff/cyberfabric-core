@@ -67,5 +67,7 @@ pub use models::{
     Action, BarrierMode, Capability, DenyReason, EvaluationRequest, EvaluationRequestContext,
     EvaluationResponse, EvaluationResponseContext, Resource, Subject, TenantContext, TenantMode,
 };
-pub use pep::{AccessRequest, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType};
+pub use pep::{
+    AccessRequest, Enforce, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType,
+};
 pub use plugin_api::AuthZResolverPluginClient;
