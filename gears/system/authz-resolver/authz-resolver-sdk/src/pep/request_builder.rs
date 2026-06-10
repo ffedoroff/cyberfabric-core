@@ -16,7 +16,7 @@ use crate::pep::access_request::AccessRequest;
 use crate::pep::resource_type::ResourceType;
 
 /// Build an evaluation request with per-request overrides from [`AccessRequest`].
-pub(crate) fn build_request_with(
+pub fn build_request_with(
     capabilities: &[Capability],
     ctx: &SecurityContext,
     resource: &ResourceType,

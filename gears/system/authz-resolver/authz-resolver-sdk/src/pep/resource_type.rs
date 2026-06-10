@@ -61,3 +61,32 @@ impl ResourceType {
         self.supported_properties
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PROPS: &[&str] = &["owner_tenant_id", "id"];
+    const USER: ResourceType = ResourceType::from_static("gts.cf.core.users.user.v1~", PROPS);
+
+    #[test]
+    fn from_static_exposes_name_and_properties() {
+        assert_eq!(USER.name(), "gts.cf.core.users.user.v1~");
+        assert_eq!(USER.supported_properties(), PROPS);
+    }
+
+    #[test]
+    fn new_accepts_a_runtime_owned_name() {
+        let chained = format!("gts.cf.core.am.tenant_metadata.v1~{}~", "abc123");
+        let rt = ResourceType::new(chained.clone(), PROPS);
+        assert_eq!(rt.name(), chained);
+        assert_eq!(rt.supported_properties(), PROPS);
+    }
+
+    #[test]
+    fn new_accepts_a_static_str() {
+        let rt = ResourceType::new("gts.cf.core.users.user.v1~", &[]);
+        assert_eq!(rt.name(), "gts.cf.core.users.user.v1~");
+        assert!(rt.supported_properties().is_empty());
+    }
+}

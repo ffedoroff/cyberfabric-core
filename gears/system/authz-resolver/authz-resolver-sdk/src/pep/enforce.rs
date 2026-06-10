@@ -81,3 +81,77 @@ impl<T: Enforce + ?Sized> Enforce for Arc<T> {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RES: ResourceType = ResourceType::from_static("gts.test.thing.v1~", &[]);
+
+    /// Routes the two methods to distinguishable scopes (allow-all vs deny-all)
+    /// so a test can assert which one was reached through a wrapper.
+    struct RoutingMock;
+
+    #[async_trait]
+    impl Enforce for RoutingMock {
+        async fn access_scope(
+            &self,
+            _ctx: &SecurityContext,
+            _resource: &ResourceType,
+            _action: &str,
+            _resource_id: Option<Uuid>,
+        ) -> Result<AccessScope, EnforcerError> {
+            Ok(AccessScope::allow_all())
+        }
+
+        async fn access_scope_with(
+            &self,
+            _ctx: &SecurityContext,
+            _resource: &ResourceType,
+            _action: &str,
+            _resource_id: Option<Uuid>,
+            _request: &AccessRequest,
+        ) -> Result<AccessScope, EnforcerError> {
+            Ok(AccessScope::deny_all())
+        }
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_forwards_access_scope() {
+        let pep: Arc<dyn Enforce> = Arc::new(RoutingMock);
+        let scope = pep
+            .access_scope(&SecurityContext::anonymous(), &RES, "get", None)
+            .await
+            .expect("mock never errors");
+        assert_eq!(scope, AccessScope::allow_all());
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_forwards_access_scope_with() {
+        let pep: Arc<dyn Enforce> = Arc::new(RoutingMock);
+        let scope = pep
+            .access_scope_with(
+                &SecurityContext::anonymous(),
+                &RES,
+                "list",
+                None,
+                &AccessRequest::new(),
+            )
+            .await
+            .expect("mock never errors");
+        // Distinct from `access_scope` — proves the right method is forwarded.
+        assert_eq!(scope, AccessScope::deny_all());
+    }
+
+    #[tokio::test]
+    async fn blanket_impl_covers_arc_of_concrete_type() {
+        // `Arc<T>` (not only `Arc<dyn Enforce>`) implements `Enforce`, so it can
+        // be handed to an `impl Enforce` parameter and called directly.
+        let pep = Arc::new(RoutingMock);
+        let scope = pep
+            .access_scope(&SecurityContext::anonymous(), &RES, "get", None)
+            .await
+            .expect("mock never errors");
+        assert_eq!(scope, AccessScope::allow_all());
+    }
+}

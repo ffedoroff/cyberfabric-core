@@ -222,6 +222,23 @@ async fn access_scope_with_explicit_tenant_returns_scope() {
 }
 
 #[tokio::test]
+async fn concrete_enforcer_usable_as_arc_dyn_enforce() {
+    // Services depend on `Arc<dyn Enforce>`; the concrete enforcer must route
+    // through its trait impl to the same result as the inherent method.
+    let ctx = test_ctx();
+    let via_trait: Arc<dyn Enforce> = Arc::new(enforcer(AllowAllMock));
+    let through_trait = via_trait
+        .access_scope(&ctx, &TEST_RESOURCE, "get", Some(uuid(RESOURCE)))
+        .await
+        .expect("should succeed");
+    let direct = enforcer(AllowAllMock)
+        .access_scope(&ctx, &TEST_RESOURCE, "get", Some(uuid(RESOURCE)))
+        .await
+        .expect("should succeed");
+    assert_eq!(through_trait, direct);
+}
+
+#[tokio::test]
 async fn access_scope_with_for_create() {
     let e = enforcer(AllowAllMock);
     let ctx = test_ctx();
