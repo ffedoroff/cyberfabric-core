@@ -10,6 +10,12 @@ use uuid::Uuid;
 
 use crate::constraints::Constraint;
 
+/// Controls how barriers (self-managed tenants) are handled during `AuthZ` evaluation.
+///
+/// Defined in the [`crate::barrier`] leaf to keep the `constraints`/`models`
+/// graph acyclic; re-exported here so `models::BarrierMode` stays a stable path.
+pub use crate::barrier::BarrierMode;
+
 /// Tenant hierarchy mode.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -19,19 +25,6 @@ pub enum TenantMode {
     /// The root tenant and all descendants (default).
     #[default]
     Subtree,
-}
-
-/// Controls how barriers (self-managed tenants) are handled during `AuthZ` evaluation.
-///
-/// Consistent with `tenant_resolver_sdk::BarrierMode`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BarrierMode {
-    /// Respect all barriers - stop at barrier boundaries (default).
-    #[default]
-    Respect,
-    /// Ignore barriers - traverse through self-managed tenants.
-    Ignore,
 }
 
 /// PEP-level capability declarations.

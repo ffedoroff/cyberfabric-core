@@ -36,8 +36,9 @@
 
 use toolkit_security::{AccessScope, ScopeConstraint, ScopeFilter, ScopeValue};
 
+use crate::barrier::BarrierMode;
 use crate::constraints::{Constraint, Predicate};
-use crate::models::{BarrierMode, EvaluationResponse};
+use crate::models::EvaluationResponse;
 
 /// Error during constraint compilation.
 #[derive(Debug, thiserror::Error)]

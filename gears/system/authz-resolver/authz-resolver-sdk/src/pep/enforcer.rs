@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use toolkit_security::{AccessScope, SecurityContext};
 
-use super::IntoPropertyValue;
+use crate::property_value::IntoPropertyValue;
 use uuid::Uuid;
 
 use crate::api::AuthZResolverClient;

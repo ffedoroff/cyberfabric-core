@@ -11,8 +11,8 @@
 //! - `InGroupSubtree` - group subtree subquery: resource visible if member of any descendant of listed ancestors
 //! - `InTenantSubtree` - tenant subtree subquery: resource visible if its tenant is a descendant of a single root tenant
 
-use crate::models::BarrierMode;
-use crate::pep::IntoPropertyValue;
+use crate::barrier::BarrierMode;
+use crate::property_value::IntoPropertyValue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tenant_resolver_sdk::TenantStatus;

@@ -43,6 +43,11 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod api;
+// Shared leaf modules (ADP): low-level vocabulary depended on by both
+// `constraints` and `models`/`pep`, kept private and surfaced through the
+// existing public facades (`models::BarrierMode`, `pep::IntoPropertyValue`).
+mod barrier;
+mod property_value;
 pub mod constraints;
 pub mod error;
 pub mod gts;
