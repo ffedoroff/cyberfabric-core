@@ -1,450 +1,347 @@
--- =============================================================================
--- FileStorage — database migrations
--- =============================================================================
--- All FileStorage state lives in the `file_storage` schema of the shared
--- Gears Postgres cluster. Migrations are applied through `db-runner`
--- (see docs/toolkit_unified_system/11_database_patterns.md) at gear startup
--- by one elected replica.
---
--- The file is split into three phase sections. Each section is intended to
--- be run as a single migration unit when its phase ships:
---
---   * P1 — initial release; everything required for the P1 scope in PRD.md
---          and DESIGN.md (auth-required CRUD, content
---          and metadata revisions, SHA-256 hash, content-state machine,
---          backend pointer; one-table custom metadata)
---
---   * P2 — multipart upload, versioning, idempotency, audit and event
---          outboxes, policies, retention rules
---
---   * P3 — runtime backend configuration (supersedes the P1 static TOML)
---
--- Naming convention for migration files when split per phase by the runner:
---   202xxxxxxxxx_file_storage_p1_initial.sql
---   202xxxxxxxxx_file_storage_p2_multipart.sql
---   202xxxxxxxxx_file_storage_p2_versioning.sql
---   ... etc
--- This combined file lists the DDL in dependency order within each phase.
--- =============================================================================
+-- Created: 2026-04-20 by Constructor Tech
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- File Storage — shared module schema (reference DDL, P1)
+-- See modules/file-storage/docs/DESIGN.md §3.7 and ./rust-traits.md
+--
+-- Ownership:
+--   This schema is owned by the FileStorage module, not by any single
+--   backend. Every `s3-compatible` backend (per ADR-0001) writes into
+--   the same schema. Rows are discriminated by `backend_id`. There is
+--   no per-backend database, no per-backend schema, and no operational
+--   deployment that runs FileStorage without the module database.
+--
+-- Engine neutrality:
+--   This is reference DDL in portable SQL. Deployments dialectize it
+--   per target engine (SQLite for local dev/tests, any relational
+--   engine in production). UUIDs are generated in the application
+--   layer — no engine-specific extensions or default-value functions
+--   are used. JSON is stored via the generic `json` type (or `text`
+--   on engines without native JSON).
+--
+-- File lifecycle (P1):
+--   pending_upload → completing → uploaded
+--                                     │
+--                                     ├── uploaded → meta_updating → uploaded
+--                                     │                              (PUT /files/{id})
+--                                     ├── uploaded → completing → uploaded
+--                                     │                              (re-upload)
+--                                     └── uploaded → deleting → (purged)
+--
+--     pending_upload : row created by `presign-batch` upload item
+--                      (initial upload, no `file_id`). The bytes have
+--                      not been finalized at the backend yet; the
+--                      row's `etag` is the sentinel FileStorage pinned
+--                      at presign time. The server has already invoked
+--                      `CreateMultipartUpload` on the backend; the
+--                      caller holds `upload_id` for the subsequent
+--                      `complete` / `abort` REST calls.
+--     completing     : transient state set by Phase 1 of
+--                      `complete_upload` (initial finalize) or by a
+--                      re-upload (overwrite-in-place). Phase 2 invokes
+--                      `CompleteMultipartUpload` on the backend; Phase
+--                      3 flips back to `uploaded` with the backend's
+--                      finalized etag/version_id. A row stuck in
+--                      `completing` after handler crash is recovered
+--                      in-band on the next SDK call (HEAD the backend,
+--                      pull authoritative state, run Phase 3 alone).
+--     uploaded       : authoritative finalized state — set by Phase 3
+--                      of `complete_upload`. `gts_file_type` is DB-only —
+--                      never mirrored to S3, and never overwritten by
+--                      recovery handlers.
+--     meta_updating  : transient state set by Phase 1 of
+--                      `PUT /files/{file_id}`. Phase 1 flips the
+--                      row's STATUS only — `name`, `mime_type`,
+--                      `custom_metadata` columns still hold the
+--                      OLD values. Phase 2 issues `CopyObject`
+--                      self-copy with `MetadataDirective: REPLACE`
+--                      against the backend (carrying the merged
+--                      new metadata derived from the request body
+--                      + the row's current values for omitted
+--                      fields). Phase 3 flips back to `uploaded`
+--                      AND writes the new
+--                      `(name, mime_type, custom_metadata, etag,
+--                      version_id)` in a single conditional UPDATE.
+--                      A row stuck in `meta_updating` after a
+--                      handler crash between Phase 2 and Phase 3
+--                      is recovered in-band on the next SDK call:
+--                      the SDK HEADs the backend, pulls the
+--                      authoritative metadata mirror that
+--                      `CopyObject` already wrote (or the old
+--                      mirror if Phase 2 never landed), and runs
+--                      Phase 3 with whatever S3 holds. The DB
+--                      always converges to the backend's truth.
+--     deleting       : transient operational state set by Phase 1 of
+--                      `delete_file`. This is NOT a soft delete or a
+--                      tombstone — see
+--                      cpt-cf-file-storage-constraint-no-soft-delete.
+--                      Subsequent `complete_upload` / `put_file_info`
+--                      / `delete_file` on a `deleting` row return
+--                      `delete_in_progress` (HTTP 409); reads return
+--                      `NotFound`. Phase 2 best-effort deletes the
+--                      backend object (with inline retries); Phase 3
+--                      hard-deletes the row. A row stuck in `deleting`
+--                      after persistent backend failure is reaped by a
+--                      future P2 GC sweep.
+--
+-- Addressing:
+--   `id` (uuid) is the canonical, opaque file_id. External URLs and
+--   cross-module handles all key off this column (per ADR-0002).
+--   Tenant scoping is enforced by always including `tenant_id` in the
+--   WHERE clause; this closes the enumeration oracle without
+--   requiring a separate per-tenant lookup table.
+--
+-- Concurrency contract (see DESIGN §2.1
+-- cpt-cf-file-storage-principle-optimistic-concurrency and §3.9):
+--   The schema relies on database-level primitives — no advisory or
+--   pessimistic locks — to coordinate concurrent writers. Uniqueness
+--   of the logical address is structural: `file_path` is derived
+--   deterministically from `id` (the opaque `file_id`) at the adapter
+--   boundary, so two different files cannot collide on `file_path` —
+--   the PRIMARY KEY on `id` is sufficient. There is no separate partial
+--   unique index, no supersession-via-fresh-file_id story, and no
+--   last-write-wins arbitration on logical paths: re-uploading bytes
+--   always preserves `file_id` (variant B), and there is only ever one
+--   row per logical file.
+--
+--     1. (etag, updated_at, version_id[, xmin]) race detection on UPDATE.
+--        Every mutation that targets an existing row is a single
+--        statement of the form
+--          UPDATE files SET … WHERE id = ?
+--                                AND etag = ?
+--                                AND updated_at = ?
+--                                AND version_id IS NOT DISTINCT FROM ?  -- null-safe
+--                                [AND xmin = ?]            -- Postgres only
+--        `version_id` is included in EVERY conditional UPDATE, even
+--        when it is NULL — the comparison uses null-safe equality
+--        (`IS NOT DISTINCT FROM` on Postgres, `IS` on SQLite, or the
+--        portable `(version_id = ? OR (version_id IS NULL AND ?
+--        IS NULL))` form). On `Backend.versioning = false` the
+--        column is always NULL on both sides and the predicate is a
+--        no-op; on `Backend.versioning = true` the column rotates
+--        on every backend write (including bit-identical re-uploads
+--        where ETag stays the same), which closes the ABA window
+--        on content automatically — without requiring callers to
+--        pass `If-Match` (cpt-cf-file-storage-constraint-versioning-
+--        aware-cas).
+--        The number of rows affected (0 or 1) decides the outcome:
+--        1 = caller wins, 0 = the row moved underneath them. The
+--        write handler may retry up to 3 times before surfacing an
+--        error. Engines without a transaction-id system column use
+--        the (etag, updated_at, version_id) tuple alone, accepting
+--        the last-write-wins property documented in
+--        cpt-cf-file-storage-constraint-no-meta-cas.
+--     2. Optional ABA-safe content CAS. When `Backend.versioning`
+--        is `true` the row's `version_id` mirrors S3's per-object
+--        VersionId. The eager strong-CAS variant of `PUT /files/{id}/meta`
+--        verifies (etag, version_id) against S3 before issuing
+--        `CopyObject`; this closes the ABA window where two
+--        re-uploads happen to land identical bytes (and therefore an
+--        identical S3 ETag). When `Backend.versioning = false`,
+--        ABA on content is an accepted P1 risk — see
+--        cpt-cf-file-storage-constraint-versioning-aware-cas.
+--     3. Status state machine. The status column doubles as a
+--        coarse-grained lock: pending_upload → uploaded → deleting.
+--        A mutation declares the status it expects to find via WHERE
+--        status=…; a row engaged in another transition rejects the
+--        new mutation by returning 0 rows.
+--
+--   Re-uploading bytes (variant B): the application backend issues a
+--   presign-batch upload item with `file_id` set; FileStorage starts a
+--   fresh multipart session against the SAME backend object key
+--   (deterministically derived from `id`), and `complete_upload`
+--   finalizes through `uploaded → completing → uploaded`. The
+--   `file_id` is preserved; consumers holding it observe the new
+--   bytes. Recovery from a stuck `completing` row uses the same
+--   in-band HEAD-and-finalize machinery as initial uploads.
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- =============================================================================
--- P1 — Initial Release
--- =============================================================================
+BEGIN;
 
--- Schema and extensions ------------------------------------------------------
-
+-- Schema namespacing. Engines without CREATE SCHEMA (e.g. SQLite)
+-- should omit this statement; table names remain unqualified on such
+-- engines.
 CREATE SCHEMA IF NOT EXISTS file_storage;
 
--- gen_random_uuid() is used for server-side ID generation where the
--- application does not supply one. Provided by the pgcrypto extension on
--- Postgres < 13 and as a built-in from 13 onwards. The shared platform
--- runtime guarantees Postgres >= 14; this is a no-op on those versions.
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- ── Files ────────────────────────────────────────────────────────────────────
+-- Realizes cpt-cf-file-storage-dbtable-files
+-- See DESIGN.md §3.7
 
-
--- Table: file_storage.files --------------------------------------------------
--- @cpt-cf-file-storage-dbtable-files
-
-CREATE TABLE file_storage.files (
-    file_id                 uuid         PRIMARY KEY  DEFAULT gen_random_uuid(),
-
-    -- Tenant boundary. Immutable after creation. Enforced at the service
-    -- layer; the DB-level immutability is a CHECK on UPDATE handled in the
-    -- application-side trigger or repository code.
-    tenant_id               uuid         NOT NULL,
-
-    -- Ownership principal.
-    owner_kind              text         NOT NULL
-                                         CHECK (owner_kind IN ('user', 'app')),
-    owner_id                uuid         NOT NULL,
-
-    -- Display + classification.
-    name                    text         NOT NULL,
-    mime_type               text         NOT NULL,
-    gts_file_type           text         NOT NULL,
-
-    -- Size in bytes. 0 is permitted (empty file).
-    size                    bigint       NOT NULL  CHECK (size >= 0),
-
-    -- Revision counters.
-    --   content_revision   set on content writes. P1 `POST /files` (create)
-    --                      inserts the row with content_revision = 1 (the
-    --                      first content write); a content-replacing PATCH
-    --                      bumps it; (P2) multipart complete and versioning
-    --                      writes bump it. The DEFAULT 0 baseline applies only
-    --                      to the P2 'pending' row that is created before any
-    --                      content arrives (multipart pre-completion); P1 never
-    --                      persists a content_revision = 0 row. ETag is derived
-    --                      from (file_id, content_revision).
-    --   metadata_revision  bumped on every successful write — content or
-    --                      metadata-only.
-    content_revision        bigint       NOT NULL  DEFAULT 0
-                                         CHECK (content_revision >= 0),
-    metadata_revision       bigint       NOT NULL  DEFAULT 0
-                                         CHECK (metadata_revision >= 0),
-
-    -- Content hash. P1 allow-list is locked to SHA-256 per ADR-0002. The
-    -- CHECK is widened in the P2 hash-policy migration.
-    hash_algorithm          text         NOT NULL  DEFAULT 'SHA-256'
-                                         CHECK (hash_algorithm = 'SHA-256'),
-    -- 32 bytes for SHA-256; widened to up to 64 in P2 when BLAKE3 lands.
-    hash_value              bytea        NOT NULL  CHECK (octet_length(hash_value) = 32),
-
-    -- Content lifecycle state. In P1 every file lands directly in
-    -- 'available'; 'pending' exists for forward-compatibility with the
-    -- P2 multipart flow where files are created without content.
-    content_state           text         NOT NULL  DEFAULT 'available'
-                                         CHECK (content_state IN ('pending', 'available')),
-
-    -- Backend pointer. `backend_id` references the BackendConfig loaded from
-    -- TOML in P1 (or from `storage_backends_runtime` in P3). `backend_path`
-    -- is an opaque per-driver path; format is not parsed by FileStorage.
-    backend_id              text         NOT NULL,
-    backend_path            text         NOT NULL,
-
-    -- Audit timestamps.
-    created_at              timestamptz  NOT NULL  DEFAULT now(),
-    last_modified_at        timestamptz  NOT NULL  DEFAULT now()
+CREATE TABLE IF NOT EXISTS file_storage.files (
+    id                            UUID PRIMARY KEY,
+    tenant_id                     UUID NOT NULL,
+    backend_id                    UUID NOT NULL,
+    file_path                     TEXT NOT NULL,
+    owner_id                      UUID NOT NULL,
+    name                          VARCHAR(512) NOT NULL,
+    gts_file_type                 VARCHAR(256) NOT NULL,
+    mime_type                     VARCHAR(256) NOT NULL,
+    size_bytes                    BIGINT NOT NULL DEFAULT 0
+                                  CHECK (size_bytes >= 0),
+    etag                          VARCHAR(128) NOT NULL,
+    version_id                    VARCHAR(1024),
+    status                        VARCHAR(16) NOT NULL DEFAULT 'pending_upload',
+    custom_metadata               JSON NOT NULL DEFAULT '{}',
+    upload_expires_at             TIMESTAMP,
+    created_at                    TIMESTAMP NOT NULL,
+    updated_at                    TIMESTAMP NOT NULL
 );
 
-COMMENT ON TABLE  file_storage.files                          IS 'FileStorage primary file row. One row per logical file (independent of backend versions).';
-COMMENT ON COLUMN file_storage.files.tenant_id                IS 'Tenant boundary; immutable after creation.';
-COMMENT ON COLUMN file_storage.files.owner_kind               IS 'Owner principal kind: user (platform user) or app (Gear).';
-COMMENT ON COLUMN file_storage.files.content_revision         IS 'Monotonic counter; bumped only on content writes. Backs the ETag derivation.';
-COMMENT ON COLUMN file_storage.files.metadata_revision        IS 'Monotonic counter; bumped on every successful write (content or metadata).';
-COMMENT ON COLUMN file_storage.files.content_state            IS 'pending = created without content (P2 multipart pre-completion); available = content present.';
-
--- Indexes on files -----------------------------------------------------------
-
--- Covers the primary `GET /files` listing query: tenant + owner_kind + owner_id
--- with created_at descending for stable cursor pagination.
-CREATE INDEX files_owner_listing_idx
-    ON file_storage.files (tenant_id, owner_kind, owner_id, created_at DESC);
-
--- Per-tenant per-type queries (used by authorization audit, P2 policy checks).
-CREATE INDEX files_tenant_gts_idx
-    ON file_storage.files (tenant_id, gts_file_type);
-
--- Recovery / debugging index on backend pointer (e.g., "which files live on
--- backend X?"). Not on the hot path.
-CREATE INDEX files_backend_idx
-    ON file_storage.files (backend_id);
-
-
--- Table: file_storage.files_custom_metadata ----------------------------------
--- @cpt-cf-file-storage-dbtable-files-custom-metadata
-
-CREATE TABLE file_storage.files_custom_metadata (
-    file_id   uuid         NOT NULL
-                           REFERENCES file_storage.files (file_id) ON DELETE CASCADE,
-    key       text         NOT NULL,
-    value     text         NOT NULL,
-    set_at    timestamptz  NOT NULL  DEFAULT now(),
-
-    PRIMARY KEY (file_id, key)
-);
-
-COMMENT ON TABLE file_storage.files_custom_metadata IS
-    'User-defined key-value pairs attached to a file. JSON Merge Patch semantics on PATCH /files/{id}: keys present overwrite, keys set to null delete, keys absent are unchanged.';
-
-
--- =============================================================================
--- P2 — Multipart Upload, Versioning, Idempotency, Outboxes, Policies, Retention
--- =============================================================================
-
--- P2 hash-policy widening ----------------------------------------------------
--- Drops the P1 lock on SHA-256 and widens the allow-list to BLAKE3 + XXH3
--- per ADR-0002. The hash_value length CHECK is also widened to admit
--- algorithm-appropriate digest sizes.
-
-ALTER TABLE file_storage.files
-    DROP CONSTRAINT files_hash_algorithm_check;
-
-ALTER TABLE file_storage.files
-    ADD CONSTRAINT files_hash_algorithm_check
-        CHECK (hash_algorithm IN ('SHA-256', 'BLAKE3', 'XXH3'));
-
-ALTER TABLE file_storage.files
-    DROP CONSTRAINT files_hash_value_check;
-
-ALTER TABLE file_storage.files
-    ADD CONSTRAINT files_hash_value_check
-        CHECK (
-            (hash_algorithm = 'SHA-256' AND octet_length(hash_value) = 32)
-         OR (hash_algorithm = 'BLAKE3'  AND octet_length(hash_value) = 32)
-         OR (hash_algorithm = 'XXH3'    AND octet_length(hash_value) = 8)
-        );
-
-
--- Table: file_storage.multipart_uploads --------------------------------------
--- In-flight multipart upload sessions. Created on POST /files/multipart
--- (initiation also creates the pending `files` row), one row per upload
--- session. Parts go into multipart_upload_parts.
-
-CREATE TABLE file_storage.multipart_uploads (
-    upload_id        uuid         PRIMARY KEY  DEFAULT gen_random_uuid(),
-    file_id          uuid         NOT NULL
-                                  REFERENCES file_storage.files (file_id) ON DELETE CASCADE,
-
-    -- Backend-side handle (e.g., S3 UploadId) — opaque to FileStorage.
-    backend_upload_handle  text   NOT NULL,
-
-    -- Lifecycle state.
-    state            text         NOT NULL  DEFAULT 'in_progress'
-                                  CHECK (state IN ('in_progress', 'completed', 'aborted')),
-
-    -- Validation state for content-type magic-bytes check (recorded after
-    -- the first uploaded part).
-    declared_mime    text         NOT NULL,
-    mime_validated   boolean      NOT NULL  DEFAULT false,
-
-    -- TTL for abandoned uploads. The reaper marks expired in-flight uploads
-    -- as 'aborted' and asks the backend to abort, freeing storage.
-    created_at       timestamptz  NOT NULL  DEFAULT now(),
-    expires_at       timestamptz  NOT NULL
-);
-
-CREATE INDEX multipart_uploads_file_idx ON file_storage.multipart_uploads (file_id);
-CREATE INDEX multipart_uploads_expired_idx
-    ON file_storage.multipart_uploads (expires_at)
-    WHERE state = 'in_progress';
-
-
--- Table: file_storage.multipart_upload_parts ---------------------------------
--- One row per uploaded part.
-
-CREATE TABLE file_storage.multipart_upload_parts (
-    upload_id        uuid         NOT NULL
-                                  REFERENCES file_storage.multipart_uploads (upload_id) ON DELETE CASCADE,
-    part_number      int          NOT NULL  CHECK (part_number > 0),
-    -- ETag-shaped per-part identifier returned by the backend on PutPart.
-    backend_etag     text         NOT NULL,
-    -- Per-part hash (intermediate; needed for BLAKE3 tree-mode finalization
-    -- and for SHA-256 / XXH3 streaming-pass).
-    part_hash        bytea        NOT NULL,
-    size             bigint       NOT NULL  CHECK (size >= 0),
-    uploaded_at      timestamptz  NOT NULL  DEFAULT now(),
-
-    PRIMARY KEY (upload_id, part_number)
-);
-
-
--- Table: file_storage.file_versions ------------------------------------------
--- Per-file backend version pointers. Populated only on backends that declare
--- versioning_native = true. Soft-delete is a row with soft_deleted_at set
--- (the previous current row remains accessible by version_id).
-
-CREATE TABLE file_storage.file_versions (
-    file_id           uuid         NOT NULL
-                                   REFERENCES file_storage.files (file_id) ON DELETE CASCADE,
-    -- Opaque, backend-assigned. Format MUST NOT be parsed.
-    version_id        text         NOT NULL,
-
-    -- Snapshot of file properties at version creation time.
-    size              bigint       NOT NULL  CHECK (size >= 0),
-    hash_algorithm    text         NOT NULL,
-    hash_value        bytea        NOT NULL,
-    content_revision  bigint       NOT NULL,
-
-    -- True when this is the file's current version.
-    is_current        boolean      NOT NULL  DEFAULT false,
-    -- Set to the soft-delete time when this version is logically deleted but
-    -- still recoverable via restore. Permanent delete removes the row.
-    soft_deleted_at   timestamptz,
-
-    created_at        timestamptz  NOT NULL  DEFAULT now(),
-
-    PRIMARY KEY (file_id, version_id)
-);
-
--- One current version per file.
-CREATE UNIQUE INDEX file_versions_current_idx
-    ON file_storage.file_versions (file_id)
-    WHERE is_current = true;
-
-CREATE INDEX file_versions_soft_deleted_idx
-    ON file_storage.file_versions (file_id)
-    WHERE soft_deleted_at IS NOT NULL;
-
-
--- Table: file_storage.idempotency_keys ---------------------------------------
--- Owner-scoped POST /files idempotency. A retried request with the same key
--- by the same owner returns the original response without creating a duplicate
--- file. Keys are isolated per (tenant_id, owner_kind, owner_id) to avoid
--- cross-owner leaks.
-
-CREATE TABLE file_storage.idempotency_keys (
-    tenant_id      uuid         NOT NULL,
-    owner_kind     text         NOT NULL  CHECK (owner_kind IN ('user', 'app')),
-    owner_id       uuid         NOT NULL,
-    idempotency_key text        NOT NULL,
-
-    -- Result snapshot: which file was produced.
-    file_id        uuid         NOT NULL
-                                REFERENCES file_storage.files (file_id) ON DELETE CASCADE,
-
-    -- Stored response envelope so retries return the original 201 body.
-    response_status smallint    NOT NULL,
-    response_body   jsonb       NOT NULL,
-    response_etag   text        NOT NULL,
-
-    created_at     timestamptz  NOT NULL  DEFAULT now(),
-    expires_at     timestamptz  NOT NULL,
-
-    PRIMARY KEY (tenant_id, owner_kind, owner_id, idempotency_key)
-);
-
-CREATE INDEX idempotency_keys_expired_idx ON file_storage.idempotency_keys (expires_at);
-
-
--- Table: file_storage.audit_outbox -------------------------------------------
--- Transactional outbox for the audit-publisher. Rows are inserted in the
--- same DB transaction as the writes they describe, then drained by a worker
--- and forwarded to the platform audit sink. Provides 100% coverage with no
--- silent drops (NFR cpt-cf-file-storage-nfr-audit-completeness).
-
-CREATE TABLE file_storage.audit_outbox (
-    event_id        uuid         PRIMARY KEY  DEFAULT gen_random_uuid(),
-    tenant_id       uuid         NOT NULL,
-    actor_kind      text         NOT NULL,
-    actor_id        uuid         NOT NULL,
-    file_id         uuid,
-    operation       text         NOT NULL,        -- 'create' | 'patch_content' | 'patch_metadata' | 'delete' | etc.
-    outcome         text         NOT NULL,        -- 'success' | 'failure'
-    detail          jsonb        NOT NULL,        -- arbitrary structured detail
-    occurred_at     timestamptz  NOT NULL  DEFAULT now(),
-    published_at    timestamptz                   -- NULL until drained
-);
-
-CREATE INDEX audit_outbox_unpublished_idx
-    ON file_storage.audit_outbox (occurred_at)
-    WHERE published_at IS NULL;
-
-
--- Table: file_storage.events_outbox ------------------------------------------
--- Outbox for EventBroker file-event publication. Same pattern as audit_outbox
--- but targets the platform EventBroker (policy-gated, per
--- cpt-cf-file-storage-fr-file-events).
-
-CREATE TABLE file_storage.events_outbox (
-    event_id        uuid         PRIMARY KEY  DEFAULT gen_random_uuid(),
-    tenant_id       uuid         NOT NULL,
-    file_id         uuid         NOT NULL,
-    event_type      text         NOT NULL,        -- 'file.created' | 'file.content_replaced' | 'file.metadata_updated' | 'file.deleted'
-    payload         jsonb        NOT NULL,
-    occurred_at     timestamptz  NOT NULL  DEFAULT now(),
-    published_at    timestamptz
-);
-
-CREATE INDEX events_outbox_unpublished_idx
-    ON file_storage.events_outbox (occurred_at)
-    WHERE published_at IS NULL;
-
-
--- Table: file_storage.policies -----------------------------------------------
--- Tenant and user policies (allowed types, size limits, retention and
--- lifecycle controls). Effective policy is the most
--- restrictive across applicable rows (per PRD §5.4).
-
-CREATE TABLE file_storage.policies (
-    policy_id        uuid         PRIMARY KEY  DEFAULT gen_random_uuid(),
-    tenant_id        uuid         NOT NULL,
-    -- Scope of the policy. user-level policies match against the file's
-    -- owner_id when owner_kind = 'user'; tenant-level policies match
-    -- against the file's tenant.
-    scope            text         NOT NULL  CHECK (scope IN ('tenant', 'user')),
-    scope_owner_id   uuid,                       -- NULL when scope='tenant'
-
-    -- Policy body. Structure documented in P2 FEATURE artifacts.
-    body             jsonb        NOT NULL,
-
-    created_at       timestamptz  NOT NULL  DEFAULT now(),
-    updated_at       timestamptz  NOT NULL  DEFAULT now(),
-
-    CHECK ((scope = 'user' AND scope_owner_id IS NOT NULL) OR
-           (scope = 'tenant' AND scope_owner_id IS NULL))
-);
-
-CREATE INDEX policies_scope_idx
-    ON file_storage.policies (tenant_id, scope, scope_owner_id);
-
-
--- Table: file_storage.retention_rules ----------------------------------------
--- Tenant/user retention rules. Background worker evaluates against
--- file metadata and deletes when criteria are met.
-
-CREATE TABLE file_storage.retention_rules (
-    rule_id          uuid         PRIMARY KEY  DEFAULT gen_random_uuid(),
-    tenant_id        uuid         NOT NULL,
-    scope            text         NOT NULL  CHECK (scope IN ('tenant', 'user', 'file')),
-    scope_target_id  uuid,                       -- user_id when scope='user'; file_id when scope='file'; NULL when scope='tenant'
-
-    -- Rule body: age-based, inactivity-based, custom-metadata-based.
-    body             jsonb        NOT NULL,
-
-    created_at       timestamptz  NOT NULL  DEFAULT now()
-);
-
-CREATE INDEX retention_rules_scope_idx
-    ON file_storage.retention_rules (tenant_id, scope, scope_target_id);
-
-
--- =============================================================================
--- P3 — Runtime Backend Configuration, Encryption metadata
--- =============================================================================
-
--- Table: file_storage.storage_backends_runtime ------------------------------
--- DB-resident replacement for the P1 TOML configuration file. When this
--- table is populated, the BackendRegistry switches its source from TOML to
--- DB on gear startup. Credentials are stored encrypted at rest; the
--- envelope encryption is managed by the platform secret store
--- (PRD `cpt-cf-file-storage-fr-runtime-backends`).
-
-CREATE TABLE file_storage.storage_backends_runtime (
-    backend_id       text         PRIMARY KEY,
-    kind             text         NOT NULL,         -- 'local-filesystem' | 's3-compatible' | ...
-    endpoint         text,                          -- nullable for local-filesystem
-    region           text,                          -- nullable for non-cloud backends
-
-    -- Credentials encrypted via the platform secret store. The column is
-    -- an opaque blob; FileStorage never reads or writes the plaintext
-    -- credentials directly — the secret-store SDK does that on every load.
-    credentials_blob bytea,
-    credentials_kms_key_id text,
-
-    -- Capabilities (versioning_native, multipart_native, encryption_native,
-    -- range_native) serialized as JSON. Loaded into BackendCapabilities
-    -- struct at registry build time.
-    capabilities     jsonb        NOT NULL,
-    hash_policy      jsonb        NOT NULL,        -- HashPolicy (default_algorithm, allowed_algorithms, selection_rules)
-
-    -- Soft-disable without removing the row (e.g., during scheduled
-    -- maintenance). When false, the registry skips this backend; pre-existing
-    -- file rows pointing at it return 503 on content access.
-    enabled          boolean      NOT NULL  DEFAULT true,
-
-    created_at       timestamptz  NOT NULL  DEFAULT now(),
-    updated_at       timestamptz  NOT NULL  DEFAULT now()
-);
-
-CREATE INDEX storage_backends_runtime_enabled_idx
-    ON file_storage.storage_backends_runtime (enabled)
-    WHERE enabled = true;
-
-
--- P3 file-row extensions for encryption --------------------------------------
--- Per-file encryption metadata for server-side encryption with backend-managed
--- or customer-provided keys. Populated only when the writing backend
--- declares encryption_native = true and the operative policy enables
--- encryption.
-
-ALTER TABLE file_storage.files
-    ADD COLUMN encryption_scheme  text,
-    ADD COLUMN encryption_kms_key_id text,
-    ADD COLUMN encryption_metadata jsonb;
-
-COMMENT ON COLUMN file_storage.files.encryption_scheme IS
-    'P3: name of the server-side encryption scheme applied (e.g., AES256-GCM-SSE-S3, AES256-GCM-SSE-KMS). NULL when the backend did not encrypt.';
-COMMENT ON COLUMN file_storage.files.encryption_kms_key_id IS
-    'P3: key identifier in the platform KMS / secret store, when SSE-KMS is used.';
+-- file_storage.files: one row per logical file managed by any backend
+-- in the FileStorage module (discriminated by backend_id). Realizes
+-- cpt-cf-file-storage-dbtable-files. Files are uniquely addressed by
+-- `id` (the opaque file_id, PRIMARY KEY); `file_path` is derived from
+-- `id` at the adapter boundary, so logical-address collisions are
+-- structurally impossible. Re-uploading bytes always preserves
+-- `file_id` — there is no supersession-via-fresh-file_id flow.
+--
+-- Column notes:
+--   id                    — opaque, app-generated file_id (UUID v7).
+--                           Per ADR-0002 this is the canonical external
+--                           handle; URLs and cross-module references
+--                           all key off it. The S3 object key is
+--                           derived deterministically from `id` at the
+--                           adapter boundary.
+--   tenant_id             — owning tenant UUID. Always present in the
+--                           WHERE clause of every read/mutation so
+--                           cross-tenant enumeration is impossible.
+--   backend_id            — UUID of the backend instance hosting this
+--                           file's bytes. Stable across config reloads;
+--                           operators assign it once in the static
+--                           TOML roster (cpt-cf-file-storage-principle-
+--                           modular-backend-roster).
+--   file_path             — S3 object key derived deterministically
+--                           from `id` at the adapter boundary; stored
+--                           explicitly for operability/debuggability and
+--                           for backend object lookups, but never the
+--                           source of uniqueness — that role belongs to
+--                           the PRIMARY KEY on `id`. Not part of the
+--                           URL surface (cpt-cf-file-storage-adr-opaque-
+--                           file-ids).
+--   owner_id              — UUID of the principal that owns this file
+--                           (a user or an app — FileStorage does not
+--                           distinguish; the kind is tracked in the
+--                           identity / authz subsystem).
+--   name                  — display name (the file's human filename).
+--                           Updatable via PUT /files/{file_id}/meta;
+--                           used in Content-Disposition on download
+--                           (always set via response-content-disposition
+--                           query params on presigned downloads — see
+--                           cpt-cf-file-storage-constraint-presigned-
+--                           download-headers-from-db).
+--   gts_file_type         — GTS file type
+--                           (gts.cf.fstorage.file.type.v1~...) —
+--                           mandatory at creation, immutable.
+--                           Structurally immutable: not present in
+--                           FileMetaUpdate. Stored in DB only — NEVER
+--                           mirrored to S3 (specific exception to
+--                           cpt-cf-file-storage-constraint-meta-mirrored-
+--                           via-put-meta). Reconcile does not pull this
+--                           column from S3.
+--   mime_type             — declared MIME, pinned in the SigV4
+--                           SignedHeaders of the presigned PUT and in
+--                           the response-content-type query param of
+--                           presigned GETs. Mutable via PUT /meta
+--                           (DB+S3 atomic sync via CopyObject REPLACE).
+--   size_bytes            — final file size; 0 while pending_upload.
+--                           Pulled from S3 Content-Length on every
+--                           reconcile.
+--   etag                  — raw S3 ETag (sans surrounding quotes).
+--                           CONTENT FINGERPRINT ONLY — does NOT track
+--                           metadata changes. See
+--                           cpt-cf-file-storage-constraint-etag-content-
+--                           only. Rotated only by content writes and
+--                           by `CopyObject` self-copy on PUT /meta
+--                           (which is a content rewrite at the S3
+--                           level, even when the bytes are bit-identical).
+--                           For S3 multipart uploads (deferred to P2)
+--                           the ETag has the form `<hex>-<N>`; the
+--                           single-PUT format is `<hex>` of length 32.
+--   version_id            — raw S3 VersionId for the current object
+--                           generation. NULL when `Backend.versioning`
+--                           is `false`. Used as the ABA-safe extension
+--                           to etag-CAS on PUT /meta — see ADR-0005
+--                           and cpt-cf-file-storage-constraint-versioning-
+--                           aware-cas. Also honoured by presigned
+--                           download items that request a historical
+--                           version: when the caller passes
+--                           `PresignDownloadItem.version_id` and the
+--                           backend has versioning enabled, the server
+--                           includes `versionId=<vid>` in the signed
+--                           URL. Sized as VARCHAR(1024) per the AWS S3
+--                           User Guide ("Version IDs are Unicode, UTF-8
+--                           encoded, URL-ready, opaque strings that are
+--                           no more than 1,024 bytes long"); FileStorage
+--                           treats the value as opaque — no parsing,
+--                           sorting, or monotonicity assumptions.
+--   status                — file lifecycle: pending_upload → uploaded
+--                           → deleting. No engine-level CHECK so the
+--                           value space remains extensible by backend
+--                           adapters. `deleting` is a transient
+--                           operational state, NOT a soft-delete
+--                           tombstone.
+--   custom_metadata       — user-defined string key/value pairs
+--                           (cpt-cf-file-storage-fr-metadata-storage).
+--                           Aggregated user-metadata size (Content-Type
+--                           + Content-Disposition + every
+--                           x-amz-meta-<k>=<v>) is capped at 2 KB by
+--                           AWS S3; FileStorage enforces the same cap
+--                           at presign and at PUT /meta.
+--                           gts_file_type does NOT count toward this
+--                           budget (not mirrored).
+--   upload_expires_at     — expiration captured at upload-presign time.
+--                           For variant B re-upload presigns issued
+--                           against an existing `file_id`, the field
+--                           is updated to MAX(coalesce(current, ε),
+--                           NOW + TTL) so multiple outstanding URLs do
+--                           not shorten the existing window.
+--                           `reconcile` rejects `pending_upload` rows
+--                           past this deadline with `UploadExpired`.
+--                           NULL once status='uploaded'.
+--   created_at            — row insertion timestamp (UTC), set to
+--                           NOW() at INSERT and immutable thereafter.
+--                           DB-managed: this column tracks when the
+--                           DB ROW was created in the FileStorage
+--                           database, NOT when the underlying S3
+--                           object was created. The S3 object's
+--                           `Last-Modified` header (or any other
+--                           S3-side timestamp) MUST NEVER be written
+--                           into this column.
+--   updated_at            — refreshed to NOW() on every successful
+--                           UPDATE that touches the row (UTC).
+--                           Serves both roles: (a) the user-visible
+--                           "last modified" timestamp returned in
+--                           FileInfo, and (b) the race-detection
+--                           token used together with `etag` (and
+--                           optional `xmin` on Postgres) in the
+--                           WHERE clause of every conditional UPDATE.
+--                           DB-managed: this column tracks when the
+--                           DB ROW was last touched by FileStorage,
+--                           NOT when the underlying S3 object was
+--                           last modified. The S3 object's
+--                           `Last-Modified` header (or any other
+--                           S3-side timestamp) MUST NEVER be written
+--                           into this column. Follows the workspace
+--                           convention (resource-group,
+--                           account-management, mini-chat, oagw —
+--                           all use `updated_at`).
+
+-- Uniqueness of the logical address is enforced structurally via the
+-- PRIMARY KEY on `id` (and the deterministic derivation of `file_path`
+-- from `id` at the adapter boundary). No partial unique index is
+-- required, and no supersession-on-shared-path flow exists.
+
+-- Supports list_files by owner across every backend the caller can
+-- see (the only listing filter exposed in P1 — see DESIGN §3.3).
+CREATE INDEX IF NOT EXISTS files_owner_lookup_idx
+    ON file_storage.files (tenant_id, owner_id);
+
+-- Supports list_files by recency (default and only ordering in P1).
+-- The trailing `id` column is the stable cursor-pagination tiebreaker:
+-- two rows with the same created_at are deterministically ordered by
+-- their UUID, so cursor decoding can resume from the exact (created_at,
+-- id) pair without overlap or gaps.
+CREATE INDEX IF NOT EXISTS files_created_idx
+    ON file_storage.files (tenant_id, created_at DESC, id);
+
+COMMIT;
