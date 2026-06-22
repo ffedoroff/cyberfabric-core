@@ -1391,8 +1391,10 @@ everything else is optional.
 - **`exp` is mandatory and capped.** It MUST NOT be further out than the configured `max_url_ttl` (recommended **7
   days**); the cap is enforced by the **control plane at signing** (it refuses to mint a longer token). The sidecar
   rejects when `now > exp`. "Available to everyone for 5 minutes" = only `exp`, no token-claim predicate.
-- **`max_size` and `exact_size` are mutually exclusive** — both present is a contradiction the control plane refuses to
-  mint (`400` at presign) and the sidecar rejects (`403`).
+- **A size claim is optional.** If `max_size` (or `exact_size`) is present, the sidecar **MUST** enforce it (mid-stream
+  `413`); if **neither** is present, the sidecar imposes **no FS-level size cap** — only the backend's own default size
+  limits apply. `max_size` and `exact_size` are **mutually exclusive** — both present is a contradiction the control
+  plane refuses to mint (`400` at presign) and the sidecar rejects (`403`).
 - **`expected_hash`**: `<alg>` MUST be in the backend's allow-list (P1: `SHA-256`), lowercase hex; baked by the control
   plane (may carry a client-supplied value from the presign request).
 - **`max_rate` / `max_conns` are P2.** The claim shape exists from P1 (forward-compat) but enforcement is P2. Both are
@@ -1427,6 +1429,13 @@ decision: it accepts anything that is validly signed and not expired, and enforc
 signature carries. The sole runtime limits it computes itself are the **per-URL connection/rate caps** (`MaxConns` /
 `MaxRate`, P2) scoped to a single `(file_id, op)`. This keeps the data plane stateless and policy-free, and concentrates
 all governance where the authoritative tenant/user/backend data already is.
+
+When the control plane derives a `max_size` from an owner's remaining quota, that per-URL ceiling is the **one
+quota-derived value the data plane enforces** — still just a signed number it is handed, not a policy lookup, so the
+statelessness invariant holds. The size claim stays **optional**: absent a baked `max_size`, only the backend's default
+limits apply (an active quota constrains an upload only when the control plane chooses to bake the ceiling). Closing the
+aggregate-owner-quota gap across many concurrent presigns — reserve-at-presign / commit-at-bind / release-on-expiry — is
+a **P2 control-plane** concern, detailed in the P2 `cpt-cf-file-storage-fr-storage-quota` FEATURE.
 
 **Token opacity (recap).** Only the control plane (minter) and the sidecar (verifier) know the token's claim-set and
 crypto; everyone else forwards it as opaque bytes and never parses it, so the format may evolve without touching

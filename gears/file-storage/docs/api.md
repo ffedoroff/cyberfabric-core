@@ -105,6 +105,13 @@ CAS. The flow:
 `If-Match` is therefore checked twice (opportunistically at pre-register, authoritatively at bind). Backend content is
 never mutated in place; a replacement is always a new version + a pointer swap.
 
+**On a `412`, re-bind — do not re-presign or re-upload.** Rebinding is a control-plane call (`POST /files/{id}/bind`),
+**independent of the signed upload URL** — so the upload URL's `exp` is irrelevant to the retry and the bytes are not
+re-sent (the version persists). The `412` response carries the current content ETag, which the client uses as the fresh
+`If-Match` to replay `POST /files/{id}/bind` immediately. Re-presigning is **not** idempotent: a fresh
+`POST /files/{id}/versions` + upload creates a **new sibling `version_id`** (the unbound one is swept by the P2 cleanup
+engine, `cpt-cf-file-storage-fr-orphan-reconciliation`). Clients **should** rebind the returned `version_id` instead.
+
 ## Signed URLs
 
 - **PASETO `v4.public` token, asymmetric, stateless.** The control plane signs with the Ed25519 private key (sole

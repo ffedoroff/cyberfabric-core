@@ -221,7 +221,10 @@ new **immutable** content blob to the backend object `/{file_id}/{version_id}`; 
 
 Binding the pointer is an optimistic compare-and-swap guarded by `If-Match` (`cpt-cf-file-storage-fr-conditional-requests`):
 if the file's content changed concurrently the bind returns `412`, and the client **MUST** be able to retry the bind
-against the already-uploaded `version_id` **without re-uploading the bytes**.
+against the already-uploaded `version_id` **without re-uploading the bytes**. Rebinding is a **control-plane** operation
+independent of the signed upload URL — the upload URL's expiry does **not** affect the retry and the client does **not**
+re-presign; the `412` returns the current content ETag for the fresh `If-Match`. (Re-presigning instead would upload a
+new sibling version, later reconciled by `cpt-cf-file-storage-fr-orphan-reconciliation`.)
 
 **Rationale**: All platform gears and users need to store files — gears store generated content, documents, and
 artifacts, users upload files directly. Separating the signed control request from the sidecar byte transfer keeps the
